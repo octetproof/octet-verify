@@ -1,0 +1,97 @@
+octet-verify — independent verifier for Octet LocationProof artifacts
+
+USAGE:
+    octet-verify <proof.bin> [OPTIONS]
+    cat proof.bin | octet-verify [OPTIONS]
+
+    octet-verify fetch <proof-id> --backend <url> --token <bearer> [OPTIONS]
+    octet-verify watch            --backend <url> --token <bearer> [OPTIONS]
+    octet-verify range            --backend <url> --token <bearer> \
+                                  --since <ts> --until <ts> [OPTIONS]
+
+ARGUMENTS:
+    <proof.bin>    Binary octet.navigate.LocationProof (or a
+                   ContinuousProofEnvelope with --envelope). Reads stdin if
+                   omitted.
+
+OPTIONS:
+    --hardware-pubkey <file>   P-256 attestation public key (raw SEC1 bytes or
+                               hex). Required to verify stage signatures for iOS
+                               proofs that carry no certificate; for Android the
+                               key is taken from the embedded certificate chain
+                               when this flag is absent.
+    --ed25519-pubkey <file>    Enrolled device-signer Ed25519 public key (raw 32
+                               bytes or hex). Used to verify the transport
+                               signature in --envelope mode.
+    --envelope                 Treat the input as a ContinuousProofEnvelope
+                               (proof bytes + Ed25519 transport signature)
+                               instead of a bare LocationProof.
+    --max-age-seconds <n>      Freshness window. Default: 300.
+    --nullifier-store <file>   Newline-delimited hex file of seen nullifiers;
+                               best-effort, single-process local replay check
+                               (appends). NOT concurrency-safe and NOT the
+                               authoritative defense — cross-proof uniqueness is
+                               enforced server-side at ingest.
+    --expect-region <id>       Assert the proof claims this region (country or
+                               subdivision ISO code, or city name).
+    --json                     Emit a machine-readable report.
+    -h, --help                 Show this help.
+
+BACKEND FETCH MODE (subcommands; requires a build with --features net):
+    The fetch/watch/range subcommands pull proofs from the Octet proof
+    ingestion API. The backend is UNTRUSTED: fetched bytes run through the exact
+    same verification pipeline as a local file, and no backend-supplied field
+    (created_at, platform, …) ever affects the verdict.
+
+    fetch <proof-id>   Fetch and verify one proof by id.
+    watch              Poll /v1/proofs/latest and verify each new proof as it
+                       arrives. Runs until interrupted (Ctrl-C).
+    range              Verify every proof in a time window; exits non-zero if
+                       ANY proof fails (use for batch audit).
+
+    --backend <url>        Backend base URL. https:// required; plain http:// is
+                           allowed only for LAN dev (localhost, 127.*, 10.*,
+                           192.168.*).
+    --token <bearer>       Activation bearer; exchanged for a scoped
+                           proof_upload_token via POST /v1/proofs/auth.
+    --seen-store <file>    Newline-delimited "proof_id sha256" file. Persists
+                           seen proof byte-hashes across runs so a re-fetched id
+                           returning different bytes fails loud (refetch
+                           consistency). Always deduped within a single run.
+    --interval <seconds>   watch poll interval. Default: 5.
+    --since <ts> / --until <ts>   range bounds (RFC 3339, e.g. 2026-06-01T00:00:00Z).
+    --hardware-pubkey, --expect-region, --max-age-seconds, --json all apply as
+    above. Historical proofs are older than the default freshness window — pass
+    a wide --max-age-seconds when auditing past ranges.
+
+    With --json, each proof emits one report object per line (JSONL).
+
+EXIT CODES:
+    0    authentic — valid AND signatures cryptographically verified
+    1    invalid — a check actively failed
+    2    usage, IO, decode, or backend error
+    3    inconclusive — structurally valid but signatures not verified
+         (e.g. no hardware key); never collapses into 0
+    For automation, exit 0 is a safe authenticity gate. For range/watch the code
+    reflects the worst proof seen (any 1 → 1, else any 3 → 3, else 0).
+
+WHAT THIS VERIFIES (v1):
+    - stage attestation chain linkage and per-stage hardware (P-256) signatures
+    - proofAssembly binding every prior stage signature
+    - commitment / nullifier / ZK-bytes bound to their signed stage hashes
+    - freshness and (optionally) cross-run replay
+    - the Ed25519 transport signature, when an envelope + key are supplied
+
+WHAT THIS DOES NOT VERIFY (reported as NOT-CHECKED, never as a pass):
+    - that the hardware key is genuine device hardware: the Android certificate
+      chain is NOT validated to Google's attestation root, and iOS App Attest
+      is not checked. A passing stage chain proves the proof is internally
+      consistent and signed by the key it carries — not that the key is real
+      hardware. Use --ed25519-pubkey with --envelope for device-identity
+      binding, or wait for a later build that validates attestation roots.
+    - the spoofing verdict / confidence / level fields (bound via stage hashes
+      that need internal serialization to re-derive)
+    - the ZK proof (placeholder backend in current SDK builds)
+
+This verifier reads proofs only. It contains none of the SDK's
+proof-generation or spoof-detection logic. See VERIFICATION-SPEC.md.

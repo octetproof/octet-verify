@@ -1,0 +1,198 @@
+// Public-safe vendored copy of the SDK's octet/proof/proof.proto.
+//
+// Mirrors the verifiable proof wire contract only. The SDK's internal
+// detection-pipeline types are intentionally NOT vendored here. This subset's
+// field numbers and types match the SDK's upstream octet.proof wire schema, so
+// a full proof decodes byte-for-byte.
+//
+// Cryptographic proof-of-location types.
+syntax = "proto3";
+package octet.proof;
+option java_multiple_files = true;
+option java_package = "com.octetproof.sdk.model.proto";
+option swift_prefix = "ON";
+
+// --- Location Proof Verdict ---
+// Public spoofing-detection outcome (categorical only). Lives in the proof
+// package upstream; vendored here because LocationProof.spoofing_verdict reads
+// it. The signals/heuristics that produce it are never vendored.
+enum LocationProofVerdict {
+  VERDICT_UNSPECIFIED = 0;
+  VERIFIED = 1;
+  PLAUSIBLE = 2;
+  SUSPICIOUS = 3;
+  NOT_PROVABLE = 4;
+}
+
+// --- Proof Level ---
+
+enum ProofLevel {
+  LEVEL_UNSPECIFIED = 0;
+  ON_EARTH = 1;
+  COUNTRY = 2;
+  CITY = 3;
+  CONTINUOUS_AREA = 4;
+  CONTINUOUS_VOLUME = 5;
+  // First-order administrative subdivision identified by an ISO 3166-2 code
+  // (e.g. "US-CA", "FR-75"). Finer than COUNTRY, coarser than CITY; appended
+  // at the end (=6) to preserve wire compatibility.
+  SUBDIVISION = 6;
+}
+
+// --- Proof Region ---
+
+message ProofRegion {
+  oneof region {
+    EarthRegion earth = 1;
+    CountryRegion country = 2;
+    CityRegion city = 3;
+    EllipseRegion ellipse = 4;
+    H3PolygonSet h3_polygon_set = 5;
+    BoundingBox3DRegion bounding_box_3d = 6;
+    SubdivisionRegion subdivision = 7;  // ISO 3166-2 (e.g. "US-CA", "FR-75")
+  }
+}
+
+message EarthRegion {
+  double max_altitude_meters = 1;  // default: 10000
+}
+
+message CountryRegion {
+  string iso_code = 1;
+}
+
+// First-order administrative subdivision identified by an ISO 3166-2
+// code, e.g. "US-CA" (California), "US-TX" (Texas), "FR-75" (Paris),
+// "JP-13" (Tokyo). The country prefix is part of the code; an empty
+// or malformed iso_code is rejected at construction.
+message SubdivisionRegion {
+  string iso_code = 1;
+}
+
+message CityRegion {
+  string name = 1;
+  double center_lat = 2;
+  double center_lon = 3;
+  double radius_meters = 4;
+}
+
+// Ground ellipse. Disc is the degenerate case (semi_major_m == semi_minor_m,
+// heading_deg = 0).
+message EllipseRegion {
+  LatLon center = 1;
+  double semi_major_m = 2;
+  double semi_minor_m = 3;
+  double heading_deg = 4;  // bearing of semi-major axis, [0, 360)
+}
+
+// Union of H3 cells. Each cell_id encodes its own resolution in its high
+// bits; the SDK picks the coarsest resolution per query that satisfies
+// the predicate's accuracy needs.
+message H3PolygonSet {
+  repeated fixed64 cell_ids = 1;
+}
+
+message LatLon {
+  double latitude = 1;
+  double longitude = 2;
+}
+
+message BoundingBox3DRegion {
+  double min_latitude = 1;
+  double max_latitude = 2;
+  double min_longitude = 3;
+  double max_longitude = 4;
+  double min_altitude = 5;
+  double max_altitude = 6;
+}
+
+// --- ZK Proof ---
+
+enum ZKBackend {
+  BACKEND_UNSPECIFIED = 0;
+  GROTH16 = 1;
+  PLONK = 2;
+  HALO2 = 3;
+  PLACEHOLDER = 4;
+  COMMITMENT_ONLY = 5;
+}
+
+message ZKProofData {
+  ZKBackend backend = 1;
+  bytes proof_bytes = 2;
+  repeated string public_inputs = 3;
+  string verification_key_id = 4;
+}
+
+// --- Device Attestation ---
+
+enum SecurityLevel {
+  SEC_UNSPECIFIED = 0;
+  STRONG_BOX = 1;       // Android StrongBox / iOS Secure Enclave + App Attest
+  TEE = 2;              // Android TEE
+  HARDWARE_ONLY = 3;    // iOS Secure Enclave only
+  SOFTWARE = 4;         // No hardware backing
+}
+
+message DeviceAttestation {
+  string key_id = 1;
+  bytes signature = 2;
+  repeated bytes certificate_chain = 3;    // Android cert chain
+  optional string play_integrity_token = 4; // Android only
+  DeviceIntegrityVerdict integrity_verdict = 5;
+  optional string session_id = 6;
+  SecurityLevel security_level = 7;
+}
+
+enum IntegrityVerdictStatus {
+  INTEGRITY_UNSPECIFIED = 0;
+  INTEGRITY_PENDING = 1;
+  INTEGRITY_UNAVAILABLE = 2;
+  INTEGRITY_VERIFIED_COMPLIANT = 3;
+  INTEGRITY_VERIFIED_NON_COMPLIANT = 4;
+}
+
+message DeviceIntegrityVerdict {
+  optional string token = 1;
+  int64 request_timestamp_ms = 2;
+  string nonce = 3;
+  IntegrityVerdictStatus status = 4;
+  optional string error_message = 5;
+}
+
+// --- Stage Attestation Chain ---
+
+message StageAttestation {
+  string stage = 1;
+  int64 timestamp_ms = 2;
+  bytes data_hash = 3;
+  bytes signature = 4;
+  optional bytes previous_hash = 5;
+}
+
+// --- Location Proof (Crypto Artifact) ---
+//
+// Public-safe subset of the SDK's LocationProof. Field numbers and wire types
+// match the SDK's post-PFG slim schema exactly, so a full proof decodes here
+// byte-for-byte. Tags 9, 14 and 15 carried SDK-internal pipeline fields that
+// are excluded from the public contract; upstream reserves them so they are
+// never reused, and we mirror that here. The verifier reads only the fields it
+// verifies — `previous_token_hash` decodes but is not acted on in v1.
+
+message LocationProof {
+  string id = 1;
+  ProofRegion claimed_region = 2;
+  ProofLevel level = 3;
+  ZKProofData zk_proof = 4;
+  bytes position_commitment = 5;
+  bytes nullifier = 6;
+  int64 timestamp_ms = 7;
+  DeviceAttestation device_attestation = 8;
+  repeated StageAttestation stage_attestations = 10;
+  LocationProofVerdict spoofing_verdict = 11;
+  string sdk_version = 12;
+  string platform = 13;  // "android" or "ios"
+  bytes previous_token_hash = 16;  // hash of the prior proof's token (proof chaining)
+
+  reserved 9, 14, 15;
+}

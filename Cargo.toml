@@ -1,0 +1,61 @@
+[package]
+name = "octet-verify"
+version = "1.0.0"
+edition = "2021"
+description = "Standalone, independent verifier for Octet LocationProof artifacts. Checks authenticity and integrity (signatures, hash-chain, freshness, region claim) without any device-side secret or proof-creation logic."
+repository = "https://github.com/octetproof/octet-verify"
+readme = "README.md"
+license = "Apache-2.0"
+# GitHub-only release for now; `publish = false` guards against an accidental
+# `cargo publish` to crates.io.
+publish = false
+
+[lib]
+name = "octet_verify"
+path = "src/lib.rs"
+
+[[bin]]
+name = "octet-verify"
+path = "src/bin/octet-verify.rs"
+
+[features]
+# Off by default: the core verifier is a small, publicly-auditable trust
+# anchor with no network or JSON-parsing surface. `cargo build` /
+# `cargo install` of the default build pulls none of the deps below, so the
+# crypto + verification path that the public is asked to trust stays lean.
+#
+# `--features net` adds the backend fetch/watch/range subcommands, which talk
+# to the (untrusted) Octet proof ingestion API. See VERIFICATION-SPEC.md
+# "Backend fetch mode": the backend is transport+index only; fetched bytes go
+# through the exact same local verification pipeline as a local file.
+default = []
+net = ["dep:ureq", "dep:serde", "dep:serde_json", "dep:base64", "dep:ctrlc"]
+
+[dependencies]
+prost = "0.13"
+sha2 = "0.10"
+p256 = "0.13"            # ECDSA P-256 verify (DER + raw), SEC1 public keys
+ed25519-dalek = "2"     # Ed25519 transport-signature verify
+anyhow = "1"
+# NOTE: no X.509 dependency in v1. The Android leaf key is pulled from the
+# certificate's SubjectPublicKeyInfo with a small dependency-free scan; full
+# X.509 parsing + chain-to-root validation belongs to the later
+# attestation-root layer, not this build.
+
+# --- backend fetch mode (feature = "net" only) ---
+# rustls TLS (no OpenSSL / system dep); we parse bodies ourselves via
+# serde_json, so ureq's own "json" helper feature is intentionally not enabled.
+ureq = { version = "2", default-features = false, features = ["tls"], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+base64 = { version = "0.22", optional = true }   # proof_bytes_b64 (base64-url-no-pad)
+ctrlc = { version = "3", optional = true }       # graceful Ctrl-C stop for `watch` (verdict-coded exit)
+x509-cert = "0.2.5"
+
+[build-dependencies]
+prost-build = "0.13"
+protoc-bin-vendored = "3.2.0"
+
+[dev-dependencies]
+p256 = "0.13"      # sign synthetic proofs in the golden/roundtrip harness
+base64 = "0.22"    # encode proof_bytes_b64 in the backend stub-server vectors

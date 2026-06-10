@@ -1,0 +1,8 @@
+/target
+build.err
+*.tmp
+
+# Internal-only — kept on disk but never part of the public repo.
+/docs/
+/scripts/
+/CLAUDE.md

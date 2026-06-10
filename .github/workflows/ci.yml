@@ -1,0 +1,82 @@
+name: CI
+
+# Build + test on every push to main and every PR against main. Optimised
+# for cheap, predictable runs:
+#   - Linux runners only (free on public repos; no macOS/Windows fan-out).
+#   - Path filter so doc-only changes don't trigger a build.
+#   - Concurrency group cancels in-progress runs on the same ref when a new
+#     commit arrives, so a quick succession of pushes only runs the final one.
+#   - Swatinem/rust-cache caches Cargo's target dir + registry across runs,
+#     which turns a 4–5 minute cold build into a 30–60 second incremental.
+#   - One job that exercises both feature configurations (default and `net`)
+#     in sequence under the same cache, rather than a fan-out matrix that
+#     would double the runner minutes for little extra coverage.
+#
+# Anything that wants release artifacts, signing, or publishing belongs in a
+# separate workflow keyed off tags — keep CI lean.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'build.rs'
+      - 'proto/**'
+      - 'tests/**'
+      - 'test-vectors/**'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '**.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'build.rs'
+      - 'proto/**'
+      - 'tests/**'
+      - 'test-vectors/**'
+      - '.github/workflows/ci.yml'
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      # Install the stable toolchain via rustup (preinstalled on
+      # ubuntu-latest). `--profile minimal` skips docs/etc; we only need
+      # rustc + cargo.
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      # Cache Cargo's target dir + registry + git deps across runs.
+      # Keys are content-hashed from Cargo.lock; first run is cold, every
+      # subsequent run on the same lockfile is warm.
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build (default features)
+        run: cargo build --all-targets --locked
+
+      - name: Test (default features)
+        # Default features exercise the local-file verifier path and the
+        # committed golden vectors under test-vectors/golden/.
+        run: cargo test --all-targets --locked
+
+      - name: Build (--features net)
+        run: cargo build --all-targets --locked --features net
+
+      - name: Test (--features net)
+        # The `net` feature adds the backend fetch/watch/range subcommands
+        # and their HTTP-fixture tests under test-vectors/backend/.
+        run: cargo test --all-targets --locked --features net

@@ -1,0 +1,29 @@
+// Public-safe SUBSET of the SDK's octet/attest/continuous.proto.
+//
+// The full upstream file also defines the server-acknowledgement types used
+// by the proof-submission protocol. A verifier only needs the envelope that
+// wraps a single proof, so that is all this file vendors.
+//
+// A ContinuousProofEnvelope carries a serialized LocationProof plus one
+// Ed25519 signature over those exact bytes, produced by the device's enrolled
+// signer key. Verifying that signature binds the proof to the device identity;
+// freshness, anti-replay, and session binding live in fields inside the signed
+// proof itself (timestamp_ms, nullifier, previous_token_hash, session_id).
+//
+// The `ContinuousProofEnvelope` field layout matches the SDK's upstream wire
+// schema so envelopes decode byte-for-byte.
+syntax = "proto3";
+
+package octet.attest;
+
+option java_multiple_files = true;
+option java_package = "com.octet.attest.proto";
+option swift_prefix = "OA";
+
+message ContinuousProofEnvelope {
+  // Serialized octet.proof.LocationProof bytes.
+  bytes proof_bytes = 1;
+
+  // Ed25519 signature over proof_bytes using the device's enrolled public key.
+  bytes proof_signature = 2;
+}
