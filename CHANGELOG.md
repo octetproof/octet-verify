@@ -6,6 +6,13 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ## [Unreleased]
 
+### Added
+- Optional `appattest` feature: offline Apple App Attest verification of the
+  attestation evidence on `DeviceAttestation`, via the shared
+  `octet-attest-verify` crate (attestation object chained to Apple's root +
+  assertion signature/counter). Surfaces an `app-attest` check. Off by default —
+  the lean default verifier pulls no X.509/CBOR surface.
+
 ### Hardening
 - **Freshness is judged on the signed stage timestamp**, not the proof-level
   `timestamp_ms`. The top-level field is covered by no signature; editing it can

@@ -36,6 +36,11 @@ pub mod crypto;
 pub mod keys;
 pub mod verify;
 
+/// Offline Apple App Attest verification, via the shared `octet-attest-verify`
+/// crate. Compiled only with `--features appattest`.
+#[cfg(feature = "appattest")]
+pub mod appattest_layer;
+
 /// Transport client for the (untrusted) Octet proof ingestion API.
 ///
 /// Compiled only with `--features net`. This module fetches *bytes* and routing
