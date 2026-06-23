@@ -221,8 +221,12 @@ pub fn verify(proof: &LocationProof, opts: &VerifyOptions) -> Report {
     // -- explicit NOT-CHECKED caveats (fail loud, never imply more than we did) --
     r.add("attestation-root", Status::NotChecked,
         "hardware key trusted as carried; chain to Google/Apple attestation root not validated (v1)");
+    // Under `appattest` the layer pushes a real Pass/Fail for this check, so the
+    // placeholder is emitted only on the default build — a library consumer
+    // building `appattest` never sees the stale NOT-CHECKED line.
+    #[cfg(not(feature = "appattest"))]
     r.add("device-attestation-sig", Status::NotChecked,
-        "DeviceAttestation.signature is platform-specific (Android: commitment; iOS: session) and not verified in v1");
+        "DeviceAttestation.signature not verified in the default build (build --features appattest to verify field 2)");
     r.add("verdict-binding", Status::NotChecked,
         "spoofing_verdict / confidence / level are bound via stage hashes that need internal serialization to re-derive (Layer 2)");
     match &proof.zk_proof {
