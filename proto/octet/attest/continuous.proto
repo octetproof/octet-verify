@@ -26,4 +26,27 @@ message ContinuousProofEnvelope {
 
   // Ed25519 signature over proof_bytes using the device's enrolled public key.
   bytes proof_signature = 2;
+
+  // Anti-replay values surfaced alongside the proof so an ingestion service
+  // can compare/store them without decoding proof_bytes. These are NOT trusted
+  // on their own: a verifier confirms each one equals the corresponding value
+  // signed inside the proof before honoring it. Absent on envelopes that carry
+  // no replay control.
+  ReplayControl replay_control = 3;
+}
+
+// Replay-control values lifted out of the signed proof onto the envelope. An
+// ingestion service reads them as opaque keys; trust comes from a verifier
+// cross-checking each against the value bound inside the signed proof.
+message ReplayControl {
+  // Single-use, per-proof nonce minted by the ingestion service at
+  // upload-challenge time and committed inside the proof's stage chain.
+  bytes upload_nonce = 1;
+
+  // Copy of the proof's nullifier, used for dedup.
+  bytes nullifier = 2;
+
+  // Copy of the signed proof-assembly timestamp (ms since epoch) the verifier
+  // trusts for freshness.
+  int64 signed_timestamp_ms = 3;
 }
