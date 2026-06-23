@@ -110,13 +110,35 @@ pub fn verify(proof: &LocationProof, opts: &VerifyOptions) -> Report {
     let mut r = Report::new();
 
     // -- freshness --
-    let age_s = (opts.now_ms.saturating_sub(proof.timestamp_ms)) / 1000;
-    if age_s < 0 {
-        r.add("freshness", Status::Warn, format!("timestamp is {} s in the future", -age_s));
+    // Judge freshness against the SIGNED stage timestamp (the last stage's
+    // `timestamp_ms` is covered by that stage's signature), not the proof-level
+    // `timestamp_ms`, which is unbound and freely editable. Editing the unbound
+    // field therefore cannot make a stale proof look fresh.
+    let signed_ts = proof.stage_attestations.last().map(|s| s.timestamp_ms);
+    let ref_ts = signed_ts.unwrap_or(proof.timestamp_ms);
+    let age_s = opts.now_ms.saturating_sub(ref_ts) / 1000;
+    const FUTURE_SKEW_S: i64 = 60;
+    if age_s < -FUTURE_SKEW_S {
+        r.add("freshness", Status::Fail,
+            format!("signed timestamp is {} s in the future (beyond {FUTURE_SKEW_S} s skew)", -age_s));
+    } else if age_s < 0 {
+        r.add("freshness", Status::Warn,
+            format!("signed timestamp is {} s in the future (within {FUTURE_SKEW_S} s skew)", -age_s));
     } else if age_s > opts.max_age_s {
         r.add("freshness", Status::Fail, format!("stale: {age_s} s old (limit {} s)", opts.max_age_s));
     } else {
         r.add("freshness", Status::Pass, format!("{age_s} s old (limit {} s)", opts.max_age_s));
+    }
+    // The proof-level `timestamp_ms` is covered by no signature. The freshness
+    // verdict above already ignores it; surface any disagreement with the signed
+    // stage time as a WARN, because a mismatch means the unbound field was edited.
+    if let Some(sts) = signed_ts {
+        let drift_ms = sts.saturating_sub(proof.timestamp_ms).unsigned_abs();
+        if drift_ms > 1000 {
+            r.add("timestamp-binding", Status::Warn, format!(
+                "unbound proof-level timestamp_ms disagrees with the signed stage time by \
+                 {drift_ms} ms; freshness uses the signed time"));
+        }
     }
 
     // -- nullifier presence (replay token) --
@@ -232,27 +254,45 @@ impl Report {
     fn add_field_bindings(&mut self, proof: &LocationProof, stages: &[StageAttestation]) {
         let mut bound: Vec<&str> = Vec::new();
         let mut mismatches: Vec<String> = Vec::new();
+        let mut unbound: Vec<&str> = Vec::new();
 
-        let check = |name: &'static str, field: &[u8], bound: &mut Vec<&str>, mism: &mut Vec<String>| {
-            if let Some(st) = stage_by_name(stages, name) {
-                if crypto::sha256(field).as_slice() == st.data_hash.as_slice() {
-                    bound.push(name);
-                } else {
-                    mism.push(format!("{name} field does not match its stage hash"));
+        let check = |name: &'static str, present: bool, field: &[u8],
+                     bound: &mut Vec<&str>, mism: &mut Vec<String>, unb: &mut Vec<&str>| {
+            match stage_by_name(stages, name) {
+                Some(st) => {
+                    if crypto::sha256(field).as_slice() == st.data_hash.as_slice() {
+                        bound.push(name);
+                    } else {
+                        mism.push(format!("{name} field does not match its stage hash"));
+                    }
                 }
+                // Field is present but no stage binds it: a renamed or omitted
+                // binding stage must FAIL, never silently pass. Otherwise the
+                // displayed value would go unverified while the proof reads valid.
+                None if present => unb.push(name),
+                None => {}
             }
         };
 
-        check("commitment", &proof.position_commitment, &mut bound, &mut mismatches);
-        check("nullifier", &proof.nullifier, &mut bound, &mut mismatches);
+        check("commitment", !proof.position_commitment.is_empty(), &proof.position_commitment,
+              &mut bound, &mut mismatches, &mut unbound);
+        check("nullifier", !proof.nullifier.is_empty(), &proof.nullifier,
+              &mut bound, &mut mismatches, &mut unbound);
         if let Some(zk) = &proof.zk_proof {
-            check("zkProof", &zk.proof_bytes, &mut bound, &mut mismatches);
+            check("zkProof", !zk.proof_bytes.is_empty(), &zk.proof_bytes,
+                  &mut bound, &mut mismatches, &mut unbound);
         }
 
         if !mismatches.is_empty() {
             self.add("field-binding", Status::Fail, mismatches.join("; "));
+        } else if !unbound.is_empty() {
+            self.add("field-binding", Status::Fail, format!(
+                "{} present but no signed stage binds {}; a renamed or omitted binding stage cannot pass",
+                unbound.join(", "),
+                if unbound.len() == 1 { "it" } else { "them" },
+            ));
         } else if bound.is_empty() {
-            self.add("field-binding", Status::NotChecked, "no recognized commitment/nullifier/zkProof stages to bind");
+            self.add("field-binding", Status::NotChecked, "no commitment/nullifier/zkProof fields present to bind");
         } else {
             self.add("field-binding", Status::Pass, format!("{} bound to signed stage hashes", bound.join(", ")));
         }
@@ -557,5 +597,68 @@ mod tests {
         });
         assert!(!r3.is_valid());
         assert_eq!(status_of(&r3, "stage-signatures"), Status::Fail);
+    }
+
+    /// A field that is present but bound by no stage must FAIL, not silently
+    /// pass because *other* fields happen to be bound. Renaming the `commitment`
+    /// binding stage leaves `position_commitment` present and unverifiable — the
+    /// verifier must refuse to vouch for it.
+    #[test]
+    fn present_field_with_no_binding_stage_fails() {
+        let sk = SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let ts = 1_700_000_000_000;
+        let mut proof = build_proof(&sk, ts);
+        let idx = proof
+            .stage_attestations
+            .iter()
+            .position(|s| s.stage == "commitment")
+            .unwrap();
+        proof.stage_attestations[idx].stage = "renamed".into();
+
+        let r = verify(&proof, &VerifyOptions {
+            now_ms: ts, max_age_s: 300, hardware_pubkey: None,
+            hw_key_source: "test", expect_region: None,
+        });
+        // nullifier + zkProof are still bound, but the unbound commitment must
+        // not be papered over.
+        assert_eq!(status_of(&r, "field-binding"), Status::Fail);
+        assert!(!r.is_valid());
+    }
+
+    /// Freshness must be judged on the SIGNED stage timestamp, not the unbound
+    /// proof-level `timestamp_ms`. Editing the unbound field to "now" must not
+    /// buy freshness for a proof whose signed stages are an hour old.
+    #[test]
+    fn freshness_judged_on_signed_stage_time_not_unbound_field() {
+        let sk = SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let now = 1_700_000_000_000i64;
+        let stale_ts = now - 3_600_000; // stages signed an hour ago
+        let mut proof = build_proof(&sk, stale_ts);
+        proof.timestamp_ms = now; // attacker edits the unbound field to look fresh
+
+        let r = verify(&proof, &VerifyOptions {
+            now_ms: now, max_age_s: 300, hardware_pubkey: None,
+            hw_key_source: "test", expect_region: None,
+        });
+        assert_eq!(status_of(&r, "freshness"), Status::Fail, "signed time is stale");
+        // The edit of the unbound field is surfaced, not ignored.
+        assert_eq!(status_of(&r, "timestamp-binding"), Status::Warn);
+    }
+
+    /// A signed timestamp far in the future is impossible for a genuine proof
+    /// and must FAIL, not merely WARN — a far-future stamp is how a replayed or
+    /// fabricated proof tries to stay "fresh" indefinitely.
+    #[test]
+    fn far_future_signed_timestamp_fails_not_warns() {
+        let sk = SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let now = 1_700_000_000_000i64;
+        let future_ts = now + 3_600_000; // an hour ahead, well beyond clock skew
+        let proof = build_proof(&sk, future_ts);
+
+        let r = verify(&proof, &VerifyOptions {
+            now_ms: now, max_age_s: 300, hardware_pubkey: None,
+            hw_key_source: "test", expect_region: None,
+        });
+        assert_eq!(status_of(&r, "freshness"), Status::Fail);
     }
 }
