@@ -142,6 +142,13 @@ message DeviceAttestation {
   DeviceIntegrityVerdict integrity_verdict = 5;
   optional string session_id = 6;
   SecurityLevel security_level = 7;
+  // iOS Apple App Attest. The attestation object (CBOR) is carried once per
+  // attested key; assertions are produced per attestation cadence. The nonce
+  // is bound into the signed challenge so a verifier can tie the attestation
+  // to this proof. All optional — absent on Android / when unavailable.
+  optional bytes app_attest_attestation = 8;
+  optional bytes app_attest_assertion = 9;
+  optional bytes attestation_nonce = 10;
 }
 
 enum IntegrityVerdictStatus {
