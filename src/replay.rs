@@ -43,6 +43,19 @@ pub struct ReplayControl {
     pub signed_timestamp_ms: i64,
 }
 
+/// Lift the generated proto `ReplayControl` (carried on `ContinuousProofEnvelope`
+/// in `--envelope` mode) into the binding-check input. Same fields and wire
+/// values as the §5 JSON surface, so both envelope surfaces feed one check.
+impl From<crate::attest::ReplayControl> for ReplayControl {
+    fn from(p: crate::attest::ReplayControl) -> Self {
+        ReplayControl {
+            upload_nonce: p.upload_nonce,
+            nullifier: p.nullifier,
+            signed_timestamp_ms: p.signed_timestamp_ms,
+        }
+    }
+}
+
 /// Confirm the envelope's `replay_control` is bound to the signed proof. Returns
 /// the `replay-binding` check: `Pass` when every present binding holds, `Fail`
 /// on any mismatch, `NotChecked` when the envelope carries no replay-control.
@@ -210,5 +223,22 @@ mod tests {
         let p = proof_with(b"n", b"nullA", 1);
         let c = check_replay_binding(&p, Some(&rc(b"", b"nullA", 1)));
         assert_eq!(c.status, Status::Fail);
+    }
+
+    /// The proto `ReplayControl` (`--envelope` mode) lifts into the binding input
+    /// field-for-field, so the same check serves both envelope surfaces.
+    #[test]
+    fn from_proto_replay_control_preserves_fields() {
+        let proto = crate::attest::ReplayControl {
+            upload_nonce: b"nonce".to_vec(),
+            nullifier: b"null".to_vec(),
+            signed_timestamp_ms: 1_700_000_000_000,
+        };
+        let rc: ReplayControl = proto.into();
+        assert_eq!(rc, ReplayControl {
+            upload_nonce: b"nonce".to_vec(),
+            nullifier: b"null".to_vec(),
+            signed_timestamp_ms: 1_700_000_000_000,
+        });
     }
 }

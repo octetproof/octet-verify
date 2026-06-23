@@ -73,12 +73,14 @@ fn run(args: &Args) -> anyhow::Result<Report> {
     let bytes = read_input(args.path.as_deref())?;
 
     // Unwrap the transport envelope if asked; otherwise the input is a bare proof.
-    let (proof_bytes, transport_sig): (Vec<u8>, Option<Vec<u8>>) = if args.envelope {
+    type Unwrapped = (Vec<u8>, Option<Vec<u8>>, Option<octet_verify::replay::ReplayControl>);
+    let (proof_bytes, transport_sig, replay_control): Unwrapped = if args.envelope {
         let env = ContinuousProofEnvelope::decode(&*bytes)
             .map_err(|e| anyhow::anyhow!("failed to decode ContinuousProofEnvelope: {e}"))?;
-        (env.proof_bytes, Some(env.proof_signature))
+        let rc = env.replay_control.map(octet_verify::replay::ReplayControl::from);
+        (env.proof_bytes, Some(env.proof_signature), rc)
     } else {
-        (bytes, None)
+        (bytes, None, None)
     };
 
     let proof = LocationProof::decode(&*proof_bytes)
@@ -105,6 +107,16 @@ fn run(args: &Args) -> anyhow::Result<Report> {
     // Wire-format guard: reject a proof that smuggles a duplicate of a
     // non-repeated proto field (prost silently keeps the last value).
     report.checks.push(wire_check(&proof_bytes));
+
+    // Replay-control binding (VER-3): in --envelope mode, bind the envelope's
+    // replay_control to the signed proof (same check the backend-fetch path
+    // runs). A bare proof carries no envelope, so the check applies only here; a
+    // v1 envelope (no replay_control) reports NOT-CHECKED.
+    if args.envelope {
+        report
+            .checks
+            .push(octet_verify::replay::check_replay_binding(&proof, replay_control.as_ref()));
+    }
 
     // Ed25519 transport signature (only meaningful in --envelope mode).
     if let Some(sig) = &transport_sig {
