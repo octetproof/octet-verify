@@ -48,10 +48,11 @@ anyhow = "1"
 # `octet-attest-verify` crate, pulled only under `--features appattest`.
 
 # --- App Attest layer (feature = "appattest" only) ---
-# Path dependency to the sibling repo. Becomes a versioned/git dependency once
-# octet-attest-verify is published; until then `--features appattest` requires
-# the crate checked out alongside this one.
-octet-attest-verify = { path = "../octet-attest-verify", optional = true, features = ["config"] }
+# Pinned git dependency on the public sibling repo (pinned to a rev, not a
+# branch, for reproducible default-build resolution). Only compiled under
+# `--features appattest`; a default / `--features net` build resolves it but
+# pulls none of its code.
+octet-attest-verify = { git = "https://github.com/octetproof/octet-attest-verify", rev = "ea6d2a4", optional = true, features = ["config"] }
 
 # --- backend fetch mode (feature = "net" only) ---
 # rustls TLS (no OpenSSL / system dep); we parse bodies ourselves via
