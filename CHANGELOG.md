@@ -4,6 +4,31 @@ All notable changes to `octet-verify` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Hardening
+- **Freshness is judged on the signed stage timestamp**, not the proof-level
+  `timestamp_ms`. The top-level field is covered by no signature; editing it can
+  no longer make a stale proof read as fresh. A signed timestamp beyond a small
+  clock-skew allowance in the future now **fails** (previously only warned), and
+  a divergent unbound `timestamp_ms` is surfaced as a warning.
+- **A present field bound by no stage now fails** instead of being silently
+  reported NOT-CHECKED. If a proof carries a commitment / nullifier / ZK value
+  but the corresponding binding stage was renamed or omitted, the verifier
+  refuses to vouch for the unverifiable value rather than passing on the strength
+  of the other bound fields.
+- **Output is hardened against terminal/JSON injection.** Attacker-influenced
+  strings (stage names, region labels, backend-supplied ids) can no longer emit
+  raw control or ANSI/OSC escape bytes: JSON output escapes all control
+  characters (valid `jq` / `json.loads` input) and human output renders them as
+  visible `\xHH`.
+- **Refetch-consistency / seen-store dedup now hashes a signature-canonicalized
+  proof.** ECDSA admits two valid signatures per message, so a genuine proof has
+  a byte-distinct but equally valid twin; the dedup hash now normalizes
+  signatures to low-S first, so a twin can no longer pose as different proof
+  bytes. Signature *verification* still accepts both forms (Android Keystore
+  emits high-S), so this changes only the dedup hash, never a verdict.
+
 ## [1.0.0]
 
 First public release: a standalone, independent verifier for Octet

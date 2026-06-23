@@ -71,6 +71,39 @@ pub fn p256_verify(vk: &P256VerifyingKey, msg: &[u8], sig: &[u8], enc: SigEncodi
         .map_err(|_| anyhow!("ECDSA-P256 signature did not verify"))
 }
 
+/// Re-encode `sig` with its `S` value normalized to the low (canonical) half of
+/// the curve order, in the same wire encoding it came in.
+///
+/// ECDSA admits two valid signatures per message — `(r, s)` and `(r, n - s)` —
+/// so an attacker can mint a byte-distinct *twin* of a genuine signature that
+/// still verifies. Verification accepts both (Android Keystore legitimately
+/// emits high-S; see [`p256_verify`]), but any byte-identity heuristic (e.g. the
+/// refetch-consistency / seen-store proof hash) must canonicalize first so a
+/// twin can't pose as fresh bytes. Returns the input unchanged if it does not
+/// parse as `enc` — canonicalization is a best-effort hashing aid, never a gate.
+pub fn canonical_sig(sig: &[u8], enc: SigEncoding) -> Vec<u8> {
+    let parsed = match enc {
+        SigEncoding::Der => P256Signature::from_der(sig).ok(),
+        SigEncoding::Raw => {
+            if sig.len() == 64 {
+                P256Signature::from_slice(sig).ok()
+            } else {
+                None
+            }
+        }
+    };
+    match parsed {
+        Some(s) => {
+            let n = s.normalize_s().unwrap_or(s);
+            match enc {
+                SigEncoding::Der => n.to_der().as_bytes().to_vec(),
+                SigEncoding::Raw => n.to_bytes().to_vec(),
+            }
+        }
+        None => sig.to_vec(),
+    }
+}
+
 /// Verify an Ed25519 signature over `msg`.
 pub fn ed25519_verify(vk: &Ed25519VerifyingKey, msg: &[u8], sig: &[u8]) -> Result<()> {
     let signature =
@@ -97,6 +130,25 @@ mod tests {
         assert!(SigEncoding::for_platform("symbian").is_err());
         assert_eq!(SigEncoding::for_platform("android").unwrap(), SigEncoding::Der);
         assert_eq!(SigEncoding::for_platform("ios").unwrap(), SigEncoding::Raw);
+    }
+
+    /// The whole point of canonicalization: an ECDSA S-malleated twin —
+    /// byte-distinct but equally valid — must collapse to the *same* canonical
+    /// bytes, so it can't slip past a byte-hash dedup. (Android emits high-S, so
+    /// we can't simply reject it; we canonicalize the hash instead.)
+    #[test]
+    fn canonical_sig_collapses_high_s_twin() {
+        use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+
+        let sk = SigningKey::from_slice(&[3u8; 32]).unwrap();
+        let sig: Signature = sk.sign(b"malleability"); // canonical low-S
+        // Build the (r, n - s) twin.
+        let twin = Signature::from_scalars(sig.r(), -sig.s()).unwrap();
+        assert_ne!(sig.to_bytes(), twin.to_bytes(), "twin must be byte-distinct");
+
+        let a = canonical_sig(&sig.to_bytes(), SigEncoding::Raw);
+        let b = canonical_sig(&twin.to_bytes(), SigEncoding::Raw);
+        assert_eq!(a, b, "high-S twin must canonicalize to the low-S form");
     }
 
     fn hex_lit(s: &str) -> Vec<u8> {

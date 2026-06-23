@@ -237,7 +237,7 @@ fn print_human(report: &Report) {
     println!("verdict: {}", headline(report));
     println!();
     for c in &report.checks {
-        println!("  [{:>11}] {:<22} {}", c.status.tag(), c.name, c.detail);
+        println!("  [{:>11}] {:<22} {}", c.status.tag(), c.name, sanitize_terminal(&c.detail));
     }
     println!();
     println!(
@@ -275,14 +275,41 @@ fn print_json(report: &Report) {
 }
 
 fn json_escape(s: &str) -> String {
-    s.chars()
-        .flat_map(|c| match c {
-            '"' => vec!['\\', '"'],
-            '\\' => vec!['\\', '\\'],
-            '\n' => vec!['\\', 'n'],
-            c => vec![c],
-        })
-        .collect()
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0c}' => out.push_str("\\f"),
+            // Every other C0 control byte — notably ESC (0x1b), which drives
+            // ANSI/OSC terminal sequences — becomes \uXXXX, so the output is
+            // valid JSON (jq / json.loads safe) and carries no control bytes.
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Render an attacker-influenced string safe to print to a terminal. C0 control
+/// bytes (including ESC, which drives ANSI/OSC escape sequences) and DEL are
+/// rendered as visible `\xHH` escapes, so a crafted stage name, region label, or
+/// backend-supplied id cannot inject terminal control sequences through the
+/// verifier's own human-readable output.
+fn sanitize_terminal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if (c as u32) < 0x20 || c == '\u{7f}' {
+            out.push_str(&format!("\\x{:02x}", c as u32));
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn to_hex(bytes: &[u8]) -> String {
@@ -373,12 +400,12 @@ mod backend {
 
     use anyhow::{anyhow, bail, Result};
     use octet_verify::backend::{Backend, Envelope};
-    use octet_verify::crypto::sha256;
+    use octet_verify::crypto::{canonical_sig, sha256, SigEncoding};
     use octet_verify::navigate::LocationProof;
     use octet_verify::prost::Message;
     use octet_verify::verify::{verify, Check, Report, Status, VerifyOptions};
 
-    use super::{headline, json_escape, to_hex, DEFAULT_MAX_AGE_S};
+    use super::{headline, json_escape, sanitize_terminal, to_hex, DEFAULT_MAX_AGE_S};
 
     const DEFAULT_WATCH_INTERVAL_S: u64 = 5;
 
@@ -476,7 +503,7 @@ mod backend {
         while !stop.load(Ordering::SeqCst) {
             if let Some(env) = backend.fetch_latest()? {
                 let bytes = env.proof_bytes()?;
-                let hash = to_hex(sha256(&bytes).as_slice());
+                let hash = canonical_proof_hash(&bytes);
                 // Re-print only when the bytes are new or have changed; an
                 // identical re-fetch of the same id is the steady state.
                 if !matches!(seen.peek(&env.proof_id, &hash), Seen::Same) {
@@ -510,7 +537,7 @@ mod backend {
     fn verify_envelope(seen: &mut SeenStore, env: &Envelope, args: &Args) -> Result<Report> {
         let bytes = env.proof_bytes()?;
         let mut report = verify_bytes(&bytes, args)?;
-        let hash = to_hex(sha256(&bytes).as_slice());
+        let hash = canonical_proof_hash(&bytes);
         report.checks.push(consistency_check(seen.record(&env.proof_id, &hash)));
         Ok(report)
     }
@@ -634,6 +661,27 @@ mod backend {
         hash.chars().take(12).collect()
     }
 
+    /// Hash a proof for refetch-consistency / seen-store dedup over a
+    /// signature-canonicalized form, so an ECDSA S-malleated twin — byte-distinct
+    /// but equally valid — hashes identically and cannot pose as a different
+    /// proof. Falls back to the raw bytes if the proof or its platform encoding
+    /// doesn't parse (the hash is a dedup aid, never a verification gate; the
+    /// verdict is always computed from the original bytes).
+    fn canonical_proof_hash(proof_bytes: &[u8]) -> String {
+        let canon = (|| -> Option<Vec<u8>> {
+            let mut proof = LocationProof::decode(proof_bytes).ok()?;
+            let enc = SigEncoding::for_platform(&proof.platform).ok()?;
+            for st in &mut proof.stage_attestations {
+                st.signature = canonical_sig(&st.signature, enc);
+            }
+            let mut buf = Vec::new();
+            proof.encode(&mut buf).ok()?;
+            Some(buf)
+        })();
+        let bytes = canon.unwrap_or_else(|| proof_bytes.to_vec());
+        to_hex(sha256(&bytes).as_slice())
+    }
+
     // --- output ---
 
     fn verdict_exit(report: &Report) -> ExitCode {
@@ -689,16 +737,21 @@ mod backend {
     }
 
     fn print_report_human(env: &Envelope, report: &Report) {
-        println!("── proof {} ──", env.proof_id);
+        // proof_id and the backend metadata are untrusted, attacker-influenced
+        // strings — sanitize before they reach the terminal.
+        let plat = env.platform.as_deref().unwrap_or("?");
+        let created = env.created_at.as_deref().unwrap_or("?");
+        let schema = env.proof_schema.as_deref().unwrap_or("?");
+        println!("── proof {} ──", sanitize_terminal(&env.proof_id));
         println!(
             "  backend metadata (untrusted): platform={} created_at={} schema={}",
-            env.platform.as_deref().unwrap_or("?"),
-            env.created_at.as_deref().unwrap_or("?"),
-            env.proof_schema.as_deref().unwrap_or("?"),
+            sanitize_terminal(plat),
+            sanitize_terminal(created),
+            sanitize_terminal(schema),
         );
         println!("  verdict: {}", headline(report));
         for c in &report.checks {
-            println!("    [{:>11}] {:<22} {}", c.status.tag(), c.name, c.detail);
+            println!("    [{:>11}] {:<22} {}", c.status.tag(), c.name, sanitize_terminal(&c.detail));
         }
     }
 
@@ -794,5 +847,34 @@ mod backend {
         it.next()
             .map(|s| s.to_string())
             .ok_or_else(|| anyhow!("{flag} requires a value"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{json_escape, sanitize_terminal};
+
+    /// Attacker-controlled strings (stage names, region labels, backend ids)
+    /// flow into `detail` and the JSON output. ESC (0x1b) drives ANSI/OSC
+    /// terminal sequences and raw control bytes break strict JSON parsers; both
+    /// must be escaped, never passed through.
+    #[test]
+    fn json_escape_neutralizes_control_and_ansi_bytes() {
+        let nasty = "ok\u{1b}]0;pwned\u{07}\n\t\"q";
+        let e = json_escape(nasty);
+        assert!(!e.chars().any(|c| (c as u32) < 0x20), "no raw control byte survives");
+        assert!(e.contains("\\u001b"), "ESC escaped as \\u001b");
+        assert!(e.contains("\\u0007"), "BEL escaped as \\u0007");
+        assert!(e.contains("\\n") && e.contains("\\t") && e.contains("\\\""));
+    }
+
+    /// Human output goes straight to a terminal, so it is the primary
+    /// terminal-injection surface: control bytes must be rendered visible.
+    #[test]
+    fn sanitize_terminal_renders_escape_bytes_visible() {
+        let s = sanitize_terminal("region\u{1b}[31mRED\u{7f}");
+        assert!(!s.contains('\u{1b}'), "ESC must not reach the terminal");
+        assert!(s.contains("\\x1b"));
+        assert!(s.contains("\\x7f"), "DEL escaped too");
     }
 }
