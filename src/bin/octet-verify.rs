@@ -28,6 +28,7 @@ struct Args {
     max_age_s: Option<i64>,
     nullifier_store: Option<String>,
     expect_region: Option<String>,
+    app_attest_config: Option<String>,
     json: bool,
 }
 
@@ -121,7 +122,45 @@ fn run(args: &Args) -> anyhow::Result<Report> {
         report.checks.push(replay_check(store, &proof.nullifier)?);
     }
 
+    // Optional offline App Attest verification (feature `appattest`). Expected
+    // app identity comes from the shared octet-attest-verify TOML config — one
+    // location, nothing hardcoded.
+    if let Some(cfg_path) = &args.app_attest_config {
+        #[cfg(feature = "appattest")]
+        report.checks.push(appattest_from_config(&proof, cfg_path)?);
+        #[cfg(not(feature = "appattest"))]
+        {
+            let _ = cfg_path;
+            report.checks.push(verify_mod::Check {
+                name: "app-attest",
+                status: Status::NotChecked,
+                detail: "--app-attest-config given but this binary was built without the `appattest` feature".into(),
+            });
+        }
+    }
+
     Ok(report)
+}
+
+/// Load the shared App Attest config and verify the proof's evidence against it.
+#[cfg(feature = "appattest")]
+fn appattest_from_config(
+    proof: &octet_verify::navigate::LocationProof,
+    cfg_path: &str,
+) -> anyhow::Result<verify_mod::Check> {
+    use octet_attest_verify::config::Config;
+    use octet_verify::appattest_layer::{appattest_check, Expectation};
+
+    let cfg = Config::from_file(cfg_path)
+        .map_err(|e| anyhow::anyhow!("app-attest config: {e}"))?;
+    let aa = cfg
+        .app_attest
+        .ok_or_else(|| anyhow::anyhow!("app-attest config has no [app_attest] section"))?;
+    let expect = Expectation::new(&aa.team_id, &aa.bundle_id, aa.environment.into());
+    // Stateless single-proof check: no cached key, so an assertion-only proof
+    // reports NOT-CHECKED (it needs the attestation object or a cached key).
+    let (check, _key) = appattest_check(proof, &expect, None);
+    Ok(check)
 }
 
 /// Detect (and record) reuse of a nullifier across runs using a simple
@@ -337,6 +376,7 @@ fn parse_args() -> Result<Args, String> {
             "--ed25519-pubkey" => args.ed25519_pubkey = Some(need_value(&mut iter, &a)?),
             "--nullifier-store" => args.nullifier_store = Some(need_value(&mut iter, &a)?),
             "--expect-region" => args.expect_region = Some(need_value(&mut iter, &a)?),
+            "--app-attest-config" => args.app_attest_config = Some(need_value(&mut iter, &a)?),
             "--max-age-seconds" => {
                 let v = need_value(&mut iter, &a)?;
                 args.max_age_s = Some(v.parse().map_err(|e| format!("bad --max-age-seconds: {e}"))?);

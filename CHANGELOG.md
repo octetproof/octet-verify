@@ -12,6 +12,9 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   `octet-attest-verify` crate (attestation object chained to Apple's root +
   assertion signature/counter). Surfaces an `app-attest` check. Off by default —
   the lean default verifier pulls no X.509/CBOR surface.
+- `--app-attest-config <file>` CLI flag: verify a proof's App Attest evidence
+  against the expected app identity in a shared TOML config (one location, no
+  hardcoding). Reported NOT-CHECKED on a default (non-`appattest`) build.
 
 ### Hardening
 - **Freshness is judged on the signed stage timestamp**, not the proof-level

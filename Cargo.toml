@@ -51,7 +51,7 @@ anyhow = "1"
 # Path dependency to the sibling repo. Becomes a versioned/git dependency once
 # octet-attest-verify is published; until then `--features appattest` requires
 # the crate checked out alongside this one.
-octet-attest-verify = { path = "../octet-attest-verify", optional = true }
+octet-attest-verify = { path = "../octet-attest-verify", optional = true, features = ["config"] }
 
 # --- backend fetch mode (feature = "net" only) ---
 # rustls TLS (no OpenSSL / system dep); we parse bodies ourselves via

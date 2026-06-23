@@ -34,6 +34,11 @@ OPTIONS:
                                enforced server-side at ingest.
     --expect-region <id>       Assert the proof claims this region (country or
                                subdivision ISO code, or city name).
+    --app-attest-config <file> Verify the proof's Apple App Attest evidence
+                               offline against the expected app identity in this
+                               TOML config ([app_attest] team_id / bundle_id /
+                               environment). Requires a build with the
+                               `appattest` feature; otherwise reported NOT-CHECKED.
     --json                     Emit a machine-readable report.
     -h, --help                 Show this help.
 
