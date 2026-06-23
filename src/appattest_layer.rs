@@ -10,7 +10,8 @@ use crate::navigate::LocationProof;
 use crate::verify::{Check, Status};
 use base64::Engine;
 use octet_attest_verify::appattest::{
-    verify_assertion, verify_attestation, AcceptEnvironment, AppId, AttestedKey,
+    verify_assertion, verify_attestation, verify_device_signature, AcceptEnvironment, AppId,
+    AttestedKey,
 };
 
 /// The trusted app identity a proof's attestation must bind to. In the Octet
@@ -102,6 +103,55 @@ pub fn appattest_check(
     }
 }
 
+/// Verify the per-proof device-key signature (`DeviceAttestation.signature`,
+/// field 2) — the offline check that turns `device-attestation-sig` from
+/// `NOT-CHECKED` into a real verdict. It reconstructs the signed challenge from
+/// the proof alone (`position_commitment`, `timestamp_ms`, `attestation_nonce`)
+/// and verifies field 2 against the device public key — the same hardware key
+/// the stage chain is verified against (`device_pubkey_sec1`, resolved by the
+/// caller from the cert chain or a supplied key).
+///
+/// Returns the `device-attestation-sig` check: `Pass`/`Fail` when verifiable,
+/// `NOT-CHECKED` when the proof carries no field-2 signature/nonce or no device
+/// key is available.
+pub fn device_signature_check(
+    proof: &LocationProof,
+    device_pubkey_sec1: Option<&[u8]>,
+) -> Check {
+    let d = |status: Status, detail: &str| Check {
+        name: "device-attestation-sig",
+        status,
+        detail: detail.into(),
+    };
+
+    let da = match &proof.device_attestation {
+        Some(da) if !da.signature.is_empty() => da,
+        _ => return d(Status::NotChecked, "no device-attestation signature on proof"),
+    };
+    let nonce = match da.attestation_nonce.as_deref() {
+        Some(n) if !n.is_empty() => n,
+        _ => return d(Status::NotChecked, "no attestation nonce; field 2 not bound to a challenge"),
+    };
+    let pubkey = match device_pubkey_sec1 {
+        Some(k) => k,
+        None => return d(Status::NotChecked, "no device public key available to verify field 2"),
+    };
+
+    match verify_device_signature(
+        &proof.position_commitment,
+        proof.timestamp_ms,
+        nonce,
+        pubkey,
+        &da.signature,
+    ) {
+        Ok(()) => d(
+            Status::Pass,
+            "device key signed this proof's commitment, timestamp, and nonce",
+        ),
+        Err(e) => d(Status::Fail, &format!("field-2 signature invalid: {e}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,5 +221,69 @@ mod tests {
         let (c, key) = appattest_check(&proof_with(Some(da)), &expectation(), None);
         assert_eq!(c.status, Status::Fail);
         assert!(key.is_none());
+    }
+
+    // --- device_signature_check (field 2) ---
+
+    use octet_attest_verify::appattest::{se_client_data_hash, DEVICE_ATTESTATION_DOMAIN};
+    use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+
+    /// Build a proof whose field-2 signature is produced the way the SDK does:
+    /// ECDSA-P256-SHA256 over `DOMAIN ‖ SHA256(commitment ‖ ts ‖ nonce)`.
+    fn signed_field2_proof(sk: &SigningKey, commitment: &[u8], ts: i64, nonce: &[u8]) -> LocationProof {
+        let mut msg = DEVICE_ATTESTATION_DOMAIN.to_vec();
+        msg.extend_from_slice(&se_client_data_hash(commitment, ts, nonce));
+        let sig: Signature = sk.sign(&msg);
+        let da = DeviceAttestation {
+            signature: sig.to_der().as_bytes().to_vec(),
+            attestation_nonce: Some(nonce.to_vec()),
+            ..Default::default()
+        };
+        LocationProof {
+            device_attestation: Some(da),
+            position_commitment: commitment.to_vec(),
+            timestamp_ms: ts,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn device_signature_passes_for_valid_field2() {
+        let sk = SigningKey::from_slice(&[0x42u8; 32]).unwrap();
+        let pk = sk.verifying_key().to_sec1_bytes().to_vec();
+        let proof = signed_field2_proof(&sk, &[1, 2, 3], 1_700_000_000_000, &[9u8; 32]);
+        let c = device_signature_check(&proof, Some(&pk));
+        assert_eq!(c.status, Status::Pass, "{}", c.detail);
+    }
+
+    #[test]
+    fn device_signature_fails_for_wrong_key() {
+        let sk = SigningKey::from_slice(&[0x42u8; 32]).unwrap();
+        let other = SigningKey::from_slice(&[0x43u8; 32]).unwrap();
+        let pk = other.verifying_key().to_sec1_bytes().to_vec();
+        let proof = signed_field2_proof(&sk, &[1, 2, 3], 1_700_000_000_000, &[9u8; 32]);
+        assert_eq!(device_signature_check(&proof, Some(&pk)).status, Status::Fail);
+    }
+
+    #[test]
+    fn device_signature_not_checked_without_pubkey() {
+        let sk = SigningKey::from_slice(&[0x42u8; 32]).unwrap();
+        let proof = signed_field2_proof(&sk, &[1, 2, 3], 1_700_000_000_000, &[9u8; 32]);
+        assert_eq!(device_signature_check(&proof, None).status, Status::NotChecked);
+    }
+
+    #[test]
+    fn device_signature_not_checked_without_attestation_or_nonce() {
+        // No device attestation at all.
+        assert_eq!(
+            device_signature_check(&proof_with(None), Some(&[4u8; 65])).status,
+            Status::NotChecked
+        );
+        // Signature present but no nonce → field 2 isn't bound to a challenge.
+        let da = DeviceAttestation { signature: vec![1, 2, 3], ..Default::default() };
+        assert_eq!(
+            device_signature_check(&proof_with(Some(da)), Some(&[4u8; 65])).status,
+            Status::NotChecked
+        );
     }
 }
