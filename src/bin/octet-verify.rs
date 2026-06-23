@@ -625,6 +625,15 @@ mod backend {
     fn verify_envelope(seen: &mut SeenStore, env: &Envelope, args: &Args) -> Result<Report> {
         let bytes = env.proof_bytes()?;
         let mut report = verify_bytes(&bytes, args)?;
+        // Replay-control binding (VER-3): bind the §5 `replay_control` values the
+        // (untrusted) backend echoed to what the proof actually signed. The proof
+        // already decoded inside verify_bytes, so this re-decode always succeeds.
+        if let Ok(proof) = LocationProof::decode(&*bytes) {
+            report.checks.push(octet_verify::replay::check_replay_binding(
+                &proof,
+                env.replay_control().as_ref(),
+            ));
+        }
         let hash = canonical_proof_hash(&bytes);
         report.checks.push(consistency_check(seen.record(&env.proof_id, &hash)));
         Ok(report)

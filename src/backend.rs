@@ -57,9 +57,40 @@ pub struct Envelope {
     pub sdk_version: Option<String>,
     #[serde(default)]
     pub proof_schema: Option<String>,
+    /// §5 schema-v2 replay-control object (absent on v1 / pre-challenge proofs).
+    /// Backend-supplied and untrusted like the rest of the envelope; the verifier
+    /// binds it to the signed proof (VER-3) rather than trusting it.
+    #[serde(default, rename = "replay_control")]
+    pub replay_control_json: Option<ReplayControlJson>,
+}
+
+/// The §5 `replay_control` object as it appears on the wire (base64url-no-pad
+/// strings + an integer ms timestamp). Decoded into [`crate::replay::ReplayControl`]
+/// by [`Envelope::replay_control`].
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReplayControlJson {
+    #[serde(default)]
+    pub upload_nonce: String,
+    #[serde(default)]
+    pub nullifier: String,
+    #[serde(default)]
+    pub signed_timestamp_ms: i64,
 }
 
 impl Envelope {
+    /// Decode the §5 `replay_control` (if present) into the verifier's
+    /// [`crate::replay::ReplayControl`]. Absent ⇒ `None` (back-compat → the
+    /// binding check reports NOT-CHECKED). `upload_nonce` / `nullifier` are
+    /// base64url-no-pad per spec; a field that doesn't decode yields empty bytes,
+    /// which the binding cross-check rejects — it never silently passes.
+    pub fn replay_control(&self) -> Option<crate::replay::ReplayControl> {
+        self.replay_control_json.as_ref().map(|rc| crate::replay::ReplayControl {
+            upload_nonce: decode_b64_lenient(&rc.upload_nonce),
+            nullifier: decode_b64_lenient(&rc.nullifier),
+            signed_timestamp_ms: rc.signed_timestamp_ms,
+        })
+    }
+
     /// Decode `proof_bytes_b64` into the raw proto bytes. The spec mandates
     /// base64-url-no-pad (RFC 4648 §5); we accept the common variants too,
     /// because byte tampering is caught downstream by signature verification,
@@ -78,6 +109,23 @@ impl Envelope {
         }
         bail!("proof {}: proof_bytes_b64 is not valid base64", self.proof_id)
     }
+}
+
+/// Best-effort base64 decode (url-no-pad per spec, standard accepted) returning
+/// empty bytes on failure. Used for replay-control fields, where a malformed
+/// value is caught by the binding cross-check (empty never matches the signed
+/// proof) rather than aborting the fetch.
+fn decode_b64_lenient(s: &str) -> Vec<u8> {
+    let s = s.trim();
+    for eng in [
+        base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        base64::engine::general_purpose::STANDARD,
+    ] {
+        if let Ok(b) = eng.decode(s) {
+            return b;
+        }
+    }
+    Vec::new()
 }
 
 #[derive(Debug, Deserialize)]
@@ -434,6 +482,7 @@ mod tests {
                 platform: None,
                 sdk_version: None,
                 proof_schema: None,
+                replay_control_json: None,
             };
             assert_eq!(env.proof_bytes().unwrap(), raw);
         }
@@ -448,5 +497,31 @@ mod tests {
             type_uri: None,
         };
         assert_eq!(p.summary(), "proof_id exists with different bytes");
+    }
+
+    /// A v2 envelope's `replay_control` parses and its base64url-no-pad fields
+    /// decode to the exact bytes the binding check will compare against; a v1
+    /// envelope (key absent) yields `None` → the NOT-CHECKED back-compat path.
+    #[test]
+    fn replay_control_parses_and_decodes() {
+        let nonce = b"\x10\x20\x30nonce";
+        let null = b"\xaa\xbbnull";
+        let nonce_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce);
+        let null_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(null);
+        let json = format!(
+            r#"{{"proof_id":"lp1","proof_bytes_b64":"AA","schema_version":2,
+                "replay_control":{{"upload_nonce":"{nonce_b64}","nullifier":"{null_b64}",
+                "signed_timestamp_ms":1700000000000}}}}"#
+        );
+        let env: Envelope = serde_json::from_str(&json).unwrap();
+        let rc = env.replay_control().expect("v2 envelope has replay_control");
+        assert_eq!(rc.upload_nonce, nonce);
+        assert_eq!(rc.nullifier, null);
+        assert_eq!(rc.signed_timestamp_ms, 1_700_000_000_000);
+
+        // v1: replay_control key absent → None.
+        let v1: Envelope =
+            serde_json::from_str(r#"{"proof_id":"lp0","proof_bytes_b64":"AA"}"#).unwrap();
+        assert!(v1.replay_control().is_none());
     }
 }

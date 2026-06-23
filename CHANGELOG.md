@@ -7,6 +7,15 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 ## [Unreleased]
 
 ### Added
+- **Backend fetch mode binds the envelope's `replay_control` to the signed
+  proof** (`fetch` / `watch` / `range`): when a fetched v2 envelope carries a
+  `replay_control` object, a new `replay-binding` check confirms `upload_nonce`
+  is committed in-proof by an `uploadChallenge` stage (`SHA256(nonce)`), the
+  `nullifier` echo equals the proof's own, and `signed_timestamp_ms` equals the
+  `proofAssembly` stage timestamp. The backend is still untrusted — the surfaced
+  values are bound to the signed proof, never believed on their own; a tampered
+  echo fails the check. A v1 envelope (no `replay_control`) reports NOT-CHECKED.
+  (The local `--envelope` proto path binds it once the proto carries the field.)
 - Optional `appattest` feature: offline Apple App Attest verification of the
   attestation evidence on `DeviceAttestation`, via the shared
   `octet-attest-verify` crate (attestation object chained to Apple's root +
