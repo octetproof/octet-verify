@@ -35,6 +35,7 @@ pub mod attest {
 pub mod crypto;
 pub mod keys;
 pub mod verify;
+pub mod wire;
 
 /// Offline Apple App Attest verification, via the shared `octet-attest-verify`
 /// crate. Compiled only with `--features appattest`.

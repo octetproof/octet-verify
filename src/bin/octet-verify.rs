@@ -102,6 +102,10 @@ fn run(args: &Args) -> anyhow::Result<Report> {
 
     let mut report = verify(&proof, &opts);
 
+    // Wire-format guard: reject a proof that smuggles a duplicate of a
+    // non-repeated proto field (prost silently keeps the last value).
+    report.checks.push(wire_check(&proof_bytes));
+
     // Ed25519 transport signature (only meaningful in --envelope mode).
     if let Some(sig) = &transport_sig {
         match &args.ed25519_pubkey {
@@ -311,6 +315,34 @@ fn print_json(report: &Report) {
     }
     out.push_str("  ]\n}");
     println!("{out}");
+}
+
+/// Reject a proof that smuggles a duplicate of a non-repeated proto field —
+/// prost keeps the last value silently, so an appended second `timestamp_ms`
+/// (etc.) makes this verifier and another parser disagree. A `Fail` here makes
+/// the proof INVALID. See `octet_verify::wire`.
+fn wire_check(proof_bytes: &[u8]) -> verify_mod::Check {
+    let dups = octet_verify::wire::duplicate_singular_fields(proof_bytes);
+    if dups.is_empty() {
+        verify_mod::Check {
+            name: "wire-format",
+            status: Status::Pass,
+            detail: "no duplicate non-repeated proto fields".into(),
+        }
+    } else {
+        let names: Vec<String> = dups
+            .iter()
+            .map(|f| format!("{} (field {f})", octet_verify::wire::field_name(*f)))
+            .collect();
+        verify_mod::Check {
+            name: "wire-format",
+            status: Status::Fail,
+            detail: format!(
+                "duplicate non-repeated proto field(s): {} — last-wins smuggling",
+                names.join(", ")
+            ),
+        }
+    }
 }
 
 fn json_escape(s: &str) -> String {
@@ -606,7 +638,10 @@ mod backend {
             hw_key_source: &hw_source,
             expect_region: args.expect_region.as_deref(),
         };
-        Ok(verify(&proof, &opts))
+        let mut report = verify(&proof, &opts);
+        // Same wire-format guard as the local path: fetched bytes are untrusted.
+        report.checks.push(super::wire_check(proof_bytes));
+        Ok(report)
     }
 
     fn consistency_check(seen: Seen) -> Check {
@@ -892,7 +927,8 @@ mod backend {
 
 #[cfg(test)]
 mod tests {
-    use super::{json_escape, sanitize_terminal};
+    use super::{json_escape, sanitize_terminal, wire_check};
+    use octet_verify::verify::Status;
 
     /// Attacker-controlled strings (stage names, region labels, backend ids)
     /// flow into `detail` and the JSON output. ESC (0x1b) drives ANSI/OSC
@@ -916,5 +952,23 @@ mod tests {
         assert!(!s.contains('\u{1b}'), "ESC must not reach the terminal");
         assert!(s.contains("\\x1b"));
         assert!(s.contains("\\x7f"), "DEL escaped too");
+    }
+
+    /// The intent of the wire-format guard: a smuggled duplicate of a
+    /// non-repeated field produces a FAIL check (→ proof INVALID), while a clean
+    /// proof and a legitimately-repeated field (stage_attestations, field 10)
+    /// produce PASS.
+    #[test]
+    fn wire_check_fails_on_duplicate_singular_field_only() {
+        // duplicate timestamp_ms (field 7) → Fail, names the field.
+        let dup = wire_check(&[0x38, 0x01, 0x38, 0x02]);
+        assert_eq!(dup.status, Status::Fail);
+        assert!(dup.detail.contains("timestamp_ms"));
+
+        // clean single field → Pass.
+        assert_eq!(wire_check(&[0x38, 0x01]).status, Status::Pass);
+
+        // repeated stage_attestations (field 10) → Pass (not a singular field).
+        assert_eq!(wire_check(&[0x52, 0x00, 0x52, 0x00]).status, Status::Pass);
     }
 }

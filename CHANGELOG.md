@@ -38,6 +38,13 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   signatures to low-S first, so a twin can no longer pose as different proof
   bytes. Signature *verification* still accepts both forms (Android Keystore
   emits high-S), so this changes only the dedup hash, never a verdict.
+- **A smuggled duplicate of a non-repeated proto field is now rejected.** proto3
+  silently keeps the *last* value when a singular field (e.g. `timestamp_ms`,
+  `platform`) appears twice on the wire, so an appended copy can make this
+  verifier and another parser disagree. A new `wire-format` check scans the
+  top-level `LocationProof` fields and FAILs on a duplicate of any field the
+  schema declares non-repeated; legitimately-repeated fields
+  (`stage_attestations`) and unknown field numbers are left alone.
 
 ## [1.0.0]
 
