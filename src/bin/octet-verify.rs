@@ -143,6 +143,22 @@ fn run(args: &Args) -> anyhow::Result<Report> {
         }
     }
 
+    // Offline field-2 device-key signature verification (feature `appattest`).
+    // Needs no config — only the proof + the resolved hardware key — so it runs
+    // whenever the feature is built. verify() omits its placeholder
+    // device-attestation-sig line under this feature (cfg-gated there), so the
+    // layer is the sole source of the verdict.
+    #[cfg(feature = "appattest")]
+    {
+        let pubkey_sec1 = hw_key.as_ref().map(|vk| vk.to_sec1_bytes());
+        report
+            .checks
+            .push(octet_verify::appattest_layer::device_signature_check(
+                &proof,
+                pubkey_sec1.as_deref(),
+            ));
+    }
+
     Ok(report)
 }
 

@@ -15,6 +15,12 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 - `--app-attest-config <file>` CLI flag: verify a proof's App Attest evidence
   against the expected app identity in a shared TOML config (one location, no
   hardcoding). Reported NOT-CHECKED on a default (non-`appattest`) build.
+- Under `appattest`, `device-attestation-sig` is now a real offline verdict
+  (previously hardcoded NOT-CHECKED): the device-key signature
+  (`DeviceAttestation.signature`) is verified over the proof's
+  commitment/timestamp/nonce via `octet-attest-verify`, against the same
+  hardware key the stage chain uses. Falls back to NOT-CHECKED when the proof
+  carries no field-2 signature/nonce or no device key is available.
 
 ### Hardening
 - **Freshness is judged on the signed stage timestamp**, not the proof-level
