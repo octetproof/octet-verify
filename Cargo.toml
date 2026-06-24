@@ -52,7 +52,7 @@ anyhow = "1"
 # branch, for reproducible default-build resolution). Only compiled under
 # `--features appattest`; a default / `--features net` build resolves it but
 # pulls none of its code.
-octet-attest-verify = { git = "https://github.com/octetproof/octet-attest-verify", rev = "ea6d2a4", optional = true, features = ["config"] }
+octet-attest-verify = { git = "https://github.com/octetproof/octet-attest-verify", rev = "dae63e8", optional = true, features = ["config"] }
 
 # --- backend fetch mode (feature = "net" only) ---
 # rustls TLS (no OpenSSL / system dep); we parse bodies ourselves via
