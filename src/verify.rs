@@ -110,11 +110,15 @@ pub fn verify(proof: &LocationProof, opts: &VerifyOptions) -> Report {
     let mut r = Report::new();
 
     // -- freshness --
-    // Judge freshness against the SIGNED stage timestamp (the last stage's
-    // `timestamp_ms` is covered by that stage's signature), not the proof-level
-    // `timestamp_ms`, which is unbound and freely editable. Editing the unbound
-    // field therefore cannot make a stale proof look fresh.
-    let signed_ts = proof.stage_attestations.last().map(|s| s.timestamp_ms);
+    // Judge freshness against the SIGNED stage timestamp, not the proof-level
+    // `timestamp_ms`, which is unbound and freely editable. Prefer the
+    // `proofAssembly` stage BY NAME (the authenticated proof time) — the stage set
+    // is variable (optional uploadChallenge / semanticFields stages), so never key
+    // on position; fall back to the last stage, then the unbound field (the proof
+    // is already failing if it has no stages at all).
+    let signed_ts = stage_by_name(&proof.stage_attestations, "proofAssembly")
+        .or_else(|| proof.stage_attestations.last())
+        .map(|s| s.timestamp_ms);
     let ref_ts = signed_ts.unwrap_or(proof.timestamp_ms);
     let age_s = opts.now_ms.saturating_sub(ref_ts) / 1000;
     const FUTURE_SKEW_S: i64 = 60;
@@ -227,8 +231,7 @@ pub fn verify(proof: &LocationProof, opts: &VerifyOptions) -> Report {
     #[cfg(not(feature = "appattest"))]
     r.add("device-attestation-sig", Status::NotChecked,
         "DeviceAttestation.signature not verified in the default build (build --features appattest to verify field 2)");
-    r.add("verdict-binding", Status::NotChecked,
-        "spoofing_verdict / confidence / level are bound via stage hashes that need internal serialization to re-derive (Layer 2)");
+    r.add_semantic_binding(proof);
     match &proof.zk_proof {
         Some(zk) if zk.backend == crate::navigate::ZkBackend::Placeholder as i32 =>
             r.add("zk-proof", Status::NotChecked, "backend is PLACEHOLDER; ZK layer contributes no assurance"),
@@ -301,6 +304,80 @@ impl Report {
             self.add("field-binding", Status::Pass, format!("{} bound to signed stage hashes", bound.join(", ")));
         }
     }
+
+    /// W2 (VER-2): confirm the semantic fields — `spoofing_verdict`, `level`,
+    /// device `integrity_verdict.status`, `claimed_region`, `position_commitment`
+    /// — are the ones signed, by re-deriving the canonical `SEMANTIC_PREIMAGE`
+    /// (see `SEMANTIC-FIELDS-BINDING-SPEC`) and checking it against the
+    /// `semanticFields` stage hash. A post-sign edit of any covered field breaks
+    /// the hash → FAIL. Absent stage (pre-W2 proof) → NOT-CHECKED. Replaces the
+    /// old `verdict-binding` placeholder.
+    fn add_semantic_binding(&mut self, proof: &LocationProof) {
+        const NAME: &str = "semantic-binding";
+        match stage_by_name(&proof.stage_attestations, SEMANTIC_FIELDS_STAGE) {
+            None => self.add(NAME, Status::NotChecked,
+                "no semanticFields stage; spoofing_verdict / region / level / integrity / commitment not bound (pre-W2 proof)"),
+            Some(st) => match semantic_preimage(proof) {
+                None => self.add(NAME, Status::NotChecked,
+                    "semanticFields stage present but region is geometric; canonical region digest not yet pinned (W2 R3)"),
+                Some(preimage) if crypto::sha256(&preimage).as_slice() == st.data_hash.as_slice() =>
+                    self.add(NAME, Status::Pass,
+                        "spoofing_verdict / region / level / integrity / commitment bound to the signed semanticFields stage"),
+                Some(_) => self.add(NAME, Status::Fail,
+                    "semantic fields do not match the signed semanticFields stage (verdict / region / level / integrity / commitment tampered)"),
+            },
+        }
+    }
+}
+
+// --- W2 semantic-field binding (VER-2) ---
+
+/// Domain-separation prefix for the semantic-field preimage. Raw UTF-8, no NUL;
+/// version-bump if the serialization shape ever changes.
+const SEMANTIC_DOMAIN: &[u8] = b"octet-semantic-binding-v1";
+/// Stage whose `data_hash` is `SHA256(SEMANTIC_PREIMAGE)`.
+const SEMANTIC_FIELDS_STAGE: &str = "semanticFields";
+
+/// The `claimed_region` contribution to the preimage: `(oneof tag, region_id)`.
+/// `None` for the geometric variants — their canonical digest is pinned in the
+/// SDK-2+SDK-4 pass (W2 R3), so we can't re-derive them yet.
+fn semantic_region(proof: &LocationProof) -> Option<(u32, Vec<u8>)> {
+    use crate::navigate::proof_region::Region::*;
+    match proof.claimed_region.as_ref().and_then(|r| r.region.as_ref()) {
+        None => Some((0, Vec::new())),
+        Some(Earth(_)) => Some((1, Vec::new())),
+        Some(Country(c)) => Some((2, c.iso_code.clone().into_bytes())),
+        Some(City(c)) => Some((3, c.name.clone().into_bytes())),
+        Some(Subdivision(s)) => Some((7, s.iso_code.clone().into_bytes())),
+        // ellipse(4) / h3_polygon_set(5) / bounding_box_3d(6) — geometric digest pending (R3).
+        Some(Ellipse(_)) | Some(H3PolygonSet(_)) | Some(BoundingBox3d(_)) => None,
+    }
+}
+
+/// Re-derive the canonical `SEMANTIC_PREIMAGE`: domain-separated, fixed-order,
+/// length-prefixed, big-endian — no protobuf re-serialization. `None` when the
+/// region is geometric (digest not yet pinned, R3). Enum values use the WIRE
+/// value (e.g. `SUBDIVISION = 6`), which is exactly what we decode.
+fn semantic_preimage(proof: &LocationProof) -> Option<Vec<u8>> {
+    let (region_type, region_id) = semantic_region(proof)?;
+    let integrity_status = proof
+        .device_attestation
+        .as_ref()
+        .and_then(|da| da.integrity_verdict.as_ref())
+        .map(|iv| iv.status)
+        .unwrap_or(0);
+
+    let mut m = Vec::with_capacity(SEMANTIC_DOMAIN.len() + 24 + region_id.len() + proof.position_commitment.len());
+    m.extend_from_slice(SEMANTIC_DOMAIN);
+    m.extend_from_slice(&(proof.spoofing_verdict as u32).to_be_bytes());
+    m.extend_from_slice(&(proof.level as u32).to_be_bytes());
+    m.extend_from_slice(&(integrity_status as u32).to_be_bytes());
+    m.extend_from_slice(&region_type.to_be_bytes());
+    m.extend_from_slice(&(region_id.len() as u32).to_be_bytes());
+    m.extend_from_slice(&region_id);
+    m.extend_from_slice(&(proof.position_commitment.len() as u32).to_be_bytes());
+    m.extend_from_slice(&proof.position_commitment);
+    Some(m)
 }
 
 // --- stage-chain helpers (mirror the SDK's stage-chain construction) ---
@@ -664,5 +741,110 @@ mod tests {
             hw_key_source: "test", expect_region: None,
         });
         assert_eq!(status_of(&r, "freshness"), Status::Fail);
+    }
+
+    // --- W2 semantic-field binding (VER-2) ---
+
+    use crate::navigate::proof_region::Region;
+    use crate::navigate::{CountryRegion, DeviceIntegrityVerdict, EllipseRegion, ProofRegion};
+
+    /// Build a proof carrying a `semanticFields` stage whose hash matches its
+    /// fields (VERIFIED / COUNTRY / `iso` / commitment / integrity status 3).
+    fn proof_with_semantic_stage(verdict: i32, level: i32, iso: &str, commitment: Vec<u8>) -> LocationProof {
+        let mut proof = LocationProof {
+            spoofing_verdict: verdict,
+            level,
+            position_commitment: commitment,
+            claimed_region: Some(ProofRegion {
+                region: Some(Region::Country(CountryRegion { iso_code: iso.into(), ..Default::default() })),
+            }),
+            device_attestation: Some(DeviceAttestation {
+                integrity_verdict: Some(DeviceIntegrityVerdict { status: 3, ..Default::default() }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let preimage = semantic_preimage(&proof).unwrap();
+        proof.stage_attestations.push(StageAttestation {
+            stage: SEMANTIC_FIELDS_STAGE.to_string(),
+            timestamp_ms: 1,
+            data_hash: sha256(&preimage).to_vec(),
+            signature: vec![],
+            previous_hash: None,
+        });
+        proof
+    }
+
+    fn semantic_status(proof: &LocationProof) -> Status {
+        let mut r = Report::new();
+        r.add_semantic_binding(proof);
+        status_of(&r, "semantic-binding")
+    }
+
+    /// The bound fields verify; editing any of them after signing breaks the
+    /// hash. This is the whole C1 (SUSPICIOUS→VERIFIED) / C2 (region/level
+    /// rewrite) edit-attack class flipping VALID→INVALID.
+    #[test]
+    fn semantic_binding_passes_then_fails_on_tamper() {
+        let good = proof_with_semantic_stage(1, 2, "US", vec![0xC0; 16]); // VERIFIED, COUNTRY, US
+        assert_eq!(semantic_status(&good), Status::Pass);
+
+        let mut verdict = good.clone();
+        verdict.spoofing_verdict = 3; // SUSPICIOUS → VERIFIED edit
+        assert_eq!(semantic_status(&verdict), Status::Fail);
+
+        let mut region = good.clone();
+        if let Some(Region::Country(c)) = region.claimed_region.as_mut().and_then(|r| r.region.as_mut()) {
+            c.iso_code = "FR".into(); // US → FR rewrite
+        }
+        assert_eq!(semantic_status(&region), Status::Fail);
+
+        let mut level = good.clone();
+        level.level = 3;
+        assert_eq!(semantic_status(&level), Status::Fail);
+
+        let mut commitment = good.clone();
+        commitment.position_commitment[0] ^= 0xFF; // commit-A/display-B
+        assert_eq!(semantic_status(&commitment), Status::Fail);
+    }
+
+    /// A pre-W2 proof (no semanticFields stage) → NOT-CHECKED, never a pass.
+    #[test]
+    fn semantic_binding_not_checked_without_stage() {
+        let mut proof = proof_with_semantic_stage(1, 2, "US", vec![0xC0; 16]);
+        proof.stage_attestations.retain(|s| s.stage != SEMANTIC_FIELDS_STAGE);
+        assert_eq!(semantic_status(&proof), Status::NotChecked);
+    }
+
+    /// A geometric region can't be re-derived until its digest is pinned (R3),
+    /// so even with the stage present the binding is NOT-CHECKED — never a silent
+    /// pass/fail on an underivable preimage.
+    #[test]
+    fn semantic_binding_not_checked_for_geometric_region() {
+        let mut proof = proof_with_semantic_stage(1, 2, "US", vec![0xC0; 16]);
+        proof.claimed_region = Some(ProofRegion { region: Some(Region::Ellipse(EllipseRegion::default())) });
+        assert_eq!(semantic_status(&proof), Status::NotChecked);
+    }
+
+    /// Freshness keys on the `proofAssembly` stage BY NAME, not the last stage —
+    /// a stage appended after `proofAssembly` must not shift the freshness time.
+    #[test]
+    fn freshness_keys_on_proof_assembly_by_name() {
+        let sk = SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let now = 1_700_000_000_000i64;
+        let mut proof = build_proof(&sk, now - 100_000); // proofAssembly ~100 s old → fresh
+        proof.stage_attestations.push(StageAttestation {
+            stage: "trailing".into(),
+            timestamp_ms: now + 10_000_000, // far future; would flip freshness if used
+            data_hash: vec![0u8; 32],
+            signature: vec![],
+            previous_hash: None,
+        });
+        let r = verify(&proof, &VerifyOptions {
+            now_ms: now, max_age_s: 300, hardware_pubkey: None,
+            hw_key_source: "test", expect_region: None,
+        });
+        // Uses proofAssembly's timestamp (fresh), not the trailing stage's.
+        assert_eq!(status_of(&r, "freshness"), Status::Pass);
     }
 }

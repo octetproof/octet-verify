@@ -7,6 +7,18 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 ## [Unreleased]
 
 ### Added
+- **Semantic fields are now bound to the signed proof** (replaces the
+  `verdict-binding` NOT-CHECKED placeholder with a `semantic-binding` check).
+  The verifier re-derives a canonical, domain-separated preimage over
+  `spoofing_verdict`, `level`, device `integrity_verdict.status`,
+  `claimed_region`, and `position_commitment`, and checks it against the signed
+  `semanticFields` stage hash — so a post-sign edit of any of those (e.g.
+  `SUSPICIOUS→VERIFIED`, a region/level rewrite, an integrity downgrade,
+  commit-A/display-B) flips the proof INVALID. A proof with no `semanticFields`
+  stage reports NOT-CHECKED (back-compat); a geometric region reports
+  NOT-CHECKED until its canonical digest is pinned. Freshness now also keys on
+  the `proofAssembly` stage timestamp by name (not by position), since the stage
+  set is variable.
 - **Envelope `replay_control` is bound to the signed proof** — in both backend
   fetch mode (`fetch` / `watch` / `range`, from the §5 JSON envelope) and local
   `--envelope` mode (from the `ContinuousProofEnvelope` proto). When the envelope
