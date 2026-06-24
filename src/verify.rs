@@ -317,15 +317,11 @@ impl Report {
         match stage_by_name(&proof.stage_attestations, SEMANTIC_FIELDS_STAGE) {
             None => self.add(NAME, Status::NotChecked,
                 "no semanticFields stage; spoofing_verdict / region / level / integrity / commitment not bound (pre-W2 proof)"),
-            Some(st) => match semantic_preimage(proof) {
-                None => self.add(NAME, Status::NotChecked,
-                    "semanticFields stage present but region is geometric; canonical region digest not yet pinned (W2 R3)"),
-                Some(preimage) if crypto::sha256(&preimage).as_slice() == st.data_hash.as_slice() =>
-                    self.add(NAME, Status::Pass,
-                        "spoofing_verdict / region / level / integrity / commitment bound to the signed semanticFields stage"),
-                Some(_) => self.add(NAME, Status::Fail,
-                    "semantic fields do not match the signed semanticFields stage (verdict / region / level / integrity / commitment tampered)"),
-            },
+            Some(st) if crypto::sha256(&semantic_preimage(proof)).as_slice() == st.data_hash.as_slice() =>
+                self.add(NAME, Status::Pass,
+                    "spoofing_verdict / region / level / integrity / commitment bound to the signed semanticFields stage"),
+            Some(_) => self.add(NAME, Status::Fail,
+                "semantic fields do not match the signed semanticFields stage (verdict / region / level / integrity / commitment tampered)"),
         }
     }
 }
@@ -339,27 +335,66 @@ const SEMANTIC_DOMAIN: &[u8] = b"octet-semantic-binding-v1";
 const SEMANTIC_FIELDS_STAGE: &str = "semanticFields";
 
 /// The `claimed_region` contribution to the preimage: `(oneof tag, region_id)`.
-/// `None` for the geometric variants — their canonical digest is pinned in the
-/// SDK-2+SDK-4 pass (W2 R3), so we can't re-derive them yet.
-fn semantic_region(proof: &LocationProof) -> Option<(u32, Vec<u8>)> {
+/// Named regions use their identity bytes; geometric regions use a canonical
+/// 32-byte digest (W2 R3, pinned with SDK-2+SDK-4 in octet-sdk#60) so the
+/// verifier and both platforms re-derive byte-identically.
+fn semantic_region(proof: &LocationProof) -> (u32, Vec<u8>) {
     use crate::navigate::proof_region::Region::*;
     match proof.claimed_region.as_ref().and_then(|r| r.region.as_ref()) {
-        None => Some((0, Vec::new())),
-        Some(Earth(_)) => Some((1, Vec::new())),
-        Some(Country(c)) => Some((2, c.iso_code.clone().into_bytes())),
-        Some(City(c)) => Some((3, c.name.clone().into_bytes())),
-        Some(Subdivision(s)) => Some((7, s.iso_code.clone().into_bytes())),
-        // ellipse(4) / h3_polygon_set(5) / bounding_box_3d(6) — geometric digest pending (R3).
-        Some(Ellipse(_)) | Some(H3PolygonSet(_)) | Some(BoundingBox3d(_)) => None,
+        None => (0, Vec::new()),
+        Some(Earth(_)) => (1, Vec::new()),
+        Some(Country(c)) => (2, c.iso_code.clone().into_bytes()),
+        Some(City(c)) => (3, c.name.clone().into_bytes()),
+        Some(Ellipse(e)) => (4, ellipse_digest(e)),
+        Some(H3PolygonSet(h)) => (5, h3_digest(h)),
+        Some(BoundingBox3d(b)) => (6, bbox_digest(b)),
+        Some(Subdivision(s)) => (7, s.iso_code.clone().into_bytes()),
     }
 }
 
+/// f64 → IEEE-754 bits, big-endian (matches the SDK's `doubleToRawLongBits`/
+/// `bitPattern` → u64-BE).
+fn f64be(v: f64) -> [u8; 8] {
+    v.to_be_bytes()
+}
+
+/// ellipse(4): `SHA256( f64be(center.lat ‖ lon ‖ semi_major_m ‖ semi_minor_m ‖ heading_deg) )`.
+fn ellipse_digest(e: &crate::navigate::EllipseRegion) -> Vec<u8> {
+    let (lat, lon) = e.center.as_ref().map(|c| (c.latitude, c.longitude)).unwrap_or((0.0, 0.0));
+    let mut m = Vec::with_capacity(40);
+    for v in [lat, lon, e.semi_major_m, e.semi_minor_m, e.heading_deg] {
+        m.extend_from_slice(&f64be(v));
+    }
+    crypto::sha256(&m).to_vec()
+}
+
+/// h3(5): `SHA256( cell_ids sorted ascending UNSIGNED, each u64-BE )`. `cell_ids`
+/// is `fixed64` → `u64`, so the natural sort is already unsigned-ascending.
+fn h3_digest(h: &crate::navigate::H3PolygonSet) -> Vec<u8> {
+    let mut ids = h.cell_ids.clone();
+    ids.sort_unstable();
+    let mut m = Vec::with_capacity(ids.len() * 8);
+    for id in ids {
+        m.extend_from_slice(&id.to_be_bytes());
+    }
+    crypto::sha256(&m).to_vec()
+}
+
+/// bbox(6): `SHA256( f64be of min_lat, max_lat, min_lon, max_lon, min_alt, max_alt )`
+/// — proto field order, not grouped by min/max.
+fn bbox_digest(b: &crate::navigate::BoundingBox3DRegion) -> Vec<u8> {
+    let mut m = Vec::with_capacity(48);
+    for v in [b.min_latitude, b.max_latitude, b.min_longitude, b.max_longitude, b.min_altitude, b.max_altitude] {
+        m.extend_from_slice(&f64be(v));
+    }
+    crypto::sha256(&m).to_vec()
+}
+
 /// Re-derive the canonical `SEMANTIC_PREIMAGE`: domain-separated, fixed-order,
-/// length-prefixed, big-endian — no protobuf re-serialization. `None` when the
-/// region is geometric (digest not yet pinned, R3). Enum values use the WIRE
-/// value (e.g. `SUBDIVISION = 6`), which is exactly what we decode.
-fn semantic_preimage(proof: &LocationProof) -> Option<Vec<u8>> {
-    let (region_type, region_id) = semantic_region(proof)?;
+/// length-prefixed, big-endian — no protobuf re-serialization. Enum values use
+/// the WIRE value (e.g. `SUBDIVISION = 6`), which is exactly what we decode.
+fn semantic_preimage(proof: &LocationProof) -> Vec<u8> {
+    let (region_type, region_id) = semantic_region(proof);
     let integrity_status = proof
         .device_attestation
         .as_ref()
@@ -377,7 +412,7 @@ fn semantic_preimage(proof: &LocationProof) -> Option<Vec<u8>> {
     m.extend_from_slice(&region_id);
     m.extend_from_slice(&(proof.position_commitment.len() as u32).to_be_bytes());
     m.extend_from_slice(&proof.position_commitment);
-    Some(m)
+    m
 }
 
 // --- stage-chain helpers (mirror the SDK's stage-chain construction) ---
@@ -746,7 +781,7 @@ mod tests {
     // --- W2 semantic-field binding (VER-2) ---
 
     use crate::navigate::proof_region::Region;
-    use crate::navigate::{CountryRegion, DeviceIntegrityVerdict, EllipseRegion, ProofRegion};
+    use crate::navigate::{CountryRegion, DeviceIntegrityVerdict, ProofRegion};
 
     /// Build a proof carrying a `semanticFields` stage whose hash matches its
     /// fields (VERIFIED / COUNTRY / `iso` / commitment / integrity status 3).
@@ -764,7 +799,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let preimage = semantic_preimage(&proof).unwrap();
+        let preimage = semantic_preimage(&proof);
         proof.stage_attestations.push(StageAttestation {
             stage: SEMANTIC_FIELDS_STAGE.to_string(),
             timestamp_ms: 1,
@@ -816,14 +851,51 @@ mod tests {
         assert_eq!(semantic_status(&proof), Status::NotChecked);
     }
 
-    /// A geometric region can't be re-derived until its digest is pinned (R3),
-    /// so even with the stage present the binding is NOT-CHECKED — never a silent
-    /// pass/fail on an underivable preimage.
+    /// VER-7: geometric regions are now bound via their canonical digest — a
+    /// matching semanticFields stage PASSes; tampering a cell id FAILs.
     #[test]
-    fn semantic_binding_not_checked_for_geometric_region() {
-        let mut proof = proof_with_semantic_stage(1, 2, "US", vec![0xC0; 16]);
-        proof.claimed_region = Some(ProofRegion { region: Some(Region::Ellipse(EllipseRegion::default())) });
-        assert_eq!(semantic_status(&proof), Status::NotChecked);
+    fn semantic_binding_passes_for_geometric_region() {
+        use crate::navigate::H3PolygonSet;
+        let mut proof = LocationProof {
+            spoofing_verdict: 3,
+            level: 3,
+            position_commitment: vec![0x01; 16],
+            claimed_region: Some(ProofRegion {
+                region: Some(Region::H3PolygonSet(H3PolygonSet { cell_ids: vec![5, 3, 9, 1] })),
+            }),
+            ..Default::default()
+        };
+        let preimage = semantic_preimage(&proof);
+        proof.stage_attestations.push(StageAttestation {
+            stage: SEMANTIC_FIELDS_STAGE.to_string(),
+            timestamp_ms: 1,
+            data_hash: sha256(&preimage).to_vec(),
+            signature: vec![],
+            previous_hash: None,
+        });
+        assert_eq!(semantic_status(&proof), Status::Pass);
+
+        let mut tampered = proof.clone();
+        if let Some(Region::H3PolygonSet(h)) = tampered.claimed_region.as_mut().and_then(|r| r.region.as_mut()) {
+            h.cell_ids.push(99);
+        }
+        assert_eq!(semantic_status(&tampered), Status::Fail);
+    }
+
+    /// Byte-exact cross-platform anchor: the h3 digest must equal the SDK's
+    /// golden (octet-sdk SemanticFieldsBindingTests) for the same cell ids —
+    /// proving the unsigned sort + u64-BE + SHA256 match both platforms.
+    #[test]
+    fn h3_digest_matches_sdk_golden() {
+        use crate::navigate::H3PolygonSet;
+        let h = H3PolygonSet {
+            cell_ids: vec![0x8528347bfffffff, 0x85283447fffffff, 0x85283473fffffff], // unsorted
+        };
+        let want: Vec<u8> = (0.."1e624617081f14bf0851f0fa38be06c633c8a5e95fe4837c2c633139a1fe3b92".len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&"1e624617081f14bf0851f0fa38be06c633c8a5e95fe4837c2c633139a1fe3b92"[i..i + 2], 16).unwrap())
+            .collect();
+        assert_eq!(h3_digest(&h), want, "h3 digest must match the SDK cross-platform golden");
     }
 
     /// Freshness keys on the `proofAssembly` stage BY NAME, not the last stage —
