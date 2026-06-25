@@ -28,6 +28,8 @@ struct Args {
     max_age_s: Option<i64>,
     nullifier_store: Option<String>,
     expect_region: Option<String>,
+    app_attest_config: Option<String>,
+    skip_hardware_attestation: bool,
     json: bool,
 }
 
@@ -72,12 +74,14 @@ fn run(args: &Args) -> anyhow::Result<Report> {
     let bytes = read_input(args.path.as_deref())?;
 
     // Unwrap the transport envelope if asked; otherwise the input is a bare proof.
-    let (proof_bytes, transport_sig): (Vec<u8>, Option<Vec<u8>>) = if args.envelope {
+    type Unwrapped = (Vec<u8>, Option<Vec<u8>>, Option<octet_verify::replay::ReplayControl>);
+    let (proof_bytes, transport_sig, replay_control): Unwrapped = if args.envelope {
         let env = ContinuousProofEnvelope::decode(&*bytes)
             .map_err(|e| anyhow::anyhow!("failed to decode ContinuousProofEnvelope: {e}"))?;
-        (env.proof_bytes, Some(env.proof_signature))
+        let rc = env.replay_control.map(octet_verify::replay::ReplayControl::from);
+        (env.proof_bytes, Some(env.proof_signature), rc)
     } else {
-        (bytes, None)
+        (bytes, None, None)
     };
 
     let proof = LocationProof::decode(&*proof_bytes)
@@ -101,6 +105,20 @@ fn run(args: &Args) -> anyhow::Result<Report> {
 
     let mut report = verify(&proof, &opts);
 
+    // Wire-format guard: reject a proof that smuggles a duplicate of a
+    // non-repeated proto field (prost silently keeps the last value).
+    report.checks.push(wire_check(&proof_bytes));
+
+    // Replay-control binding: in --envelope mode, bind the envelope's
+    // replay_control to the signed proof (same check the backend-fetch path
+    // runs). A bare proof carries no envelope, so the check applies only here; a
+    // v1 envelope (no replay_control) reports NOT-CHECKED.
+    if args.envelope {
+        report
+            .checks
+            .push(octet_verify::replay::check_replay_binding(&proof, replay_control.as_ref()));
+    }
+
     // Ed25519 transport signature (only meaningful in --envelope mode).
     if let Some(sig) = &transport_sig {
         match &args.ed25519_pubkey {
@@ -121,7 +139,77 @@ fn run(args: &Args) -> anyhow::Result<Report> {
         report.checks.push(replay_check(store, &proof.nullifier)?);
     }
 
+    // Offline hardware-attestation layer: App Attest, the Android key-attestation
+    // chain, and the field-2 device-key signature. `--skip-hardware-attestation`
+    // scopes an `appattest` build to core verification only (e.g. triaging a
+    // legacy or synthetic proof that carries no real attestation chain).
+    if !args.skip_hardware_attestation {
+        // Optional offline App Attest verification (feature `appattest`). Expected
+        // app identity comes from the shared octet-attest-verify TOML config — one
+        // location, nothing hardcoded.
+        if let Some(cfg_path) = &args.app_attest_config {
+            #[cfg(feature = "appattest")]
+            report.checks.push(appattest_from_config(&proof, cfg_path)?);
+            #[cfg(not(feature = "appattest"))]
+            {
+                let _ = cfg_path;
+                report.checks.push(verify_mod::Check {
+                    name: "app-attest",
+                    status: Status::NotChecked,
+                    detail: "--app-attest-config given but this binary was built without the `appattest` feature".into(),
+                });
+            }
+        }
+
+        // Android key-attestation chain → Google root, plus the field-2 device-key
+        // signature (feature `appattest`). Both need no config — only the proof and
+        // the resolved hardware key — so they run whenever the feature is built.
+        // verify() omits its NOT-CHECKED placeholders under this feature (cfg-gated
+        // there), so the layer is the sole source of these verdicts.
+        #[cfg(feature = "appattest")]
+        {
+            // iOS proofs (no cert chain) report attestation-root NOT-CHECKED and
+            // rely on the app-attest check above instead.
+            let now_unix_secs = (now_ms / 1000).max(0) as u64;
+            report
+                .checks
+                .push(octet_verify::appattest_layer::attestation_root_check(
+                    &proof,
+                    now_unix_secs,
+                ));
+
+            let pubkey_sec1 = hw_key.as_ref().map(|vk| vk.to_sec1_bytes());
+            report
+                .checks
+                .push(octet_verify::appattest_layer::device_signature_check(
+                    &proof,
+                    pubkey_sec1.as_deref(),
+                ));
+        }
+    }
+
     Ok(report)
+}
+
+/// Load the shared App Attest config and verify the proof's evidence against it.
+#[cfg(feature = "appattest")]
+fn appattest_from_config(
+    proof: &octet_verify::navigate::LocationProof,
+    cfg_path: &str,
+) -> anyhow::Result<verify_mod::Check> {
+    use octet_attest_verify::config::Config;
+    use octet_verify::appattest_layer::{appattest_check, Expectation};
+
+    let cfg = Config::from_file(cfg_path)
+        .map_err(|e| anyhow::anyhow!("app-attest config: {e}"))?;
+    let aa = cfg
+        .app_attest
+        .ok_or_else(|| anyhow::anyhow!("app-attest config has no [app_attest] section"))?;
+    let expect = Expectation::new(&aa.team_id, &aa.bundle_id, aa.environment.into());
+    // Stateless single-proof check: no cached key, so an assertion-only proof
+    // reports NOT-CHECKED (it needs the attestation object or a cached key).
+    let (check, _key) = appattest_check(proof, &expect, None);
+    Ok(check)
 }
 
 /// Detect (and record) reuse of a nullifier across runs using a simple
@@ -237,7 +325,7 @@ fn print_human(report: &Report) {
     println!("verdict: {}", headline(report));
     println!();
     for c in &report.checks {
-        println!("  [{:>11}] {:<22} {}", c.status.tag(), c.name, c.detail);
+        println!("  [{:>11}] {:<22} {}", c.status.tag(), c.name, sanitize_terminal(&c.detail));
     }
     println!();
     println!(
@@ -274,15 +362,70 @@ fn print_json(report: &Report) {
     println!("{out}");
 }
 
+/// Reject a proof that smuggles a duplicate of a non-repeated proto field —
+/// prost keeps the last value silently, so an appended second `timestamp_ms`
+/// (etc.) makes this verifier and another parser disagree. A `Fail` here makes
+/// the proof INVALID. See `octet_verify::wire`.
+fn wire_check(proof_bytes: &[u8]) -> verify_mod::Check {
+    let dups = octet_verify::wire::duplicate_singular_fields(proof_bytes);
+    if dups.is_empty() {
+        verify_mod::Check {
+            name: "wire-format",
+            status: Status::Pass,
+            detail: "no duplicate non-repeated proto fields".into(),
+        }
+    } else {
+        let names: Vec<String> = dups
+            .iter()
+            .map(|f| format!("{} (field {f})", octet_verify::wire::field_name(*f)))
+            .collect();
+        verify_mod::Check {
+            name: "wire-format",
+            status: Status::Fail,
+            detail: format!(
+                "duplicate non-repeated proto field(s): {} — last-wins smuggling",
+                names.join(", ")
+            ),
+        }
+    }
+}
+
 fn json_escape(s: &str) -> String {
-    s.chars()
-        .flat_map(|c| match c {
-            '"' => vec!['\\', '"'],
-            '\\' => vec!['\\', '\\'],
-            '\n' => vec!['\\', 'n'],
-            c => vec![c],
-        })
-        .collect()
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0c}' => out.push_str("\\f"),
+            // Every other C0 control byte — notably ESC (0x1b), which drives
+            // ANSI/OSC terminal sequences — becomes \uXXXX, so the output is
+            // valid JSON (jq / json.loads safe) and carries no control bytes.
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Render an attacker-influenced string safe to print to a terminal. C0 control
+/// bytes (including ESC, which drives ANSI/OSC escape sequences) and DEL are
+/// rendered as visible `\xHH` escapes, so a crafted stage name, region label, or
+/// backend-supplied id cannot inject terminal control sequences through the
+/// verifier's own human-readable output.
+fn sanitize_terminal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if (c as u32) < 0x20 || c == '\u{7f}' {
+            out.push_str(&format!("\\x{:02x}", c as u32));
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn to_hex(bytes: &[u8]) -> String {
@@ -310,6 +453,8 @@ fn parse_args() -> Result<Args, String> {
             "--ed25519-pubkey" => args.ed25519_pubkey = Some(need_value(&mut iter, &a)?),
             "--nullifier-store" => args.nullifier_store = Some(need_value(&mut iter, &a)?),
             "--expect-region" => args.expect_region = Some(need_value(&mut iter, &a)?),
+            "--app-attest-config" => args.app_attest_config = Some(need_value(&mut iter, &a)?),
+            "--skip-hardware-attestation" => args.skip_hardware_attestation = true,
             "--max-age-seconds" => {
                 let v = need_value(&mut iter, &a)?;
                 args.max_age_s = Some(v.parse().map_err(|e| format!("bad --max-age-seconds: {e}"))?);
@@ -373,12 +518,12 @@ mod backend {
 
     use anyhow::{anyhow, bail, Result};
     use octet_verify::backend::{Backend, Envelope};
-    use octet_verify::crypto::sha256;
+    use octet_verify::crypto::{canonical_sig, sha256, SigEncoding};
     use octet_verify::navigate::LocationProof;
     use octet_verify::prost::Message;
     use octet_verify::verify::{verify, Check, Report, Status, VerifyOptions};
 
-    use super::{headline, json_escape, to_hex, DEFAULT_MAX_AGE_S};
+    use super::{headline, json_escape, sanitize_terminal, to_hex, DEFAULT_MAX_AGE_S};
 
     const DEFAULT_WATCH_INTERVAL_S: u64 = 5;
 
@@ -400,6 +545,8 @@ mod backend {
         interval_s: u64,
         since: Option<String>,
         until: Option<String>,
+        app_attest_config: Option<String>,
+        skip_hardware_attestation: bool,
     }
 
     pub fn run(argv: &[String]) -> Result<ExitCode> {
@@ -476,7 +623,7 @@ mod backend {
         while !stop.load(Ordering::SeqCst) {
             if let Some(env) = backend.fetch_latest()? {
                 let bytes = env.proof_bytes()?;
-                let hash = to_hex(sha256(&bytes).as_slice());
+                let hash = canonical_proof_hash(&bytes);
                 // Re-print only when the bytes are new or have changed; an
                 // identical re-fetch of the same id is the steady state.
                 if !matches!(seen.peek(&env.proof_id, &hash), Seen::Same) {
@@ -510,7 +657,16 @@ mod backend {
     fn verify_envelope(seen: &mut SeenStore, env: &Envelope, args: &Args) -> Result<Report> {
         let bytes = env.proof_bytes()?;
         let mut report = verify_bytes(&bytes, args)?;
-        let hash = to_hex(sha256(&bytes).as_slice());
+        // Replay-control binding: bind the `replay_control` values the
+        // (untrusted) backend echoed to what the proof actually signed. The proof
+        // already decoded inside verify_bytes, so this re-decode always succeeds.
+        if let Ok(proof) = LocationProof::decode(&*bytes) {
+            report.checks.push(octet_verify::replay::check_replay_binding(
+                &proof,
+                env.replay_control().as_ref(),
+            ));
+        }
+        let hash = canonical_proof_hash(&bytes);
         report.checks.push(consistency_check(seen.record(&env.proof_id, &hash)));
         Ok(report)
     }
@@ -539,7 +695,37 @@ mod backend {
             hw_key_source: &hw_source,
             expect_region: args.expect_region.as_deref(),
         };
-        Ok(verify(&proof, &opts))
+        let mut report = verify(&proof, &opts);
+        // Same wire-format guard as the local path: fetched bytes are untrusted.
+        report.checks.push(super::wire_check(proof_bytes));
+
+        // Offline hardware-attestation layer (feature `appattest`), mirroring the
+        // local-file path — a backend-fetched Android proof carries the same
+        // certificate chain, so attestation-root + field-2 device-sig apply here.
+        if !args.skip_hardware_attestation {
+            #[cfg(feature = "appattest")]
+            if let Some(cfg_path) = &args.app_attest_config {
+                report.checks.push(super::appattest_from_config(&proof, cfg_path)?);
+            }
+            #[cfg(feature = "appattest")]
+            {
+                let now_unix_secs = (now_ms / 1000).max(0) as u64;
+                report
+                    .checks
+                    .push(octet_verify::appattest_layer::attestation_root_check(
+                        &proof,
+                        now_unix_secs,
+                    ));
+                let pubkey_sec1 = hw_key.as_ref().map(|vk| vk.to_sec1_bytes());
+                report
+                    .checks
+                    .push(octet_verify::appattest_layer::device_signature_check(
+                        &proof,
+                        pubkey_sec1.as_deref(),
+                    ));
+            }
+        }
+        Ok(report)
     }
 
     fn consistency_check(seen: Seen) -> Check {
@@ -634,6 +820,27 @@ mod backend {
         hash.chars().take(12).collect()
     }
 
+    /// Hash a proof for refetch-consistency / seen-store dedup over a
+    /// signature-canonicalized form, so an ECDSA S-malleated twin — byte-distinct
+    /// but equally valid — hashes identically and cannot pose as a different
+    /// proof. Falls back to the raw bytes if the proof or its platform encoding
+    /// doesn't parse (the hash is a dedup aid, never a verification gate; the
+    /// verdict is always computed from the original bytes).
+    fn canonical_proof_hash(proof_bytes: &[u8]) -> String {
+        let canon = (|| -> Option<Vec<u8>> {
+            let mut proof = LocationProof::decode(proof_bytes).ok()?;
+            let enc = SigEncoding::for_platform(&proof.platform).ok()?;
+            for st in &mut proof.stage_attestations {
+                st.signature = canonical_sig(&st.signature, enc);
+            }
+            let mut buf = Vec::new();
+            proof.encode(&mut buf).ok()?;
+            Some(buf)
+        })();
+        let bytes = canon.unwrap_or_else(|| proof_bytes.to_vec());
+        to_hex(sha256(&bytes).as_slice())
+    }
+
     // --- output ---
 
     fn verdict_exit(report: &Report) -> ExitCode {
@@ -689,16 +896,21 @@ mod backend {
     }
 
     fn print_report_human(env: &Envelope, report: &Report) {
-        println!("── proof {} ──", env.proof_id);
+        // proof_id and the backend metadata are untrusted, attacker-influenced
+        // strings — sanitize before they reach the terminal.
+        let plat = env.platform.as_deref().unwrap_or("?");
+        let created = env.created_at.as_deref().unwrap_or("?");
+        let schema = env.proof_schema.as_deref().unwrap_or("?");
+        println!("── proof {} ──", sanitize_terminal(&env.proof_id));
         println!(
             "  backend metadata (untrusted): platform={} created_at={} schema={}",
-            env.platform.as_deref().unwrap_or("?"),
-            env.created_at.as_deref().unwrap_or("?"),
-            env.proof_schema.as_deref().unwrap_or("?"),
+            sanitize_terminal(plat),
+            sanitize_terminal(created),
+            sanitize_terminal(schema),
         );
         println!("  verdict: {}", headline(report));
         for c in &report.checks {
-            println!("    [{:>11}] {:<22} {}", c.status.tag(), c.name, c.detail);
+            println!("    [{:>11}] {:<22} {}", c.status.tag(), c.name, sanitize_terminal(&c.detail));
         }
     }
 
@@ -716,6 +928,8 @@ mod backend {
         let mut interval_s = DEFAULT_WATCH_INTERVAL_S;
         let mut since = None;
         let mut until = None;
+        let mut app_attest_config = None;
+        let mut skip_hardware_attestation = false;
         let mut proof_id: Option<String> = None;
 
         let mut it = argv.iter().skip(1);
@@ -742,6 +956,8 @@ mod backend {
                 }
                 "--since" => since = Some(need(&mut it, a)?),
                 "--until" => until = Some(need(&mut it, a)?),
+                "--app-attest-config" => app_attest_config = Some(need(&mut it, a)?),
+                "--skip-hardware-attestation" => skip_hardware_attestation = true,
                 s if s.starts_with("--") => bail!("unknown flag: {s}"),
                 _ => {
                     if proof_id.is_some() {
@@ -787,6 +1003,8 @@ mod backend {
             interval_s,
             since,
             until,
+            app_attest_config,
+            skip_hardware_attestation,
         })
     }
 
@@ -794,5 +1012,53 @@ mod backend {
         it.next()
             .map(|s| s.to_string())
             .ok_or_else(|| anyhow!("{flag} requires a value"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{json_escape, sanitize_terminal, wire_check};
+    use octet_verify::verify::Status;
+
+    /// Attacker-controlled strings (stage names, region labels, backend ids)
+    /// flow into `detail` and the JSON output. ESC (0x1b) drives ANSI/OSC
+    /// terminal sequences and raw control bytes break strict JSON parsers; both
+    /// must be escaped, never passed through.
+    #[test]
+    fn json_escape_neutralizes_control_and_ansi_bytes() {
+        let nasty = "ok\u{1b}]0;pwned\u{07}\n\t\"q";
+        let e = json_escape(nasty);
+        assert!(!e.chars().any(|c| (c as u32) < 0x20), "no raw control byte survives");
+        assert!(e.contains("\\u001b"), "ESC escaped as \\u001b");
+        assert!(e.contains("\\u0007"), "BEL escaped as \\u0007");
+        assert!(e.contains("\\n") && e.contains("\\t") && e.contains("\\\""));
+    }
+
+    /// Human output goes straight to a terminal, so it is the primary
+    /// terminal-injection surface: control bytes must be rendered visible.
+    #[test]
+    fn sanitize_terminal_renders_escape_bytes_visible() {
+        let s = sanitize_terminal("region\u{1b}[31mRED\u{7f}");
+        assert!(!s.contains('\u{1b}'), "ESC must not reach the terminal");
+        assert!(s.contains("\\x1b"));
+        assert!(s.contains("\\x7f"), "DEL escaped too");
+    }
+
+    /// The intent of the wire-format guard: a smuggled duplicate of a
+    /// non-repeated field produces a FAIL check (→ proof INVALID), while a clean
+    /// proof and a legitimately-repeated field (stage_attestations, field 10)
+    /// produce PASS.
+    #[test]
+    fn wire_check_fails_on_duplicate_singular_field_only() {
+        // duplicate timestamp_ms (field 7) → Fail, names the field.
+        let dup = wire_check(&[0x38, 0x01, 0x38, 0x02]);
+        assert_eq!(dup.status, Status::Fail);
+        assert!(dup.detail.contains("timestamp_ms"));
+
+        // clean single field → Pass.
+        assert_eq!(wire_check(&[0x38, 0x01]).status, Status::Pass);
+
+        // repeated stage_attestations (field 10) → Pass (not a singular field).
+        assert_eq!(wire_check(&[0x52, 0x00, 0x52, 0x00]).status, Status::Pass);
     }
 }

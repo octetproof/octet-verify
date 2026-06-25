@@ -110,13 +110,39 @@ pub fn verify(proof: &LocationProof, opts: &VerifyOptions) -> Report {
     let mut r = Report::new();
 
     // -- freshness --
-    let age_s = (opts.now_ms.saturating_sub(proof.timestamp_ms)) / 1000;
-    if age_s < 0 {
-        r.add("freshness", Status::Warn, format!("timestamp is {} s in the future", -age_s));
+    // Judge freshness against the SIGNED stage timestamp, not the proof-level
+    // `timestamp_ms`, which is unbound and freely editable. Prefer the
+    // `proofAssembly` stage BY NAME (the authenticated proof time) — the stage set
+    // is variable (optional uploadChallenge / semanticFields stages), so never key
+    // on position; fall back to the last stage, then the unbound field (the proof
+    // is already failing if it has no stages at all).
+    let signed_ts = stage_by_name(&proof.stage_attestations, "proofAssembly")
+        .or_else(|| proof.stage_attestations.last())
+        .map(|s| s.timestamp_ms);
+    let ref_ts = signed_ts.unwrap_or(proof.timestamp_ms);
+    let age_s = opts.now_ms.saturating_sub(ref_ts) / 1000;
+    const FUTURE_SKEW_S: i64 = 60;
+    if age_s < -FUTURE_SKEW_S {
+        r.add("freshness", Status::Fail,
+            format!("signed timestamp is {} s in the future (beyond {FUTURE_SKEW_S} s skew)", -age_s));
+    } else if age_s < 0 {
+        r.add("freshness", Status::Warn,
+            format!("signed timestamp is {} s in the future (within {FUTURE_SKEW_S} s skew)", -age_s));
     } else if age_s > opts.max_age_s {
         r.add("freshness", Status::Fail, format!("stale: {age_s} s old (limit {} s)", opts.max_age_s));
     } else {
         r.add("freshness", Status::Pass, format!("{age_s} s old (limit {} s)", opts.max_age_s));
+    }
+    // The proof-level `timestamp_ms` is covered by no signature. The freshness
+    // verdict above already ignores it; surface any disagreement with the signed
+    // stage time as a WARN, because a mismatch means the unbound field was edited.
+    if let Some(sts) = signed_ts {
+        let drift_ms = sts.saturating_sub(proof.timestamp_ms).unsigned_abs();
+        if drift_ms > 1000 {
+            r.add("timestamp-binding", Status::Warn, format!(
+                "unbound proof-level timestamp_ms disagrees with the signed stage time by \
+                 {drift_ms} ms; freshness uses the signed time"));
+        }
     }
 
     // -- nullifier presence (replay token) --
@@ -197,12 +223,16 @@ pub fn verify(proof: &LocationProof, opts: &VerifyOptions) -> Report {
     }
 
     // -- explicit NOT-CHECKED caveats (fail loud, never imply more than we did) --
+    // Under `appattest` the layer pushes a real Pass/Fail for both of these, so
+    // the placeholders are emitted only on the default build — a library consumer
+    // building `appattest` never sees the stale NOT-CHECKED lines.
+    #[cfg(not(feature = "appattest"))]
     r.add("attestation-root", Status::NotChecked,
-        "hardware key trusted as carried; chain to Google/Apple attestation root not validated (v1)");
+        "hardware key trusted as carried; chain to Google/Apple attestation root not validated on a default build (build --features appattest)");
+    #[cfg(not(feature = "appattest"))]
     r.add("device-attestation-sig", Status::NotChecked,
-        "DeviceAttestation.signature is platform-specific (Android: commitment; iOS: session) and not verified in v1");
-    r.add("verdict-binding", Status::NotChecked,
-        "spoofing_verdict / confidence / level are bound via stage hashes that need internal serialization to re-derive (Layer 2)");
+        "DeviceAttestation.signature not verified in the default build (build --features appattest to verify field 2)");
+    r.add_semantic_binding(proof);
     match &proof.zk_proof {
         Some(zk) if zk.backend == crate::navigate::ZkBackend::Placeholder as i32 =>
             r.add("zk-proof", Status::NotChecked, "backend is PLACEHOLDER; ZK layer contributes no assurance"),
@@ -232,31 +262,158 @@ impl Report {
     fn add_field_bindings(&mut self, proof: &LocationProof, stages: &[StageAttestation]) {
         let mut bound: Vec<&str> = Vec::new();
         let mut mismatches: Vec<String> = Vec::new();
+        let mut unbound: Vec<&str> = Vec::new();
 
-        let check = |name: &'static str, field: &[u8], bound: &mut Vec<&str>, mism: &mut Vec<String>| {
-            if let Some(st) = stage_by_name(stages, name) {
-                if crypto::sha256(field).as_slice() == st.data_hash.as_slice() {
-                    bound.push(name);
-                } else {
-                    mism.push(format!("{name} field does not match its stage hash"));
+        let check = |name: &'static str, present: bool, field: &[u8],
+                     bound: &mut Vec<&str>, mism: &mut Vec<String>, unb: &mut Vec<&str>| {
+            match stage_by_name(stages, name) {
+                Some(st) => {
+                    if crypto::sha256(field).as_slice() == st.data_hash.as_slice() {
+                        bound.push(name);
+                    } else {
+                        mism.push(format!("{name} field does not match its stage hash"));
+                    }
                 }
+                // Field is present but no stage binds it: a renamed or omitted
+                // binding stage must FAIL, never silently pass. Otherwise the
+                // displayed value would go unverified while the proof reads valid.
+                None if present => unb.push(name),
+                None => {}
             }
         };
 
-        check("commitment", &proof.position_commitment, &mut bound, &mut mismatches);
-        check("nullifier", &proof.nullifier, &mut bound, &mut mismatches);
+        check("commitment", !proof.position_commitment.is_empty(), &proof.position_commitment,
+              &mut bound, &mut mismatches, &mut unbound);
+        check("nullifier", !proof.nullifier.is_empty(), &proof.nullifier,
+              &mut bound, &mut mismatches, &mut unbound);
         if let Some(zk) = &proof.zk_proof {
-            check("zkProof", &zk.proof_bytes, &mut bound, &mut mismatches);
+            check("zkProof", !zk.proof_bytes.is_empty(), &zk.proof_bytes,
+                  &mut bound, &mut mismatches, &mut unbound);
         }
 
         if !mismatches.is_empty() {
             self.add("field-binding", Status::Fail, mismatches.join("; "));
+        } else if !unbound.is_empty() {
+            self.add("field-binding", Status::Fail, format!(
+                "{} present but no signed stage binds {}; a renamed or omitted binding stage cannot pass",
+                unbound.join(", "),
+                if unbound.len() == 1 { "it" } else { "them" },
+            ));
         } else if bound.is_empty() {
-            self.add("field-binding", Status::NotChecked, "no recognized commitment/nullifier/zkProof stages to bind");
+            self.add("field-binding", Status::NotChecked, "no commitment/nullifier/zkProof fields present to bind");
         } else {
             self.add("field-binding", Status::Pass, format!("{} bound to signed stage hashes", bound.join(", ")));
         }
     }
+
+    /// Confirm the semantic fields — `spoofing_verdict`, `level`, device
+    /// `integrity_verdict.status`, `claimed_region`, `position_commitment` — are
+    /// the ones signed, by re-deriving the canonical `SEMANTIC_PREIMAGE` and
+    /// checking it against the `semanticFields` stage hash. A post-sign edit of
+    /// any covered field breaks the hash → FAIL. Absent stage → NOT-CHECKED (a
+    /// proof predating semantic-field binding). Replaces the old `verdict-binding`
+    /// placeholder.
+    fn add_semantic_binding(&mut self, proof: &LocationProof) {
+        const NAME: &str = "semantic-binding";
+        match stage_by_name(&proof.stage_attestations, SEMANTIC_FIELDS_STAGE) {
+            None => self.add(NAME, Status::NotChecked,
+                "no semanticFields stage; spoofing_verdict / region / level / integrity / commitment not bound (proof predates semantic-field binding)"),
+            Some(st) if crypto::sha256(&semantic_preimage(proof)).as_slice() == st.data_hash.as_slice() =>
+                self.add(NAME, Status::Pass,
+                    "spoofing_verdict / region / level / integrity / commitment bound to the signed semanticFields stage"),
+            Some(_) => self.add(NAME, Status::Fail,
+                "semantic fields do not match the signed semanticFields stage (verdict / region / level / integrity / commitment tampered)"),
+        }
+    }
+}
+
+// --- semantic-field binding ---
+
+/// Domain-separation prefix for the semantic-field preimage. Raw UTF-8, no NUL;
+/// version-bump if the serialization shape ever changes.
+const SEMANTIC_DOMAIN: &[u8] = b"octet-semantic-binding-v1";
+/// Stage whose `data_hash` is `SHA256(SEMANTIC_PREIMAGE)`.
+const SEMANTIC_FIELDS_STAGE: &str = "semanticFields";
+
+/// The `claimed_region` contribution to the preimage: `(oneof tag, region_id)`.
+/// Named regions use their identity bytes; geometric regions use a canonical
+/// 32-byte digest (a canonical form pinned in lockstep with the SDK) so the
+/// verifier and both platforms re-derive byte-identically.
+fn semantic_region(proof: &LocationProof) -> (u32, Vec<u8>) {
+    use crate::navigate::proof_region::Region::*;
+    match proof.claimed_region.as_ref().and_then(|r| r.region.as_ref()) {
+        None => (0, Vec::new()),
+        Some(Earth(_)) => (1, Vec::new()),
+        Some(Country(c)) => (2, c.iso_code.clone().into_bytes()),
+        Some(City(c)) => (3, c.name.clone().into_bytes()),
+        Some(Ellipse(e)) => (4, ellipse_digest(e)),
+        Some(H3PolygonSet(h)) => (5, h3_digest(h)),
+        Some(BoundingBox3d(b)) => (6, bbox_digest(b)),
+        Some(Subdivision(s)) => (7, s.iso_code.clone().into_bytes()),
+    }
+}
+
+/// f64 → IEEE-754 bits, big-endian (matches the SDK's `doubleToRawLongBits`/
+/// `bitPattern` → u64-BE).
+fn f64be(v: f64) -> [u8; 8] {
+    v.to_be_bytes()
+}
+
+/// ellipse(4): `SHA256( f64be(center.lat ‖ lon ‖ semi_major_m ‖ semi_minor_m ‖ heading_deg) )`.
+fn ellipse_digest(e: &crate::navigate::EllipseRegion) -> Vec<u8> {
+    let (lat, lon) = e.center.as_ref().map(|c| (c.latitude, c.longitude)).unwrap_or((0.0, 0.0));
+    let mut m = Vec::with_capacity(40);
+    for v in [lat, lon, e.semi_major_m, e.semi_minor_m, e.heading_deg] {
+        m.extend_from_slice(&f64be(v));
+    }
+    crypto::sha256(&m).to_vec()
+}
+
+/// h3(5): `SHA256( cell_ids sorted ascending UNSIGNED, each u64-BE )`. `cell_ids`
+/// is `fixed64` → `u64`, so the natural sort is already unsigned-ascending.
+fn h3_digest(h: &crate::navigate::H3PolygonSet) -> Vec<u8> {
+    let mut ids = h.cell_ids.clone();
+    ids.sort_unstable();
+    let mut m = Vec::with_capacity(ids.len() * 8);
+    for id in ids {
+        m.extend_from_slice(&id.to_be_bytes());
+    }
+    crypto::sha256(&m).to_vec()
+}
+
+/// bbox(6): `SHA256( f64be of min_lat, max_lat, min_lon, max_lon, min_alt, max_alt )`
+/// — proto field order, not grouped by min/max.
+fn bbox_digest(b: &crate::navigate::BoundingBox3DRegion) -> Vec<u8> {
+    let mut m = Vec::with_capacity(48);
+    for v in [b.min_latitude, b.max_latitude, b.min_longitude, b.max_longitude, b.min_altitude, b.max_altitude] {
+        m.extend_from_slice(&f64be(v));
+    }
+    crypto::sha256(&m).to_vec()
+}
+
+/// Re-derive the canonical `SEMANTIC_PREIMAGE`: domain-separated, fixed-order,
+/// length-prefixed, big-endian — no protobuf re-serialization. Enum values use
+/// the WIRE value (e.g. `SUBDIVISION = 6`), which is exactly what we decode.
+fn semantic_preimage(proof: &LocationProof) -> Vec<u8> {
+    let (region_type, region_id) = semantic_region(proof);
+    let integrity_status = proof
+        .device_attestation
+        .as_ref()
+        .and_then(|da| da.integrity_verdict.as_ref())
+        .map(|iv| iv.status)
+        .unwrap_or(0);
+
+    let mut m = Vec::with_capacity(SEMANTIC_DOMAIN.len() + 24 + region_id.len() + proof.position_commitment.len());
+    m.extend_from_slice(SEMANTIC_DOMAIN);
+    m.extend_from_slice(&(proof.spoofing_verdict as u32).to_be_bytes());
+    m.extend_from_slice(&(proof.level as u32).to_be_bytes());
+    m.extend_from_slice(&(integrity_status as u32).to_be_bytes());
+    m.extend_from_slice(&region_type.to_be_bytes());
+    m.extend_from_slice(&(region_id.len() as u32).to_be_bytes());
+    m.extend_from_slice(&region_id);
+    m.extend_from_slice(&(proof.position_commitment.len() as u32).to_be_bytes());
+    m.extend_from_slice(&proof.position_commitment);
+    m
 }
 
 // --- stage-chain helpers (mirror the SDK's stage-chain construction) ---
@@ -476,7 +633,7 @@ mod tests {
         }
     }
 
-    fn status_of<'a>(r: &'a Report, name: &str) -> Status {
+    fn status_of(r: &Report, name: &str) -> Status {
         r.checks.iter().find(|c| c.name == name).map(|c| c.status).unwrap()
     }
 
@@ -557,5 +714,210 @@ mod tests {
         });
         assert!(!r3.is_valid());
         assert_eq!(status_of(&r3, "stage-signatures"), Status::Fail);
+    }
+
+    /// A field that is present but bound by no stage must FAIL, not silently
+    /// pass because *other* fields happen to be bound. Renaming the `commitment`
+    /// binding stage leaves `position_commitment` present and unverifiable — the
+    /// verifier must refuse to vouch for it.
+    #[test]
+    fn present_field_with_no_binding_stage_fails() {
+        let sk = SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let ts = 1_700_000_000_000;
+        let mut proof = build_proof(&sk, ts);
+        let idx = proof
+            .stage_attestations
+            .iter()
+            .position(|s| s.stage == "commitment")
+            .unwrap();
+        proof.stage_attestations[idx].stage = "renamed".into();
+
+        let r = verify(&proof, &VerifyOptions {
+            now_ms: ts, max_age_s: 300, hardware_pubkey: None,
+            hw_key_source: "test", expect_region: None,
+        });
+        // nullifier + zkProof are still bound, but the unbound commitment must
+        // not be papered over.
+        assert_eq!(status_of(&r, "field-binding"), Status::Fail);
+        assert!(!r.is_valid());
+    }
+
+    /// Freshness must be judged on the SIGNED stage timestamp, not the unbound
+    /// proof-level `timestamp_ms`. Editing the unbound field to "now" must not
+    /// buy freshness for a proof whose signed stages are an hour old.
+    #[test]
+    fn freshness_judged_on_signed_stage_time_not_unbound_field() {
+        let sk = SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let now = 1_700_000_000_000i64;
+        let stale_ts = now - 3_600_000; // stages signed an hour ago
+        let mut proof = build_proof(&sk, stale_ts);
+        proof.timestamp_ms = now; // attacker edits the unbound field to look fresh
+
+        let r = verify(&proof, &VerifyOptions {
+            now_ms: now, max_age_s: 300, hardware_pubkey: None,
+            hw_key_source: "test", expect_region: None,
+        });
+        assert_eq!(status_of(&r, "freshness"), Status::Fail, "signed time is stale");
+        // The edit of the unbound field is surfaced, not ignored.
+        assert_eq!(status_of(&r, "timestamp-binding"), Status::Warn);
+    }
+
+    /// A signed timestamp far in the future is impossible for a genuine proof
+    /// and must FAIL, not merely WARN — a far-future stamp is how a replayed or
+    /// fabricated proof tries to stay "fresh" indefinitely.
+    #[test]
+    fn far_future_signed_timestamp_fails_not_warns() {
+        let sk = SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let now = 1_700_000_000_000i64;
+        let future_ts = now + 3_600_000; // an hour ahead, well beyond clock skew
+        let proof = build_proof(&sk, future_ts);
+
+        let r = verify(&proof, &VerifyOptions {
+            now_ms: now, max_age_s: 300, hardware_pubkey: None,
+            hw_key_source: "test", expect_region: None,
+        });
+        assert_eq!(status_of(&r, "freshness"), Status::Fail);
+    }
+
+    // --- semantic-field binding ---
+
+    use crate::navigate::proof_region::Region;
+    use crate::navigate::{CountryRegion, DeviceIntegrityVerdict, ProofRegion};
+
+    /// Build a proof carrying a `semanticFields` stage whose hash matches its
+    /// fields (VERIFIED / COUNTRY / `iso` / commitment / integrity status 3).
+    fn proof_with_semantic_stage(verdict: i32, level: i32, iso: &str, commitment: Vec<u8>) -> LocationProof {
+        let mut proof = LocationProof {
+            spoofing_verdict: verdict,
+            level,
+            position_commitment: commitment,
+            claimed_region: Some(ProofRegion {
+                region: Some(Region::Country(CountryRegion { iso_code: iso.into() })),
+            }),
+            device_attestation: Some(DeviceAttestation {
+                integrity_verdict: Some(DeviceIntegrityVerdict { status: 3, ..Default::default() }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let preimage = semantic_preimage(&proof);
+        proof.stage_attestations.push(StageAttestation {
+            stage: SEMANTIC_FIELDS_STAGE.to_string(),
+            timestamp_ms: 1,
+            data_hash: sha256(&preimage).to_vec(),
+            signature: vec![],
+            previous_hash: None,
+        });
+        proof
+    }
+
+    fn semantic_status(proof: &LocationProof) -> Status {
+        let mut r = Report::new();
+        r.add_semantic_binding(proof);
+        status_of(&r, "semantic-binding")
+    }
+
+    /// The bound fields verify; editing any of them after signing breaks the
+    /// hash. This is the whole C1 (SUSPICIOUS→VERIFIED) / C2 (region/level
+    /// rewrite) edit-attack class flipping VALID→INVALID.
+    #[test]
+    fn semantic_binding_passes_then_fails_on_tamper() {
+        let good = proof_with_semantic_stage(1, 2, "US", vec![0xC0; 16]); // VERIFIED, COUNTRY, US
+        assert_eq!(semantic_status(&good), Status::Pass);
+
+        let mut verdict = good.clone();
+        verdict.spoofing_verdict = 3; // SUSPICIOUS → VERIFIED edit
+        assert_eq!(semantic_status(&verdict), Status::Fail);
+
+        let mut region = good.clone();
+        if let Some(Region::Country(c)) = region.claimed_region.as_mut().and_then(|r| r.region.as_mut()) {
+            c.iso_code = "FR".into(); // US → FR rewrite
+        }
+        assert_eq!(semantic_status(&region), Status::Fail);
+
+        let mut level = good.clone();
+        level.level = 3;
+        assert_eq!(semantic_status(&level), Status::Fail);
+
+        let mut commitment = good.clone();
+        commitment.position_commitment[0] ^= 0xFF; // commit-A/display-B
+        assert_eq!(semantic_status(&commitment), Status::Fail);
+    }
+
+    /// A proof with no semanticFields stage → NOT-CHECKED, never a pass.
+    #[test]
+    fn semantic_binding_not_checked_without_stage() {
+        let mut proof = proof_with_semantic_stage(1, 2, "US", vec![0xC0; 16]);
+        proof.stage_attestations.retain(|s| s.stage != SEMANTIC_FIELDS_STAGE);
+        assert_eq!(semantic_status(&proof), Status::NotChecked);
+    }
+
+    /// Geometric regions are bound via their canonical digest — a matching
+    /// semanticFields stage PASSes; tampering a cell id FAILs.
+    #[test]
+    fn semantic_binding_passes_for_geometric_region() {
+        use crate::navigate::H3PolygonSet;
+        let mut proof = LocationProof {
+            spoofing_verdict: 3,
+            level: 3,
+            position_commitment: vec![0x01; 16],
+            claimed_region: Some(ProofRegion {
+                region: Some(Region::H3PolygonSet(H3PolygonSet { cell_ids: vec![5, 3, 9, 1] })),
+            }),
+            ..Default::default()
+        };
+        let preimage = semantic_preimage(&proof);
+        proof.stage_attestations.push(StageAttestation {
+            stage: SEMANTIC_FIELDS_STAGE.to_string(),
+            timestamp_ms: 1,
+            data_hash: sha256(&preimage).to_vec(),
+            signature: vec![],
+            previous_hash: None,
+        });
+        assert_eq!(semantic_status(&proof), Status::Pass);
+
+        let mut tampered = proof.clone();
+        if let Some(Region::H3PolygonSet(h)) = tampered.claimed_region.as_mut().and_then(|r| r.region.as_mut()) {
+            h.cell_ids.push(99);
+        }
+        assert_eq!(semantic_status(&tampered), Status::Fail);
+    }
+
+    /// Byte-exact cross-platform anchor: the h3 digest must equal the SDK's
+    /// golden vector for the same cell ids — proving the unsigned sort + u64-BE +
+    /// SHA256 match both platforms.
+    #[test]
+    fn h3_digest_matches_sdk_golden() {
+        use crate::navigate::H3PolygonSet;
+        let h = H3PolygonSet {
+            cell_ids: vec![0x8528347bfffffff, 0x85283447fffffff, 0x85283473fffffff], // unsorted
+        };
+        let want: Vec<u8> = (0.."1e624617081f14bf0851f0fa38be06c633c8a5e95fe4837c2c633139a1fe3b92".len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&"1e624617081f14bf0851f0fa38be06c633c8a5e95fe4837c2c633139a1fe3b92"[i..i + 2], 16).unwrap())
+            .collect();
+        assert_eq!(h3_digest(&h), want, "h3 digest must match the SDK cross-platform golden");
+    }
+
+    /// Freshness keys on the `proofAssembly` stage BY NAME, not the last stage —
+    /// a stage appended after `proofAssembly` must not shift the freshness time.
+    #[test]
+    fn freshness_keys_on_proof_assembly_by_name() {
+        let sk = SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let now = 1_700_000_000_000i64;
+        let mut proof = build_proof(&sk, now - 100_000); // proofAssembly ~100 s old → fresh
+        proof.stage_attestations.push(StageAttestation {
+            stage: "trailing".into(),
+            timestamp_ms: now + 10_000_000, // far future; would flip freshness if used
+            data_hash: vec![0u8; 32],
+            signature: vec![],
+            previous_hash: None,
+        });
+        let r = verify(&proof, &VerifyOptions {
+            now_ms: now, max_age_s: 300, hardware_pubkey: None,
+            hw_key_source: "test", expect_region: None,
+        });
+        // Uses proofAssembly's timestamp (fresh), not the trailing stage's.
+        assert_eq!(status_of(&r, "freshness"), Status::Pass);
     }
 }

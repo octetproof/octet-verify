@@ -4,6 +4,47 @@ All notable changes to `octet-verify` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [1.1.0] - 2026-06-25
+
+Adds the proof-binding layers the v1.0.0 NOTE anticipated — device attestation,
+per-proof replay control, and semantic-field binding — plus verifier-hardening
+fixes. All additive and back-compat: a genuine v1.0.0-era proof verifies
+unchanged; new checks report NOT-CHECKED until a proof carries the corresponding
+signed material, and only tampered or malformed proofs are newly rejected. See
+`VERIFICATION-SPEC.md` for the full checks.
+
+### Added
+- **Semantic-field binding** — the spoofing verdict, region, level, device
+  integrity status, and the position commitment are now bound to the signed
+  proof. Editing any of them after signing (flipping a verdict, rewriting the
+  region or level, swapping the committed location) is rejected. Covers every
+  region type, including geometric regions. A proof carrying no such binding
+  reports NOT-CHECKED.
+- **Replay-control binding** (backend-fetch and `--envelope` modes) — when an
+  envelope carries replay-control values (a per-proof upload nonce, the
+  nullifier, and the signed timestamp), the verifier confirms they match what
+  the proof actually signed. The backend stays untrusted: a tampered value fails
+  the check. Absent on older proofs → NOT-CHECKED.
+- **Optional `appattest` feature** — offline hardware-attestation verification
+  via the `octet-attest-verify` crate. On iOS, Apple App Attest to Apple's
+  embedded root (`--app-attest-config`); on Android, the key-attestation
+  certificate chain to an embedded, fingerprint-pinned Google root (TEE/StrongBox
+  required). Under the feature the `attestation-root` and device-attestation
+  signature checks become real Pass/Fail instead of NOT-CHECKED;
+  `--skip-hardware-attestation` scopes a build back to core verification. Off by
+  default, so the lean default build pulls no extra surface. Online revocation is
+  not consulted (offline by design).
+
+### Hardening
+- Freshness is judged on the proof's signed timestamp, not the unbound top-level
+  field; a far-future timestamp now fails.
+- A field that carries no signed binding (commitment / nullifier / ZK) now fails
+  instead of passing quietly.
+- Verifier output is escaped against terminal / JSON injection from
+  attacker-influenced strings.
+- Cross-run dedup is robust to ECDSA signature malleability.
+- A proof that smuggles a duplicate of a non-repeated field is rejected.
+
 ## [1.0.0]
 
 First public release: a standalone, independent verifier for Octet

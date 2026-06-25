@@ -37,6 +37,14 @@ cargo build --release --features net
 If you run a backend subcommand against a binary built without `net`, it tells
 you and exits — it never silently no-ops.
 
+Offline Apple App Attest verification is a second opt-in feature, `appattest`
+(see [App Attest](#app-attest-optional---features-appattest) under *Reading the
+verdict*). It is independent of `net`; combine them if you want both:
+
+```sh
+cargo build --release --features net,appattest
+```
+
 ## Verifying a local proof file
 
 If you already have proof bytes (a `.bin` exported by the SDK, or piped in):
@@ -121,15 +129,17 @@ A run prints one block per proof. Here's a passing one:
   backend metadata (untrusted): platform=ios created_at=2026-06-04T18:24:00Z schema=octet.proof.LocationProof
   verdict: VALID
     [       PASS] freshness              42 s old (limit 300 s)
-    [       PASS] nullifier              present (32 bytes)
-    [       PASS] stage-chain            5 stages, hash linkage intact
-    [       PASS] stage-signatures       all 5 stage signatures verify (raw key from certificate_chain)
-    [       PASS] chain-assembly         final stage binds all 4 prior signatures
+    [       PASS] nullifier              replay token present (32 bytes); uniqueness enforced server-side, not here
+    [       PASS] stage-chain            6 stages, hash linkage intact
+    [       PASS] stage-signatures       all 6 stage signatures verify (raw key from certificate_chain)
+    [       PASS] chain-assembly         final stage binds all 5 prior signatures
     [       PASS] field-binding          commitment, nullifier, zkProof bound to signed stage hashes
+    [       PASS] semantic-binding       spoofing_verdict / region / level / integrity / commitment bound to the signed semanticFields stage
     [       PASS] region-claim           claims country:US (level 2)
-    [NOT-CHECKED] attestation-root       hardware key trusted as carried; chain to Google/Apple attestation root not validated (v1)
-    [NOT-CHECKED] device-attestation-sig DeviceAttestation.signature is platform-specific (Android: commitment; iOS: session) and not verified in v1
-    [NOT-CHECKED] verdict-binding        spoofing_verdict / confidence / level are bound via stage hashes that need internal serialization to re-derive (Layer 2)
+    [       PASS] wire-format            no duplicate non-repeated proto fields
+    [       PASS] replay-binding         envelope replay-control bound to the signed proof: nonce↔uploadChallenge, nullifier echo, signed-timestamp echo
+    [NOT-CHECKED] attestation-root       hardware key trusted as carried; chain to Google/Apple attestation root not validated on a default build (build --features appattest)
+    [NOT-CHECKED] device-attestation-sig DeviceAttestation.signature not verified in the default build (build --features appattest to verify field 2)
     [NOT-CHECKED] zk-proof               backend is PLACEHOLDER; ZK layer contributes no assurance
     [       PASS] refetch-consistency    first sighting of this proof_id; byte-hash recorded
 ```
@@ -146,21 +156,46 @@ A run prints one block per proof. Here's a passing one:
 
 A `VALID` result means: *this proof is internally consistent and self-signed by
 the key embedded in it* (every stage links to the previous, the assembly stage
-binds all prior signatures, and the visible commitment/nullifier/ZK bytes match
-their signed hashes).
+binds all prior signatures, the visible commitment/nullifier/ZK bytes match their
+signed hashes, and the semantic fields — verdict, region, level, integrity, and
+committed position — are the ones that were signed, so a post-sign edit of any of
+them is rejected).
 
-It does **not** mean the signing key is proven to be genuine device hardware.
-That's why some lines read `NOT-CHECKED` rather than `PASS` — and the tool says
-so out loud instead of quietly counting them as wins:
+On a **default build** it does **not** mean the signing key is proven to be
+genuine device hardware. That's why some lines read `NOT-CHECKED` rather than
+`PASS` — and the tool says so out loud instead of quietly counting them as wins:
 
-- **`attestation-root`** — the Android certificate chain isn't validated up to
-  Google's attestation root, and iOS App Attest isn't checked, in v1.
-- **`device-attestation-sig`, `verdict-binding`, `zk-proof`** — bound via hashes
-  whose preimages need internal serialization (a later layer), or a placeholder
-  ZK backend.
+- **`attestation-root`** and **`device-attestation-sig`** — `NOT-CHECKED` on a
+  default build; build with `--features appattest` (see below) to validate the
+  hardware attestation offline, turning these into real `PASS`/`FAIL`.
+- **`zk-proof`** — placeholder ZK backend contributes no assurance yet.
 
 `NOT-CHECKED` never fails a proof and never makes one valid; it's there so you
 know the exact boundary of what was confirmed.
+
+### Hardware attestation (optional, `--features appattest`)
+
+You can additionally prove the signing key is genuine secure hardware,
+**offline** — vendor roots are embedded in the binary, so no network call is
+made:
+
+- **iOS** — Apple App Attest evidence verified to Apple's embedded root (pass an
+  app/team identity via `--app-attest-config`).
+- **Android** — the Keystore certificate chain validated to an embedded,
+  fingerprint-pinned Google hardware-attestation root, with a TEE / StrongBox
+  security level required on the leaf.
+
+```sh
+cargo build --release --features appattest
+octet-verify <id> ... --app-attest-config app-attest.toml
+```
+
+Under the feature both `attestation-root` and `device-attestation-sig` become
+real `PASS`/`FAIL`; without it they stay `NOT-CHECKED` — never silently treated
+as a pass. `--skip-hardware-attestation` scopes an `appattest` build back to core
+verification (handy for a legacy or synthetic proof that carries no real chain).
+Online revocation (Google's status list) is **not** consulted even under the
+feature — see [`VERIFICATION-SPEC.md`](VERIFICATION-SPEC.md) §5.
 
 ### A failing verdict
 

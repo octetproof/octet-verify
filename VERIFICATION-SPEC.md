@@ -1,4 +1,4 @@
-# Octet Proof Verification Spec (v1)
+# Octet Proof Verification Spec
 
 This is the public contract `octet-verify` implements: the exact bytes that are
 signed, the algorithms, and what a verifier can and cannot conclude. It is
@@ -26,6 +26,36 @@ certificate on Android (the P-256 point sits in its SubjectPublicKeyInfo).
 ECDSA signatures are **DER-encoded on Android** and **raw 64-byte `r‖s` on
 iOS**; the encoding is selected by the `LocationProof.platform` field
 (`"android"` / `"ios"`).
+
+### 1.1 Hardware attestation (feature `appattest`)
+
+A default build trusts only the key the proof *carries* (§5). Built with
+`--features appattest`, the verifier additionally establishes — **offline** —
+that the signing key is genuine secure hardware, on both platforms:
+
+- **iOS — App Attest** (the `app-attest` check). The App Attest evidence is
+  verified to Apple's App Attest root, **embedded in the binary** (no network
+  call): chain, nonce, app/team identifiers, and the attested public key. An
+  expected app/team identity is supplied via `--app-attest-config`. iOS carries a
+  raw Secure Enclave key in `certificate_chain[0]` (not an X.509 chain), so the
+  Android-style `attestation-root` line is `NOT-CHECKED` on iOS — App Attest is
+  the iOS hardware root, and the two are told apart by key *shape*, not the
+  editable `platform` field.
+- **Android — key attestation** (the `attestation-root` check). The
+  `device_attestation.certificate_chain` is validated leaf → … → an embedded,
+  fingerprint-pinned Google hardware-attestation root (both the RSA-4096 root and
+  the ECDSA P-384 root effective 2026-02-01); the leaf's Key Attestation extension
+  must carry the expected key-generation challenge and a TEE / StrongBox security
+  level. This flips the `attestation-root` line to a real Pass/Fail.
+- On either platform the resolved hardware key then verifies
+  `device_attestation.signature` (the field-2 device signature), turning that
+  NOT-CHECKED line into a real Pass/Fail.
+
+All of this is delegated to the public `octet-attest-verify` crate rather than
+duplicated here. Absent the feature, these checks are NOT-CHECKED;
+`--skip-hardware-attestation` scopes an `appattest` build back to core
+verification. What is **not** done even under the feature: online revocation
+(Google's certificate status list) and the deeper verified-boot fields — see §5.
 
 ---
 
@@ -76,6 +106,26 @@ the rules above (linkage, assembly, field binding) hold for any stage set, so it
 never assumes a fixed stage count or order and MUST NOT hard-code either
 platform's stage list.
 
+### 2.1 Semantic-field binding (`semanticFields` stage)
+
+The three bindings above cover opaque blobs (commitment / nullifier / ZK). The
+human-meaningful fields — the spoofing verdict, claimed region, trust level,
+device-integrity status, and the position commitment — are bound by a dedicated
+`semanticFields` stage whose `data_hash` is `SHA-256` over a canonical preimage:
+
+```
+preimage = DOMAIN_TAG || verdict || level || integrity || region || commitment
+```
+
+The fields are length-prefixed and concatenated in a fixed order under a
+domain-separation tag, so the byte layout is unambiguous and shared verbatim with
+the SDK (cross-checked against the SDK's golden vector). The region component
+covers every region type: a geometric region (ellipse / H3 cell set / bounding
+box) folds into a stable digest so an edited polygon is caught too. Editing any
+bound field after signing changes the preimage, so the re-derived hash no longer
+matches the signed stage and the proof is rejected. A proof carrying no
+`semanticFields` stage reports NOT-CHECKED for this binding.
+
 ---
 
 ## 3. Transport signature (optional)
@@ -89,15 +139,31 @@ ContinuousProofEnvelope { bytes proof_bytes; bytes proof_signature; }
 `proof_signature = Ed25519(device_signer_key, proof_bytes)` over the exact
 serialized `LocationProof`. Verifying it against the enrolled Ed25519 public key
 binds the entire proof — every visible field — to the device identity. This is
-the strongest authenticity signal v1 offers and the only one that does not
-depend on trusting the proof-embedded hardware key.
+the strongest authenticity signal the verifier offers and the only one that does
+not depend on trusting the proof-embedded hardware key.
+
+### 3.1 Replay-control binding
+
+In backend-fetch and `--envelope` modes the surrounding envelope may surface
+per-proof replay-control values — an upload nonce, the nullifier, and the signed
+timestamp — alongside the proof. These are convenience surfaces and the backend
+is untrusted (§7), so the verifier does not take them on faith: it confirms each
+one matches what the proof *signed* (the nonce against the proof's upload-stage
+hash, the nullifier against the signed `nullifier` field, the timestamp against
+the signed stage timestamp). A value the backend altered fails the check; an
+envelope that carries none reports NOT-CHECKED.
 
 ---
 
-## 4. Verification recipe (v1)
+## 4. Verification recipe
 
 1. Decode `LocationProof` (or unwrap `ContinuousProofEnvelope`).
-2. **Freshness:** reject if `|now − timestamp_ms| > window` (default 300 s).
+2. **Freshness:** judge age against the **signed** stage timestamp — the
+   `proofAssembly` stage's `timestamp_ms` (looked up by name), not the unbound
+   top-level `LocationProof.timestamp_ms`, which carries no signature and is
+   freely editable. Reject if older than the window (default 300 s) or more than
+   a small skew into the future; a divergent top-level `timestamp_ms` is surfaced
+   as a warning.
 3. **Replay (presence only):** assert `nullifier` is non-zero — i.e. a replay
    token is *present*. This is **not** a cross-proof uniqueness guarantee: a
    stateless verifier cannot prove a token was never used elsewhere.
@@ -109,26 +175,50 @@ depend on trusting the proof-embedded hardware key.
 5. **Stage signatures:** verify every stage `sig` against the hardware key,
    with the platform's encoding (§1).
 6. **Assembly:** `proofAssembly.data_hash == SHA-256(concat prior sigs)` (§2).
-7. **Field binding:** the three checks in §2.
-8. **Region:** report `claimed_region` / `level`; optionally assert expected.
-9. **Transport signature** (§3), when an envelope and Ed25519 key are supplied.
+7. **Field binding:** the three checks in §2. A field that is *present* but bound
+   by no stage **fails** — the verifier will not vouch for an unverifiable value.
+8. **Semantic-field binding:** if a `semanticFields` stage is present, re-derive
+   the canonical semantic preimage (§2.1) and check it against the stage hash, so
+   a post-sign edit of the verdict / region / level / integrity / commitment is
+   rejected. Absent → NOT-CHECKED.
+9. **Replay-control binding:** if the envelope carries `replay_control`, confirm
+   the surfaced nonce / nullifier / timestamp match what the proof signed (§3.1).
+   Absent → NOT-CHECKED.
+10. **Wire-format:** reject a proof that smuggles a duplicate of a non-repeated
+    top-level field (a last-wins parser-differential guard).
+11. **Region:** report `claimed_region` / `level`; optionally assert expected.
+12. **Transport signature** (§3), when an envelope and Ed25519 key are supplied.
+13. **Hardware attestation** (feature `appattest`), all offline (§1.1):
+    `attestation-root` validates the **Android** chain to an embedded Google root
+    (iOS, carrying a raw Secure Enclave key, is NOT-CHECKED here); `app-attest`
+    validates **iOS** App Attest to Apple's embedded root; and
+    `device-attestation-sig` verifies the field-2 device signature on both. All
+    NOT-CHECKED on a default build or under `--skip-hardware-attestation`.
 
 Any failure rejects the proof. Checks that are deliberately skipped (§5) are
 reported as NOT-CHECKED — never silently treated as passes.
 
 ---
 
-## 5. Out of scope in v1 (reported as NOT-CHECKED)
+## 5. Out of scope / conditional (reported as NOT-CHECKED)
 
-- **Hardware-key authenticity.** The Android certificate chain is not validated
-  to Google's attestation root, and iOS App Attest is not checked. So a passing
-  stage chain proves the proof is internally consistent and signed by the key it
-  *carries* — not that the key is genuine device hardware. Establishing that is
-  the job of a later attestation-root layer, or of the transport signature (§3).
-- **`device_attestation.signature`.** Platform-specific (Android binds the
-  commitment; iOS is the integrity-gate session signature); not verified in v1.
-- **Verdict / confidence / level binding.** These are bound via stage hashes
-  whose preimages require internal serialization to re-derive (a later layer).
+- **Hardware-key authenticity on a default build.** Without `--features appattest`
+  the verifier does not establish that the signing key is genuine device hardware:
+  a passing stage chain proves the proof is internally consistent and signed by
+  the key it *carries*. Under the feature this is established — App Attest (iOS)
+  or the Google-rooted key-attestation chain (Android), §1.1 — so it is
+  conditional, not unconditionally out of scope.
+- **`device_attestation.signature`.** The field-2 device signature is verified
+  under `--features appattest` on both platforms (the per-proof binding is
+  cross-platform); NOT-CHECKED on a default build.
+- **Online revocation.** Even under `--features appattest`, Google's certificate
+  status list (`android.googleapis.com/attestation/status`) is not consulted — a
+  fully-offline verifier cannot — so an Android key revoked *after* issuance is
+  not detected. The deeper verified-boot / `RootOfTrust` fields are likewise not
+  yet enforced; the attested security level already establishes hardware backing.
+- **Verdict / region / level / integrity / commitment binding.** Now checked via
+  the `semanticFields` stage when the proof carries one (§2.1); a proof predating
+  that stage reports NOT-CHECKED.
 - **ZK proof.** The current backend is a placeholder; the ZK layer contributes
   no assurance until real circuits and a bundled verifier ship.
 

@@ -144,6 +144,11 @@ fn committed_golden_vectors_still_verify() {
         let pubkey = bin.with_extension("pubkey");
         let mut cmd = Command::new(BIN);
         cmd.arg(&bin).arg("--max-age-seconds").arg("9999999999999");
+        // This is a core wire-compat guard. The committed vectors are synthetic
+        // and carry no real Google-rooted attestation chain, so on an `appattest`
+        // build we scope to core verification; the offline-attestation layer is
+        // covered by its own reject-path tests and validated on real hardware.
+        cmd.arg("--skip-hardware-attestation");
         if pubkey.exists() {
             cmd.arg("--hardware-pubkey").arg(&pubkey);
         }

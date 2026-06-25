@@ -21,6 +21,7 @@ use crate::crypto::{Ed25519VerifyingKey, P256VerifyingKey};
 ///   * iOS stores the Secure-Enclave public key directly as a raw SEC1 point.
 ///   * Android stores an X.509 certificate chain (leaf → … → Google root); the
 ///     leaf's SubjectPublicKeyInfo carries the P-256 key.
+///
 /// So we try to read the bytes as a raw SEC1 point first, then fall back to
 /// pulling the point out of the certificate's SubjectPublicKeyInfo.
 ///
@@ -120,7 +121,7 @@ fn try_decode_hex(raw: &[u8]) -> Option<Vec<u8>> {
         .copied()
         .filter(|b| !b.is_ascii_whitespace())
         .collect();
-    if digits.is_empty() || digits.len() % 2 != 0 || !digits.iter().all(u8::is_ascii_hexdigit) {
+    if digits.is_empty() || !digits.len().is_multiple_of(2) || !digits.iter().all(u8::is_ascii_hexdigit) {
         return None;
     }
     let mut out = Vec::with_capacity(digits.len() / 2);

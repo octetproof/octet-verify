@@ -1,6 +1,6 @@
 [package]
 name = "octet-verify"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 description = "Standalone, independent verifier for Octet LocationProof artifacts. Checks authenticity and integrity (signatures, hash-chain, freshness, region claim) without any device-side secret or proof-creation logic."
 repository = "https://github.com/octetproof/octet-verify"
@@ -30,6 +30,11 @@ path = "src/bin/octet-verify.rs"
 # through the exact same local verification pipeline as a local file.
 default = []
 net = ["dep:ureq", "dep:serde", "dep:serde_json", "dep:base64", "dep:ctrlc"]
+# Offline Apple App Attest verification, via the shared `octet-attest-verify`
+# crate (the auditable attestation-root layer the v1 NOTE below anticipated —
+# we depend on the shared crate rather than duplicating its logic here). Off by
+# default so the lean public verifier keeps no X.509 / CBOR surface unless asked.
+appattest = ["dep:octet-attest-verify", "dep:base64"]
 
 [dependencies]
 prost = "0.13"
@@ -37,10 +42,17 @@ sha2 = "0.10"
 p256 = "0.13"            # ECDSA P-256 verify (DER + raw), SEC1 public keys
 ed25519-dalek = "2"     # Ed25519 transport-signature verify
 anyhow = "1"
-# NOTE: no X.509 dependency in v1. The Android leaf key is pulled from the
-# certificate's SubjectPublicKeyInfo with a small dependency-free scan; full
-# X.509 parsing + chain-to-root validation belongs to the later
-# attestation-root layer, not this build.
+# NOTE: no X.509 dependency in the default build. The Android leaf key is pulled
+# from the certificate's SubjectPublicKeyInfo with a small dependency-free scan.
+# Full X.509 parsing + chain-to-root validation lives in the shared
+# `octet-attest-verify` crate, pulled only under `--features appattest`.
+
+# --- App Attest layer (feature = "appattest" only) ---
+# Pinned git dependency on the public sibling repo (pinned to a rev, not a
+# branch, for reproducible default-build resolution). Only compiled under
+# `--features appattest`; a default / `--features net` build resolves it but
+# pulls none of its code.
+octet-attest-verify = { git = "https://github.com/octetproof/octet-attest-verify", rev = "5d31e47d854e1c07e134e4be4ed3d81ebd14c46c", optional = true, features = ["config", "keyattest"] }
 
 # --- backend fetch mode (feature = "net" only) ---
 # rustls TLS (no OpenSSL / system dep); we parse bodies ourselves via

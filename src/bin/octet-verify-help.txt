@@ -34,6 +34,17 @@ OPTIONS:
                                enforced server-side at ingest.
     --expect-region <id>       Assert the proof claims this region (country or
                                subdivision ISO code, or city name).
+    --app-attest-config <file> Verify the proof's Apple App Attest evidence
+                               offline against the expected app identity in this
+                               TOML config ([app_attest] team_id / bundle_id /
+                               environment). Requires a build with the
+                               `appattest` feature; otherwise reported NOT-CHECKED.
+    --skip-hardware-attestation
+                               Scope an `appattest` build to core verification
+                               only: skip the offline hardware-attestation layer
+                               (App Attest, Android key-attestation chain, and the
+                               field-2 device-key signature). Useful for triaging
+                               a legacy or synthetic proof with no real chain.
     --json                     Emit a machine-readable report.
     -h, --help                 Show this help.
 
@@ -60,9 +71,12 @@ BACKEND FETCH MODE (subcommands; requires a build with --features net):
                            consistency). Always deduped within a single run.
     --interval <seconds>   watch poll interval. Default: 5.
     --since <ts> / --until <ts>   range bounds (RFC 3339, e.g. 2026-06-01T00:00:00Z).
-    --hardware-pubkey, --expect-region, --max-age-seconds, --json all apply as
-    above. Historical proofs are older than the default freshness window — pass
-    a wide --max-age-seconds when auditing past ranges.
+    --hardware-pubkey, --expect-region, --max-age-seconds, --json,
+    --app-attest-config, --skip-hardware-attestation all apply as above — a
+    fetched Android proof carries its real attestation chain, so on an
+    `appattest` build attestation-root runs in fetch mode too. Historical proofs
+    are older than the default freshness window — pass a wide --max-age-seconds
+    when auditing past ranges.
 
     With --json, each proof emits one report object per line (JSONL).
 

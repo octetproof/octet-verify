@@ -8,7 +8,7 @@
 //!   * success           — well-formed proof decodes + verifies (exit 0).
 //!   * tampered bytes     — backend serves a corrupted signature; fail (exit 1).
 //!   * re-fetch diff      — same proof_id returns different bytes on a later
-//!                          fetch; refetch-consistency FAIL.
+//!     fetch; refetch-consistency FAIL.
 //!   * range one-fails    — a range with one bad proof exits non-zero.
 //!   * problem+json       — an RFC 7807 error is parsed structurally + surfaced.
 //!
@@ -265,6 +265,10 @@ fn fetch_success_verifies_end_to_end() {
         "fetch", "lp_success",
         "--backend", &stub.base_url,
         "--token", "act_bearer",
+        // Synthetic stub-server proofs carry no real Google-rooted chain; these
+        // tests exercise the backend fetch/consistency/replay path, not the
+        // offline attestation layer (covered separately + on real hardware).
+        "--skip-hardware-attestation",
         "--max-age-seconds", HUGE_MAX_AGE,
     ]);
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -291,6 +295,10 @@ fn tampered_backend_bytes_fail_loud() {
         "fetch", "lp_tampered",
         "--backend", &stub.base_url,
         "--token", "act_bearer",
+        // Synthetic stub-server proofs carry no real Google-rooted chain; these
+        // tests exercise the backend fetch/consistency/replay path, not the
+        // offline attestation layer (covered separately + on real hardware).
+        "--skip-hardware-attestation",
         "--max-age-seconds", HUGE_MAX_AGE,
     ]);
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -327,6 +335,10 @@ fn refetch_diff_is_caught_via_seen_store() {
         "fetch", "lp_diff",
         "--backend", stub.base_url.as_str(),
         "--token", "act_bearer",
+        // Synthetic stub-server proofs carry no real Google-rooted chain; these
+        // tests exercise the backend fetch/consistency/replay path, not the
+        // offline attestation layer (covered separately + on real hardware).
+        "--skip-hardware-attestation",
         "--seen-store", store_str,
         "--max-age-seconds", HUGE_MAX_AGE,
     ];
@@ -368,6 +380,10 @@ fn range_exits_nonzero_when_any_proof_fails() {
         "range",
         "--backend", &stub.base_url,
         "--token", "act_bearer",
+        // Synthetic stub-server proofs carry no real Google-rooted chain; these
+        // tests exercise the backend fetch/consistency/replay path, not the
+        // offline attestation layer (covered separately + on real hardware).
+        "--skip-hardware-attestation",
         "--since", "2026-06-01T00:00:00Z",
         "--until", "2026-06-30T00:00:00Z",
         "--max-age-seconds", HUGE_MAX_AGE,
@@ -403,6 +419,10 @@ fn range_exits_3_when_inconclusive_but_none_invalid() {
         "range",
         "--backend", &stub.base_url,
         "--token", "act_bearer",
+        // Synthetic stub-server proofs carry no real Google-rooted chain; these
+        // tests exercise the backend fetch/consistency/replay path, not the
+        // offline attestation layer (covered separately + on real hardware).
+        "--skip-hardware-attestation",
         "--since", "2026-06-07T00:00:00Z",
         "--until", "2026-06-08T00:00:00Z",
         "--max-age-seconds", HUGE_MAX_AGE,
@@ -432,6 +452,10 @@ fn backend_json_valid_false_when_signatures_unverified() {
         "fetch", "lp_nokey",
         "--backend", &stub.base_url,
         "--token", "act_bearer",
+        // Synthetic stub-server proofs carry no real Google-rooted chain; these
+        // tests exercise the backend fetch/consistency/replay path, not the
+        // offline attestation layer (covered separately + on real hardware).
+        "--skip-hardware-attestation",
         "--json",
         "--max-age-seconds", HUGE_MAX_AGE,
     ]);
@@ -455,6 +479,10 @@ fn problem_json_error_is_parsed_and_surfaced() {
         "fetch", "lp_anything",
         "--backend", &stub.base_url,
         "--token", "act_bearer",
+        // Synthetic stub-server proofs carry no real Google-rooted chain; these
+        // tests exercise the backend fetch/consistency/replay path, not the
+        // offline attestation layer (covered separately + on real hardware).
+        "--skip-hardware-attestation",
     ]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(2), "backend error should exit 2");

@@ -44,38 +44,71 @@ local file, and no backend-supplied field affects the verdict. See
 how to read a verdict). Default release builds (and any public-release
 artifacts) should be built **without** this feature.
 
-## What it verifies (v1)
+## What it verifies
 
 - stage attestation chain linkage and each per-stage hardware **ECDSA-P256**
   signature (DER on Android, raw on iOS, selected by the proof's `platform`);
 - the `proofAssembly` stage binding every prior stage signature;
 - `commitment` / `nullifier` / ZK-bytes bound to their signed stage hashes;
-- freshness, and optional cross-run replay (`--nullifier-store`);
+- **semantic-field binding** — the spoofing verdict, region, trust level, device
+  integrity, and committed position bound to the signed proof, so editing any of
+  them after signing is rejected (every region type, including geometric);
+- **replay-control binding** — when a fetched/enveloped proof carries per-proof
+  replay-control values, they are checked against what the proof actually signed;
+- a **wire-format guard** that rejects a proof smuggling a duplicate top-level
+  field;
+- freshness (judged on the proof's *signed* timestamp), and optional cross-run
+  replay (`--nullifier-store`);
 - the **Ed25519 transport signature** when given an envelope and the enrolled
   key (`--envelope --ed25519-pubkey …`) — this binds the *whole* proof to the
-  device identity and is the strongest authenticity signal here.
+  device identity and is the strongest authenticity signal here;
+- **Hardware attestation**, offline, when built `--features appattest`: on iOS,
+  **Apple App Attest** to Apple's embedded root (with `--app-attest-config`); on
+  Android, the **key-attestation certificate chain** to an embedded Google
+  hardware-attestation root; and the device-attestation signature on either
+  platform — all becoming real Pass/Fail. See
+  [Hardware attestation](#hardware-attestation-optional---features-appattest) below.
 
-## What it does NOT verify yet — and says so
+## What it does NOT verify — and says so
 
 Every skipped check is printed as `NOT-CHECKED`, never as a pass:
 
-- **Hardware-key authenticity.** The Android certificate chain is not validated
-  to Google's attestation root, and iOS App Attest is not checked. A passing
-  stage chain proves the proof is internally consistent and signed by the key it
-  *carries* — not that the key is genuine device hardware. For real
-  device-identity binding today, use the Ed25519 transport signature; full
-  attestation-root validation is out of scope for v1.
-- `device_attestation.signature` (platform-specific), the verdict/confidence/
-  level fields, and the ZK proof (placeholder backend) — see
-  [`VERIFICATION-SPEC.md`](VERIFICATION-SPEC.md).
+- **Hardware-key authenticity on a default build.** Without `--features appattest`
+  the verifier does not establish that the signing key is genuine device hardware
+  — a passing stage chain proves only that the proof is internally consistent and
+  signed by the key it *carries*. Build `--features appattest` (below), or use the
+  Ed25519 transport signature, for device-identity assurance.
+- **Online revocation.** Even under `appattest`, Google's certificate status list
+  is not consulted (a fully-offline verifier cannot), so an Android key revoked
+  after issuance is not detected. The ZK proof (placeholder backend) is also
+  `NOT-CHECKED`. See [`VERIFICATION-SPEC.md`](VERIFICATION-SPEC.md).
+
+### Hardware attestation (optional, `--features appattest`)
+
+Opt-in at build time, like backend fetch. It pulls in the public
+`octet-attest-verify` crate to verify, **offline** (vendor roots embedded; no
+network call):
+
+- **iOS** — Apple App Attest evidence to Apple's root;
+- **Android** — the Keystore certificate chain to an embedded, fingerprint-pinned
+  Google hardware-attestation root (RSA-4096 + the ECDSA P-384 root effective
+  2026-02-01), plus the leaf's TEE / StrongBox security level;
+- the device-attestation signature (field 2) on either platform.
+
+```sh
+cargo build --release --features appattest
+octet-verify proof.bin --app-attest-config app-attest.toml   # iOS app identity
+# --skip-hardware-attestation scopes an appattest build back to core verification
+```
 
 ## Trust model in one line
 
 A passing `octet-verify` run means: *this proof is internally consistent and
 self-signed by the key it carries (plus, if an envelope was supplied, bound to
-the enrolled device identity)* — and, explicitly, **not** that the signing key
-is rooted in genuine hardware (attestation-root validation is out of scope for
-v1).
+the enrolled device identity; plus, under `--features appattest`, a key proven to
+be genuine secure hardware — Secure Enclave on iOS, TEE / StrongBox on Android)*
+— and, on a default build, **not** that the signing key is rooted in genuine
+hardware.
 
 ## Layout
 
