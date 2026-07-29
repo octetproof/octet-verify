@@ -28,6 +28,9 @@ struct Args {
     max_age_s: Option<i64>,
     nullifier_store: Option<String>,
     expect_region: Option<String>,
+    session_nonce: Option<Vec<u8>>,
+    require_session_binding: bool,
+    require_schema_v2: bool,
     app_attest_config: Option<String>,
     skip_hardware_attestation: bool,
     json: bool,
@@ -101,6 +104,9 @@ fn run(args: &Args) -> anyhow::Result<Report> {
         hardware_pubkey: hw_key.as_ref(),
         hw_key_source: &hw_source,
         expect_region: args.expect_region.as_deref(),
+        session_nonce: args.session_nonce.as_deref(),
+        require_session_binding: args.require_session_binding,
+        require_schema_v2: args.require_schema_v2,
     };
 
     let mut report = verify(&proof, &opts);
@@ -116,7 +122,7 @@ fn run(args: &Args) -> anyhow::Result<Report> {
     if args.envelope {
         report
             .checks
-            .push(octet_verify::replay::check_replay_binding(&proof, replay_control.as_ref()));
+            .push(octet_verify::replay::check_replay_binding(&proof, replay_control.as_ref(), args.require_schema_v2));
     }
 
     // Ed25519 transport signature (only meaningful in --envelope mode).
@@ -176,6 +182,7 @@ fn run(args: &Args) -> anyhow::Result<Report> {
                 .push(octet_verify::appattest_layer::attestation_root_check(
                     &proof,
                     now_unix_secs,
+                    None, // CLI does not do per-tenant Android app-binding; library/service path only
                 ));
 
             let pubkey_sec1 = hw_key.as_ref().map(|vk| vk.to_sec1_bytes());
@@ -453,6 +460,12 @@ fn parse_args() -> Result<Args, String> {
             "--ed25519-pubkey" => args.ed25519_pubkey = Some(need_value(&mut iter, &a)?),
             "--nullifier-store" => args.nullifier_store = Some(need_value(&mut iter, &a)?),
             "--expect-region" => args.expect_region = Some(need_value(&mut iter, &a)?),
+            "--session-nonce" => {
+                let v = need_value(&mut iter, &a)?;
+                args.session_nonce = Some(parse_hex_nonce(&v)?);
+            }
+            "--require-session-binding" => args.require_session_binding = true,
+            "--require-schema-v2" => args.require_schema_v2 = true,
             "--app-attest-config" => args.app_attest_config = Some(need_value(&mut iter, &a)?),
             "--skip-hardware-attestation" => args.skip_hardware_attestation = true,
             "--max-age-seconds" => {
@@ -473,6 +486,33 @@ fn parse_args() -> Result<Args, String> {
 
 fn need_value(iter: &mut impl Iterator<Item = String>, flag: &str) -> Result<String, String> {
     iter.next().ok_or_else(|| format!("{flag} requires a value"))
+}
+
+/// Decode a hex string (optional `0x`, even length) into raw bytes — the CLI
+/// form of `--session-nonce`. The library API (`VerifyOptions.session_nonce`)
+/// takes raw bytes directly, which is what a relying party integrating the crate
+/// uses; the flag is a convenience for manual verification and testing.
+fn parse_hex_nonce(s: &str) -> Result<Vec<u8>, String> {
+    let s = s.strip_prefix("0x").unwrap_or(s);
+    let b = s.as_bytes();
+    if !b.len().is_multiple_of(2) {
+        return Err("--session-nonce must be an even-length hex string".into());
+    }
+    let nibble = |c: u8| -> Result<u8, String> {
+        match c {
+            b'0'..=b'9' => Ok(c - b'0'),
+            b'a'..=b'f' => Ok(c - b'a' + 10),
+            b'A'..=b'F' => Ok(c - b'A' + 10),
+            _ => Err("--session-nonce is not valid hex".into()),
+        }
+    };
+    let mut out = Vec::with_capacity(b.len() / 2);
+    let mut i = 0;
+    while i < b.len() {
+        out.push((nibble(b[i])? << 4) | nibble(b[i + 1])?);
+        i += 2;
+    }
+    Ok(out)
 }
 
 // ===========================================================================
@@ -523,7 +563,7 @@ mod backend {
     use octet_verify::prost::Message;
     use octet_verify::verify::{verify, Check, Report, Status, VerifyOptions};
 
-    use super::{headline, json_escape, sanitize_terminal, to_hex, DEFAULT_MAX_AGE_S};
+    use super::{headline, json_escape, parse_hex_nonce, sanitize_terminal, to_hex, DEFAULT_MAX_AGE_S};
 
     const DEFAULT_WATCH_INTERVAL_S: u64 = 5;
 
@@ -540,6 +580,9 @@ mod backend {
         seen_store: Option<String>,
         hardware_pubkey: Option<String>,
         expect_region: Option<String>,
+        session_nonce: Option<Vec<u8>>,
+        require_session_binding: bool,
+        require_schema_v2: bool,
         max_age_s: Option<i64>,
         json: bool,
         interval_s: u64,
@@ -664,6 +707,7 @@ mod backend {
             report.checks.push(octet_verify::replay::check_replay_binding(
                 &proof,
                 env.replay_control().as_ref(),
+                args.require_schema_v2,
             ));
         }
         let hash = canonical_proof_hash(&bytes);
@@ -694,6 +738,9 @@ mod backend {
             hardware_pubkey: hw_key.as_ref(),
             hw_key_source: &hw_source,
             expect_region: args.expect_region.as_deref(),
+            session_nonce: args.session_nonce.as_deref(),
+            require_session_binding: args.require_session_binding,
+            require_schema_v2: args.require_schema_v2,
         };
         let mut report = verify(&proof, &opts);
         // Same wire-format guard as the local path: fetched bytes are untrusted.
@@ -715,6 +762,7 @@ mod backend {
                     .push(octet_verify::appattest_layer::attestation_root_check(
                         &proof,
                         now_unix_secs,
+                        None, // CLI does not do per-tenant Android app-binding; library/service path only
                     ));
                 let pubkey_sec1 = hw_key.as_ref().map(|vk| vk.to_sec1_bytes());
                 report
@@ -923,6 +971,9 @@ mod backend {
         let mut seen_store = None;
         let mut hardware_pubkey = None;
         let mut expect_region = None;
+        let mut session_nonce = None;
+        let mut require_session_binding = false;
+        let mut require_schema_v2 = false;
         let mut max_age_s = None;
         let mut json = false;
         let mut interval_s = DEFAULT_WATCH_INTERVAL_S;
@@ -940,6 +991,11 @@ mod backend {
                 "--seen-store" => seen_store = Some(need(&mut it, a)?),
                 "--hardware-pubkey" => hardware_pubkey = Some(need(&mut it, a)?),
                 "--expect-region" => expect_region = Some(need(&mut it, a)?),
+                "--session-nonce" => {
+                    session_nonce = Some(parse_hex_nonce(&need(&mut it, a)?).map_err(|e| anyhow!("{e}"))?);
+                }
+                "--require-session-binding" => require_session_binding = true,
+                "--require-schema-v2" => require_schema_v2 = true,
                 "--json" => json = true,
                 "--max-age-seconds" => {
                     max_age_s = Some(need(&mut it, a)?.parse().map_err(|e| {
@@ -998,6 +1054,9 @@ mod backend {
             seen_store,
             hardware_pubkey,
             expect_region,
+            session_nonce,
+            require_session_binding,
+            require_schema_v2,
             max_age_s,
             json,
             interval_s,

@@ -35,6 +35,7 @@ pub mod attest {
 pub mod crypto;
 pub mod keys;
 pub mod replay;
+pub mod session;
 pub mod verify;
 pub mod wire;
 

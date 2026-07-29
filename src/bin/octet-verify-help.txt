@@ -34,6 +34,23 @@ OPTIONS:
                                enforced server-side at ingest.
     --expect-region <id>       Assert the proof claims this region (country or
                                subdivision ISO code, or city name).
+    --session-nonce <hex>      Assert the proof is bound to this per-login session
+                               nonce (hex). Supply the nonce the relying party
+                               issued at login; verification recomputes the
+                               signed sessionBinding stage over it. Absent ⇒
+                               session-binding is NOT-CHECKED; supplied but
+                               unmatched or unbound ⇒ FAIL.
+    --require-session-binding  Require the per-login session binding: FAIL (not
+                               NOT-CHECKED) if the proof carries no matching
+                               commitment — no --session-nonce given, or no
+                               sessionBinding stage. Off by default. Use it when
+                               verifying a stored/relayed proof you require bound.
+    --require-schema-v2        Require schema-v2 binding material: a proof with no
+                               semanticFields stage (and, in --envelope mode, an
+                               envelope with no replay-control) FAILs instead of
+                               reporting NOT-CHECKED. Off by default (back-compat:
+                               older proofs still verify). Arm this in lockstep
+                               with the ingest gate; it is instantly reversible.
     --app-attest-config <file> Verify the proof's Apple App Attest evidence
                                offline against the expected app identity in this
                                TOML config ([app_attest] team_id / bundle_id /
@@ -71,8 +88,9 @@ BACKEND FETCH MODE (subcommands; requires a build with --features net):
                            consistency). Always deduped within a single run.
     --interval <seconds>   watch poll interval. Default: 5.
     --since <ts> / --until <ts>   range bounds (RFC 3339, e.g. 2026-06-01T00:00:00Z).
-    --hardware-pubkey, --expect-region, --max-age-seconds, --json,
-    --app-attest-config, --skip-hardware-attestation all apply as above — a
+    --hardware-pubkey, --expect-region, --session-nonce, --require-session-binding,
+    --require-schema-v2, --max-age-seconds,
+    --json, --app-attest-config, --skip-hardware-attestation all apply as above — a
     fetched Android proof carries its real attestation chain, so on an
     `appattest` build attestation-root runs in fetch mode too. Historical proofs
     are older than the default freshness window — pass a wide --max-age-seconds

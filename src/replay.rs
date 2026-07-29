@@ -56,9 +56,26 @@ impl From<crate::attest::ReplayControl> for ReplayControl {
 /// Confirm the envelope's `replay_control` is bound to the signed proof. Returns
 /// the `replay-binding` check: `Pass` when every present binding holds, `Fail`
 /// on any mismatch, `NotChecked` when the envelope carries no replay-control.
-pub fn check_replay_binding(proof: &LocationProof, rc: Option<&ReplayControl>) -> Check {
+pub fn check_replay_binding(
+    proof: &LocationProof,
+    rc: Option<&ReplayControl>,
+    require_schema_v2: bool,
+) -> Check {
     const NAME: &str = "replay-binding";
     let rc = match rc {
+        // Absent replay-control: back-compat NOT-CHECKED, unless the schema-v2 flip
+        // is armed — then an enveloped proof lacking replay-control FAILs (a
+        // schema-v2 envelope must carry it; a v1 one is what the flip rejects).
+        None if require_schema_v2 => {
+            return Check {
+                name: NAME,
+                status: Status::Fail,
+                detail: "no replay_control on the envelope, but schema-v2 is required \
+                         (require_schema_v2): the upload nonce / nullifier / signed \
+                         timestamp are unbound"
+                    .into(),
+            }
+        }
         None => {
             return Check {
                 name: NAME,
@@ -162,7 +179,7 @@ mod tests {
     #[test]
     fn all_three_bindings_hold() {
         let p = proof_with(b"nonce-xyz", b"nullA", 1_700_000_000_000);
-        let c = check_replay_binding(&p, Some(&rc(b"nonce-xyz", b"nullA", 1_700_000_000_000)));
+        let c = check_replay_binding(&p, Some(&rc(b"nonce-xyz", b"nullA", 1_700_000_000_000)), false);
         assert_eq!(c.status, Status::Pass);
     }
 
@@ -172,7 +189,7 @@ mod tests {
     #[test]
     fn wrong_nonce_fails_binding() {
         let p = proof_with(b"real-nonce", b"nullA", 1_700_000_000_000);
-        let c = check_replay_binding(&p, Some(&rc(b"attacker-nonce", b"nullA", 1_700_000_000_000)));
+        let c = check_replay_binding(&p, Some(&rc(b"attacker-nonce", b"nullA", 1_700_000_000_000)), false);
         assert_eq!(c.status, Status::Fail);
     }
 
@@ -182,7 +199,7 @@ mod tests {
     fn nonce_without_upload_challenge_stage_fails() {
         let mut p = proof_with(b"n", b"nullA", 1);
         p.stage_attestations.retain(|s| s.stage != UPLOAD_CHALLENGE_STAGE);
-        let c = check_replay_binding(&p, Some(&rc(b"n", b"nullA", 1)));
+        let c = check_replay_binding(&p, Some(&rc(b"n", b"nullA", 1)), false);
         assert_eq!(c.status, Status::Fail);
     }
 
@@ -191,7 +208,7 @@ mod tests {
     #[test]
     fn nullifier_echo_mismatch_fails() {
         let p = proof_with(b"n", b"realNull", 1);
-        let c = check_replay_binding(&p, Some(&rc(b"n", b"fakeNull", 1)));
+        let c = check_replay_binding(&p, Some(&rc(b"n", b"fakeNull", 1)), false);
         assert_eq!(c.status, Status::Fail);
     }
 
@@ -200,7 +217,7 @@ mod tests {
     #[test]
     fn timestamp_echo_mismatch_fails() {
         let p = proof_with(b"n", b"nullA", 1_700_000_000_000);
-        let c = check_replay_binding(&p, Some(&rc(b"n", b"nullA", 1_699_000_000_000)));
+        let c = check_replay_binding(&p, Some(&rc(b"n", b"nullA", 1_699_000_000_000)), false);
         assert_eq!(c.status, Status::Fail);
     }
 
@@ -209,8 +226,23 @@ mod tests {
     #[test]
     fn absent_replay_control_is_not_checked() {
         let p = proof_with(b"n", b"nullA", 1);
-        let c = check_replay_binding(&p, None);
+        let c = check_replay_binding(&p, None, false);
         assert_eq!(c.status, Status::NotChecked);
+    }
+
+    /// Schema-v2 flip: with `require_schema_v2` armed, an enveloped proof carrying no
+    /// replay-control FAILs instead of NOT-CHECKED. Disarmed (the default) keeps
+    /// the back-compat NOT-CHECKED. A present-and-valid replay-control PASSes
+    /// regardless of the flag.
+    #[test]
+    fn require_schema_v2_makes_replay_binding_mandatory() {
+        let p = proof_with(b"nonce-xyz", b"nullA", 1_700_000_000_000);
+        // Absent replay-control: disarmed → NOT-CHECKED; armed → FAIL.
+        assert_eq!(check_replay_binding(&p, None, false).status, Status::NotChecked);
+        assert_eq!(check_replay_binding(&p, None, true).status, Status::Fail);
+        // A valid replay-control passes whether or not the flip is armed.
+        let good = Some(rc(b"nonce-xyz", b"nullA", 1_700_000_000_000));
+        assert_eq!(check_replay_binding(&p, good.as_ref(), true).status, Status::Pass);
     }
 
     /// replay_control present but the nonce empty → FAIL (a malformed control,
@@ -218,7 +250,7 @@ mod tests {
     #[test]
     fn present_but_empty_nonce_fails() {
         let p = proof_with(b"n", b"nullA", 1);
-        let c = check_replay_binding(&p, Some(&rc(b"", b"nullA", 1)));
+        let c = check_replay_binding(&p, Some(&rc(b"", b"nullA", 1)), false);
         assert_eq!(c.status, Status::Fail);
     }
 

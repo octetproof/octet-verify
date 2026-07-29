@@ -1,6 +1,6 @@
 [package]
 name = "octet-verify"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 description = "Standalone, independent verifier for Octet LocationProof artifacts. Checks authenticity and integrity (signatures, hash-chain, freshness, region claim) without any device-side secret or proof-creation logic."
 repository = "https://github.com/octetproof/octet-verify"
@@ -18,6 +18,12 @@ path = "src/lib.rs"
 name = "octet-verify"
 path = "src/bin/octet-verify.rs"
 
+# Out-of-band key-enrolment demo. Uses the appattest-only enrolment API, so it is
+# built only when that feature is on (a default `cargo build` skips it).
+[[example]]
+name = "enroll_e2e"
+required-features = ["appattest"]
+
 [features]
 # Off by default: the core verifier is a small, publicly-auditable trust
 # anchor with no network or JSON-parsing surface. `cargo build` /
@@ -33,8 +39,10 @@ net = ["dep:ureq", "dep:serde", "dep:serde_json", "dep:base64", "dep:ctrlc"]
 # Offline Apple App Attest verification, via the shared `octet-attest-verify`
 # crate (the auditable attestation-root layer the v1 NOTE below anticipated —
 # we depend on the shared crate rather than duplicating its logic here). Off by
-# default so the lean public verifier keeps no X.509 / CBOR surface unless asked.
-appattest = ["dep:octet-attest-verify", "dep:base64"]
+# default so the lean public verifier keeps no X.509 / CBOR / JSON surface unless
+# asked. Pulls serde_json only for the out-of-band key-enrolment bundle
+# (`appattest_layer::bundle_from_json`); the proto bundle path reuses prost.
+appattest = ["dep:octet-attest-verify", "dep:base64", "dep:serde", "dep:serde_json"]
 
 [dependencies]
 prost = "0.13"
@@ -52,7 +60,7 @@ anyhow = "1"
 # branch, for reproducible default-build resolution). Only compiled under
 # `--features appattest`; a default / `--features net` build resolves it but
 # pulls none of its code.
-octet-attest-verify = { git = "https://github.com/octetproof/octet-attest-verify", rev = "5d31e47d854e1c07e134e4be4ed3d81ebd14c46c", optional = true, features = ["config", "keyattest"] }
+octet-attest-verify = { git = "https://github.com/octetproof/octet-attest-verify", rev = "d79045079bd0d39ede4ce1b3ddfbf1d60ab089e0", optional = true, features = ["config", "keyattest"] }
 
 # --- backend fetch mode (feature = "net" only) ---
 # rustls TLS (no OpenSSL / system dep); we parse bodies ourselves via

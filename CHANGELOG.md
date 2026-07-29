@@ -4,6 +4,82 @@ All notable changes to `octet-verify` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [1.2.0] - 2026-07-29
+
+### Added
+- **Android app-identity binding (opt-in)** under `--features appattest`.
+  `Expectation` gains `android: Option<ExpectedAppIdentity>` (set via
+  `.with_android(package_name, signing_cert_sha256)`); `attestation_root_check`
+  and `verify_attested(_cached)` thread it through so an Android proof's
+  key-attestation must also name the expected package and carry the expected
+  signing-cert SHA-256, not just chain to a Google hardware root. On mismatch (or
+  an absent/unparseable app id when one is required) the `attestation-root` check
+  FAILs, gating `is_attested()`. Opt-in and back-compat: with no Android identity
+  supplied, Android behaves exactly as before (hardware root only). iOS is
+  unchanged (already app-bound via App Attest). Requires `octet-attest-verify`
+  v1.1.0.
+- **Per-login session binding** — a new `session-binding` check confirms a proof
+  is bound to the login session it was produced under, closing a replay across
+  logins. The SDK commits a per-login nonce in a signed `sessionBinding` stage
+  (`data_hash = SHA256("octet-session-binding-v1" ‖ uint32_be(len) ‖ nonce)`);
+  the relying party supplies the nonce it issued at login (library:
+  `VerifyOptions.session_nonce`; CLI: `--session-nonce <hex>`), and the verifier
+  recomputes the stage over it. Matches → PASS; wrong nonce or missing stage when
+  a nonce is supplied → FAIL. Additive and back-compat: with no expected nonce
+  supplied the check is NOT-CHECKED, so existing proofs verify unchanged. The
+  nonce never rides the wire — only its hash, inside the signed stage. A
+  `VerifyOptions.require_session_binding` flag (CLI `--require-session-binding`)
+  makes it **fail-closed** — an unsupplied/absent binding FAILs instead of
+  NOT-CHECKED — for a consumer that requires a stored/relayed proof to be
+  session-bound.
+- **Typed `Report` accessors + a composed attestation entry for library
+  consumers.** So an automated consumer reads distinct verification outcomes
+  without matching check names by hand, `Report` gains `is_attested()` (hardware
+  attestation passed — iOS App Attest or the Android key-attestation chain),
+  `is_fresh()` (the freshness check passed; a within-skew "future" `Warn` is not
+  fresh), and `is_semantically_bound()` (the spoofing verdict / region / level /
+  integrity / commitment are the signed values — required before trusting those
+  fields), alongside the existing `is_valid` / `is_authentic`. New
+  `appattest_layer::verify_attested(proof, opts, &expect)` (feature `appattest`)
+  runs `verify()` and appends the offline hardware-attestation checks in one
+  call, so the returned report's `is_attested()` is populated. Additive; no wire
+  change, no new dependencies.
+- **`appattest_layer::verify_attested_cached`** (feature `appattest`) — a
+  cache-aware variant of `verify_attested` for a consumer verifying a stream of
+  proofs from the same iOS App Attest key. It threads a cached `AttestedKey` into
+  the App Attest check (so assertion-only proofs after the once-per-key
+  attestation object still attest) and returns the advanced key to re-persist,
+  keeping the assertion counter monotonic. `verify_attested` is now this with an
+  empty cache. Android needs no cache.
+- **App Attest key-enrolment entrypoint** (`--features appattest`) — a new
+  library entrypoint, `appattest_layer::appattest_enroll`, verifies an
+  out-of-band enrolment bundle (the object-bearing `DeviceAttestation` subset:
+  `key_id`, the App Attest attestation object, an assertion, and the original
+  attestation nonce the object was attested with) and returns the attested key
+  to cache. This lets a verifier bootstrap a device key's hardware root from an
+  explicitly-delivered bundle instead of depending on the once-per-key
+  attestation object riding a submitted proof — so a fresh or scaled-out
+  verifier with an empty key cache can still establish the key rather than
+  stranding it. The bundle deserializes from JSON (`bundle_from_json`, schema
+  `v:1`, every field base64url-no-pad) or protobuf (`bundle_from_proto`).
+  Enrolment verifies the object against the nonce carried in the bundle (no
+  server challenge); this only recovers the device's public key, while liveness
+  and anti-replay remain the job of per-proof assertions and replay control.
+  Purely additive: no proof-wire change, and no change to what an existing proof
+  verifies.
+
+### Changed
+- **Schema-v2 mandatory flip — opt-in transition flag.** A new
+  `VerifyOptions.require_schema_v2` (CLI: `--require-schema-v2`) turns the two
+  back-compat NOT-CHECKED bindings into hard failures: when armed, a proof with
+  no `semanticFields` stage FAILs `semantic-binding`, and (in `--envelope` /
+  fetch modes) an envelope carrying no replay-control FAILs `replay-binding` —
+  the proof-side equivalent of requiring schema-v2. **Off by default**, so
+  existing proofs (incl. the committed golden vectors) verify unchanged. Arm it
+  in lockstep with the backend's schema-v2 ingest gate and set it back to
+  `false` to roll back instantly; schema-v2 shipped with SDK 1.1.0, so the
+  effective minimum SDK when armed is 1.1.0.
+
 ## [1.1.0] - 2026-06-25
 
 Adds the proof-binding layers the v1.0.0 NOTE anticipated — device attestation,

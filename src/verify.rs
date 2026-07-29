@@ -93,6 +93,49 @@ impl Report {
     pub fn is_authentic(&self) -> bool {
         self.is_valid() && self.sigs_verified()
     }
+
+    /// True iff the device's **hardware attestation** was affirmatively verified:
+    /// the `app-attest` check passed (iOS Apple App Attest → Apple root) or the
+    /// `attestation-root` check passed (Android key-attestation chain → Google
+    /// root). A distinct, typed signal so an automated consumer never has to
+    /// match check names by hand.
+    ///
+    /// Note: [`verify`] does **not** itself run the offline hardware-attestation
+    /// layer — those checks come from `appattest_layer` (feature `appattest`) and
+    /// must be appended to the report by the caller (as the CLI does). On a report
+    /// from `verify` alone this is therefore always `false`; it becomes meaningful
+    /// once the attestation checks are present. The per-proof field-2 signature
+    /// (`device-attestation-sig`) is a separate check and is not folded in here.
+    pub fn is_attested(&self) -> bool {
+        self.checks
+            .iter()
+            .any(|c| matches!(c.name, "app-attest" | "attestation-root") && c.status == Status::Pass)
+    }
+
+    /// True iff the freshness check **passed** (`Status::Pass`) — the proof's
+    /// signed timestamp is within the window set by [`VerifyOptions::max_age_s`].
+    /// A `Warn` (signed time slightly in the future, within clock skew) is
+    /// deliberately NOT treated as fresh; only a clean pass counts. Read
+    /// distinctly from authenticity so a consumer can bind freshness to its own
+    /// per-decision policy.
+    pub fn is_fresh(&self) -> bool {
+        self.checks
+            .iter()
+            .any(|c| c.name == "freshness" && c.status == Status::Pass)
+    }
+
+    /// True iff the `semantic-binding` check **passed** — the spoofing verdict,
+    /// claimed region, level, device-integrity status, and position commitment
+    /// are the exact values that were signed. Those proof fields are only
+    /// tamper-evident when this holds: a proof predating semantic-field binding
+    /// reports the check `NotChecked` (the fields decode but aren't bound). A
+    /// consumer that reads `spoofing_verdict` / `claimed_region` should gate on
+    /// `is_authentic() && is_semantically_bound()` and fail closed otherwise.
+    pub fn is_semantically_bound(&self) -> bool {
+        self.checks
+            .iter()
+            .any(|c| c.name == "semantic-binding" && c.status == Status::Pass)
+    }
 }
 
 /// Inputs to [`verify`]. The hardware key and its provenance are resolved by
@@ -103,6 +146,25 @@ pub struct VerifyOptions<'a> {
     pub hardware_pubkey: Option<&'a P256VerifyingKey>,
     pub hw_key_source: &'a str,
     pub expect_region: Option<&'a str>,
+    /// Per-login session nonce the relying party issued, checked against the
+    /// proof's `sessionBinding` stage. `None` ⇒ the binding is NOT-CHECKED
+    /// unless `require_session_binding` is set (then absent/unsupplied ⇒ FAIL).
+    pub session_nonce: Option<&'a [u8]>,
+    /// Require the per-login session binding (fail-closed). When `true`, the
+    /// `session-binding` check FAILs — rather than reporting NOT-CHECKED — if the
+    /// proof carries no matching commitment (no nonce supplied, or no
+    /// `sessionBinding` stage). Off by default (back-compat). Use it when
+    /// verifying a stored/relayed proof you require to be session-bound.
+    pub require_session_binding: bool,
+    /// Transition flag for the schema-v2 mandatory flip. When `false` (the
+    /// default posture), the verifier is back-compat: `semantic-binding` (and,
+    /// in envelope modes, `replay-binding`) report NOT-CHECKED when the signed
+    /// binding material is absent. When `true`, that material becomes
+    /// **mandatory** — an absent `semanticFields` stage (or absent envelope
+    /// replay-control) FAILs the proof. This is the proof-side equivalent of
+    /// requiring schema-v2; arm it in lockstep with the backend's schema-v2
+    /// ingest gate. Instantly reversible: set back to `false`.
+    pub require_schema_v2: bool,
 }
 
 /// Verify a decoded [`LocationProof`] and return a structured [`Report`].
@@ -232,7 +294,16 @@ pub fn verify(proof: &LocationProof, opts: &VerifyOptions) -> Report {
     #[cfg(not(feature = "appattest"))]
     r.add("device-attestation-sig", Status::NotChecked,
         "DeviceAttestation.signature not verified in the default build (build --features appattest to verify field 2)");
-    r.add_semantic_binding(proof);
+    r.add_semantic_binding(proof, opts.require_schema_v2);
+    // Per-login session binding — checked against the nonce the relying party
+    // supplies. NOT-CHECKED (the default) when no nonce is given; when
+    // `require_session_binding` is set, an unsupplied/absent binding FAILs. See
+    // `session`.
+    r.checks.push(crate::session::check_session_binding(
+        proof,
+        opts.session_nonce,
+        opts.require_session_binding,
+    ));
     match &proof.zk_proof {
         Some(zk) if zk.backend == crate::navigate::ZkBackend::Placeholder as i32 =>
             r.add("zk-proof", Status::NotChecked, "backend is PLACEHOLDER; ZK layer contributes no assurance"),
@@ -313,9 +384,13 @@ impl Report {
     /// any covered field breaks the hash → FAIL. Absent stage → NOT-CHECKED (a
     /// proof predating semantic-field binding). Replaces the old `verdict-binding`
     /// placeholder.
-    fn add_semantic_binding(&mut self, proof: &LocationProof) {
+    fn add_semantic_binding(&mut self, proof: &LocationProof, require_schema_v2: bool) {
         const NAME: &str = "semantic-binding";
         match stage_by_name(&proof.stage_attestations, SEMANTIC_FIELDS_STAGE) {
+            // Absent: back-compat NOT-CHECKED, unless the schema-v2 flip is armed —
+            // then the binding is mandatory and a proof that predates it FAILs.
+            None if require_schema_v2 => self.add(NAME, Status::Fail,
+                "no semanticFields stage, but schema-v2 binding is required (require_schema_v2): the spoofing_verdict / region / level / integrity / commitment are unbound"),
             None => self.add(NAME, Status::NotChecked,
                 "no semanticFields stage; spoofing_verdict / region / level / integrity / commitment not bound (proof predates semantic-field binding)"),
             Some(st) if crypto::sha256(&semantic_preimage(proof)).as_slice() == st.data_hash.as_slice() =>
@@ -577,6 +652,73 @@ mod tests {
         assert!(!bad.is_authentic());
     }
 
+    /// `is_fresh` reflects a *passing* freshness check only (Warn ≠ fresh), and
+    /// `is_attested` reflects a passing hardware-attestation check (iOS App Attest
+    /// or Android attestation-root), independent of authenticity.
+    #[test]
+    fn is_fresh_and_is_attested_are_distinct_typed_signals() {
+        let mut fresh = Report::new();
+        fresh.add("freshness", Status::Pass, "ok");
+        assert!(fresh.is_fresh());
+        assert!(!fresh.is_attested(), "no attestation check present");
+
+        // A Warn freshness (slightly-future within skew) is not "fresh".
+        let mut warned = Report::new();
+        warned.add("freshness", Status::Warn, "slightly future");
+        assert!(!warned.is_fresh());
+
+        // Attested via iOS App Attest.
+        let mut ios = Report::new();
+        ios.add("app-attest", Status::Pass, "chained to Apple root");
+        assert!(ios.is_attested());
+
+        // Attested via Android key-attestation chain.
+        let mut android = Report::new();
+        android.add("attestation-root", Status::Pass, "chained to Google root");
+        assert!(android.is_attested());
+
+        // NOT-CHECKED / Fail attestation is not "attested".
+        let mut unattested = Report::new();
+        unattested.add("attestation-root", Status::NotChecked, "default build");
+        unattested.add("app-attest", Status::Fail, "bad");
+        assert!(!unattested.is_attested());
+    }
+
+    /// The proof's verdict is read via the prost-generated typed accessor
+    /// `spoofing_verdict()` returning `LocationProofVerdict` — the 5-valued
+    /// spoof-detection categorical the proof actually carries (no separate
+    /// YES/NO/INDETERMINATE field exists). Confirms the accessor for consumers.
+    #[test]
+    fn spoofing_verdict_typed_accessor_round_trips() {
+        use crate::navigate::LocationProofVerdict;
+        let p = LocationProof {
+            spoofing_verdict: LocationProofVerdict::Verified as i32,
+            ..Default::default()
+        };
+        assert_eq!(p.spoofing_verdict(), LocationProofVerdict::Verified);
+        // An unknown/unset value decodes to the 0 variant, never silently to NO.
+        let unset = LocationProof::default();
+        assert_eq!(unset.spoofing_verdict(), LocationProofVerdict::VerdictUnspecified);
+    }
+
+    /// `is_semantically_bound` reflects a passing `semantic-binding` check only —
+    /// so a consumer can refuse to trust the verdict/region of a proof whose
+    /// fields were never bound (NOT-CHECKED) or were tampered (Fail).
+    #[test]
+    fn is_semantically_bound_requires_a_passing_check() {
+        let mut bound = Report::new();
+        bound.add("semantic-binding", Status::Pass, "bound");
+        assert!(bound.is_semantically_bound());
+
+        let mut unbound = Report::new();
+        unbound.add("semantic-binding", Status::NotChecked, "predates binding");
+        assert!(!unbound.is_semantically_bound());
+
+        let mut tampered = Report::new();
+        tampered.add("semantic-binding", Status::Fail, "fields tampered");
+        assert!(!tampered.is_semantically_bound());
+    }
+
     /// A correctly linked chain passes linkage; a broken link fails. This
     /// encodes *why* the chain matters: tampering with a stage breaks the
     /// `previous_hash == prior.data_hash` invariant.
@@ -681,6 +823,9 @@ mod tests {
                 hardware_pubkey: Some(&vk),
                 hw_key_source: "test",
                 expect_region: None,
+                session_nonce: None,
+                require_session_binding: false,
+                require_schema_v2: false,
             })
         };
 
@@ -710,7 +855,8 @@ mod tests {
         let wrong = *SigningKey::from_slice(&[9u8; 32]).unwrap().verifying_key();
         let r3 = verify(&good, &VerifyOptions {
             now_ms: ts, max_age_s: 300, hardware_pubkey: Some(&wrong),
-            hw_key_source: "test", expect_region: None,
+            hw_key_source: "test", expect_region: None, session_nonce: None,
+            require_session_binding: false, require_schema_v2: false,
         });
         assert!(!r3.is_valid());
         assert_eq!(status_of(&r3, "stage-signatures"), Status::Fail);
@@ -734,7 +880,8 @@ mod tests {
 
         let r = verify(&proof, &VerifyOptions {
             now_ms: ts, max_age_s: 300, hardware_pubkey: None,
-            hw_key_source: "test", expect_region: None,
+            hw_key_source: "test", expect_region: None, session_nonce: None,
+            require_session_binding: false, require_schema_v2: false,
         });
         // nullifier + zkProof are still bound, but the unbound commitment must
         // not be papered over.
@@ -755,7 +902,8 @@ mod tests {
 
         let r = verify(&proof, &VerifyOptions {
             now_ms: now, max_age_s: 300, hardware_pubkey: None,
-            hw_key_source: "test", expect_region: None,
+            hw_key_source: "test", expect_region: None, session_nonce: None,
+            require_session_binding: false, require_schema_v2: false,
         });
         assert_eq!(status_of(&r, "freshness"), Status::Fail, "signed time is stale");
         // The edit of the unbound field is surfaced, not ignored.
@@ -774,7 +922,8 @@ mod tests {
 
         let r = verify(&proof, &VerifyOptions {
             now_ms: now, max_age_s: 300, hardware_pubkey: None,
-            hw_key_source: "test", expect_region: None,
+            hw_key_source: "test", expect_region: None, session_nonce: None,
+            require_session_binding: false, require_schema_v2: false,
         });
         assert_eq!(status_of(&r, "freshness"), Status::Fail);
     }
@@ -813,7 +962,7 @@ mod tests {
 
     fn semantic_status(proof: &LocationProof) -> Status {
         let mut r = Report::new();
-        r.add_semantic_binding(proof);
+        r.add_semantic_binding(proof, false);
         status_of(&r, "semantic-binding")
     }
 
@@ -850,6 +999,32 @@ mod tests {
         let mut proof = proof_with_semantic_stage(1, 2, "US", vec![0xC0; 16]);
         proof.stage_attestations.retain(|s| s.stage != SEMANTIC_FIELDS_STAGE);
         assert_eq!(semantic_status(&proof), Status::NotChecked);
+    }
+
+    /// Schema-v2 flip: with `require_schema_v2` armed, a proof lacking the
+    /// `semanticFields` stage FAILs instead of NOT-CHECKED — while a proof that
+    /// *does* carry a valid stage still PASSes regardless of the flag. Disarmed
+    /// (the default) preserves the back-compat NOT-CHECKED, so pre-schema-v2
+    /// golden vectors keep verifying.
+    #[test]
+    fn require_schema_v2_makes_semantic_binding_mandatory() {
+        let mut no_stage = proof_with_semantic_stage(1, 2, "US", vec![0xC0; 16]);
+        no_stage.stage_attestations.retain(|s| s.stage != SEMANTIC_FIELDS_STAGE);
+
+        let status = |proof: &LocationProof, armed: bool| {
+            let mut r = Report::new();
+            r.add_semantic_binding(proof, armed);
+            status_of(&r, "semantic-binding")
+        };
+
+        // Absent stage: disarmed → NOT-CHECKED (back-compat); armed → FAIL.
+        assert_eq!(status(&no_stage, false), Status::NotChecked);
+        assert_eq!(status(&no_stage, true), Status::Fail);
+
+        // A validly-bound proof PASSes whether or not the flip is armed.
+        let bound = proof_with_semantic_stage(1, 2, "US", vec![0xC0; 16]);
+        assert_eq!(status(&bound, false), Status::Pass);
+        assert_eq!(status(&bound, true), Status::Pass);
     }
 
     /// Geometric regions are bound via their canonical digest — a matching
@@ -899,6 +1074,44 @@ mod tests {
         assert_eq!(h3_digest(&h), want, "h3 digest must match the SDK cross-platform golden");
     }
 
+    /// Independently re-derive the session-binding stage hash:
+    /// `SHA256("octet-session-binding-v1" ‖ u32_be(len) ‖ nonce)`. Hand-written
+    /// here (not via `session::`) so it doubles as a cross-check of that framing.
+    fn session_data_hash(nonce: &[u8]) -> Vec<u8> {
+        let mut m = Vec::new();
+        m.extend_from_slice(b"octet-session-binding-v1");
+        m.extend_from_slice(&(nonce.len() as u32).to_be_bytes());
+        m.extend_from_slice(nonce);
+        sha256(&m).to_vec()
+    }
+
+    /// `verify()` threads `VerifyOptions.session_nonce` into the report: absent →
+    /// NOT-CHECKED, matching nonce → PASS, wrong nonce → FAIL.
+    #[test]
+    fn verify_wires_session_binding_check() {
+        let nonce = b"login-42";
+        let proof = LocationProof {
+            stage_attestations: vec![StageAttestation {
+                stage: "sessionBinding".into(),
+                timestamp_ms: 1,
+                data_hash: session_data_hash(nonce),
+                signature: vec![],
+                previous_hash: None,
+            }],
+            ..Default::default()
+        };
+        let run = |sn: Option<&[u8]>| {
+            verify(&proof, &VerifyOptions {
+                now_ms: 1, max_age_s: 300, hardware_pubkey: None,
+                hw_key_source: "test", expect_region: None, session_nonce: sn,
+                require_session_binding: false, require_schema_v2: false,
+            })
+        };
+        assert_eq!(status_of(&run(None), "session-binding"), Status::NotChecked);
+        assert_eq!(status_of(&run(Some(nonce)), "session-binding"), Status::Pass);
+        assert_eq!(status_of(&run(Some(b"wrong")), "session-binding"), Status::Fail);
+    }
+
     /// Freshness keys on the `proofAssembly` stage BY NAME, not the last stage —
     /// a stage appended after `proofAssembly` must not shift the freshness time.
     #[test]
@@ -915,7 +1128,8 @@ mod tests {
         });
         let r = verify(&proof, &VerifyOptions {
             now_ms: now, max_age_s: 300, hardware_pubkey: None,
-            hw_key_source: "test", expect_region: None,
+            hw_key_source: "test", expect_region: None, session_nonce: None,
+            require_session_binding: false, require_schema_v2: false,
         });
         // Uses proofAssembly's timestamp (fresh), not the trailing stage's.
         assert_eq!(status_of(&r, "freshness"), Status::Pass);

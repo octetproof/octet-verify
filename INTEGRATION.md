@@ -15,6 +15,7 @@ binary you build.
 - [Verifying a local proof file](#verifying-a-local-proof-file)
 - [Fetching from the backend](#fetching-from-the-backend) — `fetch` / `watch` / `range`
 - [Reading the verdict](#reading-the-verdict) ← start here if you just ran it
+- [Enrolling a device key out of band](#enrolling-a-device-key-out-of-band-library) — library, `--features appattest`
 - [The trust model in practice](#the-trust-model-in-practice)
 - [Exit codes & scripting](#exit-codes--scripting)
 
@@ -257,6 +258,62 @@ too — see [Exit codes](#exit-codes--scripting) — so either signal is a safe 
 
 Note `backend_meta_untrusted`: those fields are echoed for convenience only and
 played **no part** in the verdict.
+
+## Enrolling a device key out of band (library)
+
+*Library API, `--features appattest`. Skip this unless you embed the crate in a
+service.*
+
+On iOS, App Attest emits the attestation **object** — the evidence that certifies
+a device key to Apple's root — **once per key**. Every later proof from that key
+carries only an *assertion*. So a verifier that first encounters one of those
+later proofs with an empty key cache — a fresh deploy, a scaled-out instance, or
+after a cache migration — has never seen the object and can only report
+`app-attest` `NOT-CHECKED` for that key. It cannot recover from the proof alone.
+
+The `appattest` layer exposes an entrypoint to close that gap by taking the
+object-bearing evidence **out of band**, so a verifier can establish the key
+independently of whichever proof happens to carry the object:
+
+```rust
+use octet_verify::appattest_layer::{appattest_enroll, bundle_from_json};
+
+// `expectation` is the same app/team identity you'd pass via --app-attest-config.
+// Parse the out-of-band bundle (JSON, schema v:1 — or bundle_from_proto for the
+// protobuf form), verify it, and cache the returned key by its key_id.
+let da = bundle_from_json(bundle_bytes)?;
+let attested_key = appattest_enroll(&da, &expectation)?;
+// Later assertion-only proofs from that key verify against the cached key.
+```
+
+The bundle is the object-bearing `DeviceAttestation` subset — `key_id`, the App
+Attest attestation object, an assertion, and the original attestation nonce the
+object was attested with. In JSON, every field is **base64url (no padding)** of
+the raw bytes.
+
+**What enrolment does and does not establish.** It verifies the attestation
+object against the nonce carried **in the bundle** — there is no server
+challenge. That only recovers and certifies the device's *public* key to the
+vendor root; it makes **no** freshness or anti-replay claim by design. Liveness
+and replay control remain the job of the per-proof assertions and the proof's own
+replay-control material — exactly as for a proof that carries the object itself.
+Enrolment is purely additive: it changes nothing about how an ordinary proof
+verifies.
+
+**Assertion counters are monotonic.** App Attest assertion counters only
+increase, and the verifier rejects any assertion whose counter is not strictly
+greater than the highest already seen for that key. One consequence is worth
+knowing so it isn't mistaken for a bug: a live proof produced in the **same**
+attestation window as the enrolment snapshot shares that snapshot's counter, so
+it is correctly rejected as a replay — the *next* window's proof (a higher
+counter) verifies. That is normal monotonic behavior, not a failure of enrolment.
+
+A runnable end-to-end demo of the whole flow (empty-cache deny → enrol →
+cached pass) is in [`examples/enroll_e2e.rs`](examples/enroll_e2e.rs):
+
+```sh
+cargo run --example enroll_e2e --features appattest -- bundle.json assertion-only-proof.bin
+```
 
 ## The trust model in practice
 
