@@ -50,9 +50,12 @@ artifacts) should be built **without** this feature.
   signature (DER on Android, raw on iOS, selected by the proof's `platform`);
 - the `proofAssembly` stage binding every prior stage signature;
 - `commitment` / `nullifier` / ZK-bytes bound to their signed stage hashes;
-- **semantic-field binding** — the spoofing verdict, region, trust level, device
-  integrity, and committed position bound to the signed proof, so editing any of
-  them after signing is rejected (every region type, including geometric);
+- **semantic-field binding** — the spoofing verdict, region *identity*, trust
+  level, device integrity, and committed position bound to the signed proof, so
+  editing any of them after signing is rejected. Region **geometry** (city
+  centre/radius, earth altitude) is bound under `octet-semantic-binding-v2`;
+  under v1 it is reported as *not* covered, so a consumer relying on those
+  coordinates fails closed (see [`VERIFICATION-SPEC.md`](VERIFICATION-SPEC.md) §2.1);
 - **replay-control binding** — when a fetched/enveloped proof carries per-proof
   replay-control values, they are checked against what the proof actually signed;
 - a **wire-format guard** that rejects a proof smuggling a duplicate top-level
@@ -97,9 +100,14 @@ network call):
 
 ```sh
 cargo build --release --features appattest
-octet-verify proof.bin --app-attest-config app-attest.toml   # iOS app identity
+octet-verify proof.bin --app-attest-config app-attest.toml                    # iOS app identity
+octet-verify proof.bin --app-attest-config app-attest.toml --require-attestation  # fail closed if attestation is absent/unbound
 # --skip-hardware-attestation scopes an appattest build back to core verification
 ```
+
+The attested secure-hardware key must be the exact key that signed the proof
+(both platforms); `--require-attestation` additionally turns a missing or
+unverified attestation into a failure rather than a `NOT-CHECKED`.
 
 ## Trust model in one line
 

@@ -28,10 +28,18 @@ struct Args {
     max_age_s: Option<i64>,
     nullifier_store: Option<String>,
     expect_region: Option<String>,
+    expect_region_type: Option<String>,
+    expect_region_contains: Option<(f64, f64)>,
     session_nonce: Option<Vec<u8>>,
     require_session_binding: bool,
     require_schema_v2: bool,
+    require_attestation: bool,
     app_attest_config: Option<String>,
+    /// Expected Android app identity `(package_name, signing_cert_sha256)` for the
+    /// key-attestation `attestationApplicationId` binding (#41 rec: bind the
+    /// Android chain to a specific app, not just "some app"). Parsed from
+    /// `--android-app-identity <package>,<cert_sha256_hex>`.
+    android_app_identity: Option<(String, [u8; 32])>,
     skip_hardware_attestation: bool,
     json: bool,
 }
@@ -104,9 +112,14 @@ fn run(args: &Args) -> anyhow::Result<Report> {
         hardware_pubkey: hw_key.as_ref(),
         hw_key_source: &hw_source,
         expect_region: args.expect_region.as_deref(),
+        expect_region_type: args.expect_region_type.as_deref(),
+        expect_region_contains: args.expect_region_contains,
         session_nonce: args.session_nonce.as_deref(),
         require_session_binding: args.require_session_binding,
         require_schema_v2: args.require_schema_v2,
+        // Cleared for the core call: the CLI appends the attestation checks below
+        // and re-applies --require-attestation once, afterward (#41).
+        require_attestation: false,
     };
 
     let mut report = verify(&proof, &opts);
@@ -155,7 +168,12 @@ fn run(args: &Args) -> anyhow::Result<Report> {
         // location, nothing hardcoded.
         if let Some(cfg_path) = &args.app_attest_config {
             #[cfg(feature = "appattest")]
-            report.checks.push(appattest_from_config(&proof, cfg_path)?);
+            report.checks.push(appattest_from_config(
+                &proof,
+                cfg_path,
+                hw_key.as_ref().map(|vk| vk.to_sec1_bytes()).as_deref(),
+                args.require_attestation,
+            )?);
             #[cfg(not(feature = "appattest"))]
             {
                 let _ = cfg_path;
@@ -165,6 +183,17 @@ fn run(args: &Args) -> anyhow::Result<Report> {
                     detail: "--app-attest-config given but this binary was built without the `appattest` feature".into(),
                 });
             }
+        } else {
+            // No --app-attest-config: still surface `app-attest` as NOT-CHECKED so
+            // it is never silently *absent* on an `appattest` build (#41 rec #4) —
+            // an iOS proof otherwise shows no app-attest line at all here. A
+            // default build has no App Attest surface, so this is feature-gated.
+            #[cfg(feature = "appattest")]
+            report.checks.push(verify_mod::Check {
+                name: "app-attest",
+                status: Status::NotChecked,
+                detail: "no --app-attest-config supplied; App Attest evidence not checked".into(),
+            });
         }
 
         // Android key-attestation chain → Google root, plus the field-2 device-key
@@ -177,15 +206,25 @@ fn run(args: &Args) -> anyhow::Result<Report> {
             // iOS proofs (no cert chain) report attestation-root NOT-CHECKED and
             // rely on the app-attest check above instead.
             let now_unix_secs = (now_ms / 1000).max(0) as u64;
+            let pubkey_sec1 = hw_key.as_ref().map(|vk| vk.to_sec1_bytes());
+            // #41: bind the Android chain to the expected app identity when
+            // supplied (--android-app-identity), so it attests THIS app, not just
+            // "some key from some app". `None` keeps the hardware-root-only check.
+            let expected_app = args.android_app_identity.as_ref().map(|(pkg, cert)| {
+                octet_verify::appattest_layer::ExpectedAppIdentity {
+                    package_name: pkg.clone(),
+                    signing_cert_sha256: *cert,
+                }
+            });
             report
                 .checks
                 .push(octet_verify::appattest_layer::attestation_root_check(
                     &proof,
                     now_unix_secs,
-                    None, // CLI does not do per-tenant Android app-binding; library/service path only
+                    expected_app.as_ref(),
+                    pubkey_sec1.as_deref(), // always bind the attested leaf to the signing key (#31)
                 ));
 
-            let pubkey_sec1 = hw_key.as_ref().map(|vk| vk.to_sec1_bytes());
             report
                 .checks
                 .push(octet_verify::appattest_layer::device_signature_check(
@@ -193,6 +232,17 @@ fn run(args: &Args) -> anyhow::Result<Report> {
                     pubkey_sec1.as_deref(),
                 ));
         }
+    }
+
+    // Fail-closed when attestation is required (#41). Enforced here — after all
+    // attestation checks are appended and OUTSIDE the `!skip_hardware_attestation`
+    // block — so it runs on every build and cannot be bypassed by
+    // --skip-hardware-attestation (skip ⇒ no attestation checks ⇒ is_attested()
+    // false ⇒ FAIL). The core verify() call above ran with require_attestation
+    // cleared (below), so this is the single evaluation point on the CLI path.
+    if args.require_attestation {
+        let c = verify_mod::require_attestation_check(&report);
+        report.checks.push(c);
     }
 
     Ok(report)
@@ -203,6 +253,8 @@ fn run(args: &Args) -> anyhow::Result<Report> {
 fn appattest_from_config(
     proof: &octet_verify::navigate::LocationProof,
     cfg_path: &str,
+    signing_key_sec1: Option<&[u8]>,
+    require_binding: bool,
 ) -> anyhow::Result<verify_mod::Check> {
     use octet_attest_verify::config::Config;
     use octet_verify::appattest_layer::{appattest_check, Expectation};
@@ -215,7 +267,9 @@ fn appattest_from_config(
     let expect = Expectation::new(&aa.team_id, &aa.bundle_id, aa.environment.into());
     // Stateless single-proof check: no cached key, so an assertion-only proof
     // reports NOT-CHECKED (it needs the attestation object or a cached key).
-    let (check, _key) = appattest_check(proof, &expect, None);
+    // #38: the live assertion is bound to the SE signing key (certificate_chain[0])
+    // — PreferBound by default, RequireBound under --require-attestation.
+    let (check, _key) = appattest_check(proof, &expect, None, signing_key_sec1, require_binding);
     Ok(check)
 }
 
@@ -263,10 +317,31 @@ fn resolve_hardware_key(
     flag: Option<&str>,
 ) -> anyhow::Result<(Option<P256VerifyingKey>, String)> {
     match flag {
-        Some(p) => Ok((
-            Some(keys::load_hardware_pubkey(&PathBuf::from(p))?),
-            "--hardware-pubkey".into(),
-        )),
+        Some(p) => {
+            let key = keys::load_hardware_pubkey(&PathBuf::from(p))?;
+            // #41 (rec #2): a supplied --hardware-pubkey must AGREE with the key
+            // in the proof's own certificate_chain[0] when one is extractable.
+            // The attested leaf is the signing key by design (it is what the
+            // chain attests and what stage-signatures verify against); allowing an
+            // operator to override it with a different key is the bug class the
+            // #31 attested-leaf binding only catches after the fact. Refuse the
+            // conflict up front — verify against the attested key by omitting the
+            // flag.
+            if let Some(da) = proof.device_attestation.as_ref() {
+                if !da.certificate_chain.is_empty() {
+                    if let Ok(chain_key) = keys::hardware_pubkey_from_cert_chain(&da.certificate_chain) {
+                        if chain_key != key {
+                            anyhow::bail!(
+                                "--hardware-pubkey conflicts with certificate_chain[0]: the proof \
+                                 carries an attested key and verifying against a different key is \
+                                 refused (omit --hardware-pubkey to use the attested key)"
+                            );
+                        }
+                    }
+                }
+            }
+            Ok((Some(key), "--hardware-pubkey".into()))
+        }
         None => match proof.device_attestation.as_ref() {
             Some(da) if !da.certificate_chain.is_empty() => {
                 match keys::hardware_pubkey_from_cert_chain(&da.certificate_chain) {
@@ -308,6 +383,18 @@ fn headline(report: &Report) -> &'static str {
         "VALID"
     } else {
         "INCONCLUSIVE (signatures not verified)"
+    }
+}
+
+/// JSON value for the signed inside/outside verdict (#26): a quoted string, or
+/// `null` when there is no signed verdict. INDETERMINATE stays distinct.
+fn location_verdict_json(report: &Report) -> &'static str {
+    use octet_verify::verify::SignedLocationVerdict::*;
+    match report.location_verdict() {
+        Some(Inside) => "\"inside\"",
+        Some(Outside) => "\"outside\"",
+        Some(Indeterminate) => "\"indeterminate\"",
+        None => "null",
     }
 }
 
@@ -354,6 +441,18 @@ fn print_json(report: &Report) {
     out.push_str(&format!("  \"verdict\": \"{}\",\n", headline(report)));
     out.push_str(&format!("  \"valid\": {},\n", report.is_authentic()));
     out.push_str(&format!("  \"signatures_verified\": {},\n", report.sigs_verified()));
+    // Typed signals so automation needn't string-match `checks`: `attested` is
+    // the hardware-attestation bit (#41), `region_asserted` is true only when an
+    // operator region expectation was supplied and held (#40), and
+    // `semantically_bound` is the tamper-evidence bit for the human-meaningful
+    // fields (#32) — false for a v1 city/earth region, whose geometry the v1
+    // preimage does not cover, so a consumer reading those fails closed.
+    out.push_str(&format!("  \"attested\": {},\n", report.is_attested()));
+    out.push_str(&format!("  \"region_asserted\": {},\n", report.region_asserted()));
+    out.push_str(&format!("  \"semantically_bound\": {},\n", report.is_semantically_bound()));
+    // The device's SIGNED inside/outside verdict (#26), or null when there is no
+    // signed verdict (v1 / unbound / UNSPECIFIED). INDETERMINATE is preserved.
+    out.push_str(&format!("  \"location_verdict\": {},\n", location_verdict_json(report)));
     out.push_str("  \"checks\": [\n");
     for (i, c) in report.checks.iter().enumerate() {
         let comma = if i + 1 < report.checks.len() { "," } else { "" };
@@ -460,13 +559,32 @@ fn parse_args() -> Result<Args, String> {
             "--ed25519-pubkey" => args.ed25519_pubkey = Some(need_value(&mut iter, &a)?),
             "--nullifier-store" => args.nullifier_store = Some(need_value(&mut iter, &a)?),
             "--expect-region" => args.expect_region = Some(need_value(&mut iter, &a)?),
+            "--expect-region-type" => {
+                let v = need_value(&mut iter, &a)?;
+                if !octet_verify::verify::is_known_region_type(&v) {
+                    return Err(format!(
+                        "--expect-region-type: unknown region type {v:?} (expected one of {:?})",
+                        octet_verify::verify::REGION_TYPES
+                    ));
+                }
+                args.expect_region_type = Some(v);
+            }
+            "--expect-region-contains" => {
+                let v = need_value(&mut iter, &a)?;
+                args.expect_region_contains = Some(parse_latlon(&v)?);
+            }
             "--session-nonce" => {
                 let v = need_value(&mut iter, &a)?;
                 args.session_nonce = Some(parse_hex_nonce(&v)?);
             }
             "--require-session-binding" => args.require_session_binding = true,
             "--require-schema-v2" => args.require_schema_v2 = true,
+            "--require-attestation" => args.require_attestation = true,
             "--app-attest-config" => args.app_attest_config = Some(need_value(&mut iter, &a)?),
+            "--android-app-identity" => {
+                let v = need_value(&mut iter, &a)?;
+                args.android_app_identity = Some(parse_android_identity(&v)?);
+            }
             "--skip-hardware-attestation" => args.skip_hardware_attestation = true,
             "--max-age-seconds" => {
                 let v = need_value(&mut iter, &a)?;
@@ -515,6 +633,56 @@ fn parse_hex_nonce(s: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// Parse `--expect-region-contains "<lat>,<lon>"` into decimal degrees, with
+/// range validation so a transposed or out-of-range point fails loud.
+fn parse_latlon(s: &str) -> Result<(f64, f64), String> {
+    let (a, b) = s
+        .split_once(',')
+        .ok_or_else(|| format!("--expect-region-contains: expected \"<lat>,<lon>\", got {s:?}"))?;
+    let lat: f64 = a
+        .trim()
+        .parse()
+        .map_err(|_| format!("--expect-region-contains: latitude {:?} is not a number", a.trim()))?;
+    let lon: f64 = b
+        .trim()
+        .parse()
+        .map_err(|_| format!("--expect-region-contains: longitude {:?} is not a number", b.trim()))?;
+    if !(-90.0..=90.0).contains(&lat) {
+        return Err(format!("--expect-region-contains: latitude {lat} out of range [-90, 90]"));
+    }
+    if !(-180.0..=180.0).contains(&lon) {
+        return Err(format!("--expect-region-contains: longitude {lon} out of range [-180, 180]"));
+    }
+    Ok((lat, lon))
+}
+
+/// Parse `--android-app-identity "<package>,<cert_sha256_hex>"` into the expected
+/// Android app identity: the package name and the SHA-256 (64 hex chars) of the
+/// signing certificate's DER (an `attestationApplicationId` `signatureDigests`
+/// entry).
+fn parse_android_identity(s: &str) -> Result<(String, [u8; 32]), String> {
+    let (pkg, hex) = s.split_once(',').ok_or_else(|| {
+        format!("--android-app-identity: expected \"<package>,<cert_sha256_hex>\", got {s:?}")
+    })?;
+    let pkg = pkg.trim();
+    if pkg.is_empty() {
+        return Err("--android-app-identity: empty package name".into());
+    }
+    let hex = hex.trim();
+    if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!(
+            "--android-app-identity: cert sha256 must be 64 hex chars, got {:?}",
+            hex
+        ));
+    }
+    let mut cert = [0u8; 32];
+    for (i, byte) in cert.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
+            .map_err(|_| "--android-app-identity: cert sha256 is not valid hex".to_string())?;
+    }
+    Ok((pkg.to_string(), cert))
+}
+
 // ===========================================================================
 // Backend fetch mode (subcommands: fetch / watch / range)
 //
@@ -539,10 +707,18 @@ fn backend_dispatch(_argv: &[String]) -> ExitCode {
 
 #[cfg(feature = "net")]
 fn backend_dispatch(argv: &[String]) -> ExitCode {
-    match backend::run(argv) {
-        Ok(code) => code,
-        Err(e) => {
+    // A dependency panic (an unexpected ureq/url/serde edge) must not abort the
+    // process with exit 101 — outside the documented 0/1/2/3 contract (#39). The
+    // default panic hook still prints the panic to stderr (fail loud), but we
+    // catch the unwind and map it to the usage/IO/backend-error code (2).
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| backend::run(argv))) {
+        Ok(Ok(code)) => code,
+        Ok(Err(e)) => {
             eprintln!("error: {e:#}");
+            ExitCode::from(2)
+        }
+        Err(_) => {
+            eprintln!("error: backend operation panicked (treated as a backend error, exit 2)");
             ExitCode::from(2)
         }
     }
@@ -563,7 +739,10 @@ mod backend {
     use octet_verify::prost::Message;
     use octet_verify::verify::{verify, Check, Report, Status, VerifyOptions};
 
-    use super::{headline, json_escape, parse_hex_nonce, sanitize_terminal, to_hex, DEFAULT_MAX_AGE_S};
+    use super::{
+        headline, json_escape, location_verdict_json, parse_android_identity, parse_hex_nonce,
+        parse_latlon, sanitize_terminal, to_hex, DEFAULT_MAX_AGE_S,
+    };
 
     const DEFAULT_WATCH_INTERVAL_S: u64 = 5;
 
@@ -580,15 +759,19 @@ mod backend {
         seen_store: Option<String>,
         hardware_pubkey: Option<String>,
         expect_region: Option<String>,
+        expect_region_type: Option<String>,
+        expect_region_contains: Option<(f64, f64)>,
         session_nonce: Option<Vec<u8>>,
         require_session_binding: bool,
         require_schema_v2: bool,
+        require_attestation: bool,
         max_age_s: Option<i64>,
         json: bool,
         interval_s: u64,
         since: Option<String>,
         until: Option<String>,
         app_attest_config: Option<String>,
+        android_app_identity: Option<(String, [u8; 32])>,
         skip_hardware_attestation: bool,
     }
 
@@ -663,16 +846,35 @@ mod backend {
         // No proofs seen yet → success. Updated to the tri-state code of every
         // verified proof; INCONCLUSIVE never collapses into success.
         let mut last_exit = ExitCode::SUCCESS;
+        // #39: make a long run of empty polls observable, so a `watch` that is
+        // quietly returning nothing (backend has no proofs, or is mis-pointed) is
+        // distinguishable from one that is verifying. A transport error already
+        // fails loud via `?`; a 404 on /latest is the legitimate "no proofs yet"
+        // and keeps polling — but we surface a periodic heartbeat for it.
+        const EMPTY_POLL_HEARTBEAT: u64 = 12;
+        let mut empty_polls: u64 = 0;
         while !stop.load(Ordering::SeqCst) {
-            if let Some(env) = backend.fetch_latest()? {
-                let bytes = env.proof_bytes()?;
-                let hash = canonical_proof_hash(&bytes);
-                // Re-print only when the bytes are new or have changed; an
-                // identical re-fetch of the same id is the steady state.
-                if !matches!(seen.peek(&env.proof_id, &hash), Seen::Same) {
-                    let report = verify_envelope(seen, &env, args)?;
-                    last_exit = super::exit_code(&report);
-                    emit(&env, &report, args.json);
+            match backend.fetch_latest()? {
+                Some(env) => {
+                    empty_polls = 0;
+                    let bytes = env.proof_bytes()?;
+                    let hash = canonical_proof_hash(&bytes);
+                    // Re-print only when the bytes are new or have changed; an
+                    // identical re-fetch of the same id is the steady state.
+                    if !matches!(seen.peek(&env.proof_id, &hash), Seen::Same) {
+                        let report = verify_envelope(seen, &env, args)?;
+                        last_exit = super::exit_code(&report);
+                        emit(&env, &report, args.json);
+                    }
+                }
+                None => {
+                    empty_polls += 1;
+                    if !args.json && empty_polls % EMPTY_POLL_HEARTBEAT == 0 {
+                        eprintln!(
+                            "still watching — {empty_polls} polls, no proofs yet for this license \
+                             (backend reachable, /v1/proofs/latest returns none)"
+                        );
+                    }
                 }
             }
             sleep_interruptible(&stop, args.interval_s);
@@ -738,9 +940,14 @@ mod backend {
             hardware_pubkey: hw_key.as_ref(),
             hw_key_source: &hw_source,
             expect_region: args.expect_region.as_deref(),
+            expect_region_type: args.expect_region_type.as_deref(),
+            expect_region_contains: args.expect_region_contains,
             session_nonce: args.session_nonce.as_deref(),
             require_session_binding: args.require_session_binding,
             require_schema_v2: args.require_schema_v2,
+            // Cleared for the core call; re-applied once after the attestation
+            // checks below (#41).
+            require_attestation: false,
         };
         let mut report = verify(&proof, &opts);
         // Same wire-format guard as the local path: fetched bytes are untrusted.
@@ -752,19 +959,33 @@ mod backend {
         if !args.skip_hardware_attestation {
             #[cfg(feature = "appattest")]
             if let Some(cfg_path) = &args.app_attest_config {
-                report.checks.push(super::appattest_from_config(&proof, cfg_path)?);
+                report.checks.push(super::appattest_from_config(
+                    &proof,
+                    cfg_path,
+                    hw_key.as_ref().map(|vk| vk.to_sec1_bytes()).as_deref(),
+                    args.require_attestation,
+                )?);
             }
             #[cfg(feature = "appattest")]
             {
                 let now_unix_secs = (now_ms / 1000).max(0) as u64;
+                let pubkey_sec1 = hw_key.as_ref().map(|vk| vk.to_sec1_bytes());
+                // #41: bind the Android chain to the expected app identity when
+                // supplied (--android-app-identity), same as the local-file path.
+                let expected_app = args.android_app_identity.as_ref().map(|(pkg, cert)| {
+                    octet_verify::appattest_layer::ExpectedAppIdentity {
+                        package_name: pkg.clone(),
+                        signing_cert_sha256: *cert,
+                    }
+                });
                 report
                     .checks
                     .push(octet_verify::appattest_layer::attestation_root_check(
                         &proof,
                         now_unix_secs,
-                        None, // CLI does not do per-tenant Android app-binding; library/service path only
+                        expected_app.as_ref(),
+                        pubkey_sec1.as_deref(), // always bind the attested leaf to the signing key (#31)
                     ));
-                let pubkey_sec1 = hw_key.as_ref().map(|vk| vk.to_sec1_bytes());
                 report
                     .checks
                     .push(octet_verify::appattest_layer::device_signature_check(
@@ -772,6 +993,13 @@ mod backend {
                         pubkey_sec1.as_deref(),
                     ));
             }
+        }
+        // Fail-closed when attestation is required (#41) — after the attestation
+        // checks and outside the skip block, on every build; the core call above
+        // ran with require_attestation cleared, so this is the single evaluation.
+        if args.require_attestation {
+            let c = octet_verify::verify::require_attestation_check(&report);
+            report.checks.push(c);
         }
         Ok(report)
     }
@@ -906,14 +1134,21 @@ mod backend {
     /// One JSON object per proof, newline-delimited (JSONL) — stream-friendly
     /// for `range`/`watch`. `valid` is authenticity (not rejected AND signatures
     /// verified), `signatures_verified` is the crypto bit, and `verdict` is the
-    /// tri-state string — gate automation on `valid`. Backend metadata is echoed
-    /// under `backend_meta_untrusted` and contributes nothing to the verdict.
+    /// tri-state string — gate automation on `valid`. The typed bits mirror the
+    /// local `--json` report (`attested`, `region_asserted`, `semantically_bound`,
+    /// `location_verdict`), so automation never string-matches `checks`. Backend
+    /// metadata is echoed under `backend_meta_untrusted` and contributes nothing
+    /// to the verdict.
     fn report_json_line(env: &Envelope, report: &Report) -> String {
         let mut out = String::from("{");
         out.push_str(&format!("\"proof_id\":\"{}\",", json_escape(&env.proof_id)));
         out.push_str(&format!("\"verdict\":\"{}\",", headline(report)));
         out.push_str(&format!("\"valid\":{},", report.is_authentic()));
         out.push_str(&format!("\"signatures_verified\":{},", report.sigs_verified()));
+        out.push_str(&format!("\"attested\":{},", report.is_attested()));
+        out.push_str(&format!("\"region_asserted\":{},", report.region_asserted()));
+        out.push_str(&format!("\"semantically_bound\":{},", report.is_semantically_bound()));
+        out.push_str(&format!("\"location_verdict\":{},", location_verdict_json(report)));
         out.push_str("\"checks\":[");
         for (i, c) in report.checks.iter().enumerate() {
             if i > 0 {
@@ -971,15 +1206,19 @@ mod backend {
         let mut seen_store = None;
         let mut hardware_pubkey = None;
         let mut expect_region = None;
+        let mut expect_region_type = None;
+        let mut expect_region_contains = None;
         let mut session_nonce = None;
         let mut require_session_binding = false;
         let mut require_schema_v2 = false;
+        let mut require_attestation = false;
         let mut max_age_s = None;
         let mut json = false;
         let mut interval_s = DEFAULT_WATCH_INTERVAL_S;
         let mut since = None;
         let mut until = None;
         let mut app_attest_config = None;
+        let mut android_app_identity = None;
         let mut skip_hardware_attestation = false;
         let mut proof_id: Option<String> = None;
 
@@ -991,11 +1230,25 @@ mod backend {
                 "--seen-store" => seen_store = Some(need(&mut it, a)?),
                 "--hardware-pubkey" => hardware_pubkey = Some(need(&mut it, a)?),
                 "--expect-region" => expect_region = Some(need(&mut it, a)?),
+                "--expect-region-type" => {
+                    let v = need(&mut it, a)?;
+                    if !octet_verify::verify::is_known_region_type(&v) {
+                        anyhow::bail!(
+                            "--expect-region-type: unknown region type {v:?} (expected one of {:?})",
+                            octet_verify::verify::REGION_TYPES
+                        );
+                    }
+                    expect_region_type = Some(v);
+                }
+                "--expect-region-contains" => {
+                    expect_region_contains = Some(parse_latlon(&need(&mut it, a)?).map_err(|e| anyhow!("{e}"))?);
+                }
                 "--session-nonce" => {
                     session_nonce = Some(parse_hex_nonce(&need(&mut it, a)?).map_err(|e| anyhow!("{e}"))?);
                 }
                 "--require-session-binding" => require_session_binding = true,
                 "--require-schema-v2" => require_schema_v2 = true,
+                "--require-attestation" => require_attestation = true,
                 "--json" => json = true,
                 "--max-age-seconds" => {
                     max_age_s = Some(need(&mut it, a)?.parse().map_err(|e| {
@@ -1013,6 +1266,10 @@ mod backend {
                 "--since" => since = Some(need(&mut it, a)?),
                 "--until" => until = Some(need(&mut it, a)?),
                 "--app-attest-config" => app_attest_config = Some(need(&mut it, a)?),
+                "--android-app-identity" => {
+                    android_app_identity =
+                        Some(parse_android_identity(&need(&mut it, a)?).map_err(|e| anyhow!("{e}"))?);
+                }
                 "--skip-hardware-attestation" => skip_hardware_attestation = true,
                 s if s.starts_with("--") => bail!("unknown flag: {s}"),
                 _ => {
@@ -1054,15 +1311,19 @@ mod backend {
             seen_store,
             hardware_pubkey,
             expect_region,
+            expect_region_type,
+            expect_region_contains,
             session_nonce,
             require_session_binding,
             require_schema_v2,
+            require_attestation,
             max_age_s,
             json,
             interval_s,
             since,
             until,
             app_attest_config,
+            android_app_identity,
             skip_hardware_attestation,
         })
     }
@@ -1119,5 +1380,83 @@ mod tests {
 
         // repeated stage_attestations (field 10) → Pass (not a singular field).
         assert_eq!(wire_check(&[0x52, 0x00, 0x52, 0x00]).status, Status::Pass);
+    }
+
+    /// `--expect-region-contains` parsing: accepts "lat,lon" (with whitespace),
+    /// rejects a missing comma, non-numbers, and out-of-range coordinates.
+    #[test]
+    fn parse_latlon_accepts_valid_rejects_malformed_and_out_of_range() {
+        use super::parse_latlon;
+        assert_eq!(parse_latlon("37.7749,-122.4194").unwrap(), (37.7749, -122.4194));
+        assert_eq!(parse_latlon("  37.77 , -122.42 ").unwrap(), (37.77, -122.42));
+        assert!(parse_latlon("37.77").is_err()); // no comma
+        assert!(parse_latlon("north,-122.4").is_err()); // non-number
+        assert!(parse_latlon("91.0,0.0").is_err()); // lat out of range
+        assert!(parse_latlon("0.0,181.0").is_err()); // lon out of range
+    }
+
+    /// `--android-app-identity` parsing (#41): "package,cert_sha256_hex".
+    #[test]
+    fn parse_android_identity_parses_and_validates() {
+        use super::parse_android_identity;
+        let hex = "ab".repeat(32); // 64 hex chars
+        let (pkg, cert) = parse_android_identity(&format!("com.example.app,{hex}")).unwrap();
+        assert_eq!(pkg, "com.example.app");
+        assert_eq!(cert, [0xabu8; 32]);
+        assert!(parse_android_identity(&format!("  com.x , {hex} ")).is_ok()); // whitespace ok
+        assert!(parse_android_identity("com.example.app").is_err()); // no comma
+        assert!(parse_android_identity(&format!(",{hex}")).is_err()); // empty package
+        assert!(parse_android_identity("com.x,zz").is_err()); // not hex / wrong length
+        assert!(parse_android_identity(&format!("com.x,{}", "ab".repeat(31))).is_err()); // 62 chars
+    }
+
+    /// #41 (rec #2): a --hardware-pubkey that disagrees with the proof's own
+    /// attested certificate_chain[0] is refused — you cannot verify against a key
+    /// other than the attested one when the proof carries an attestation.
+    #[test]
+    fn resolve_hardware_key_rejects_a_conflicting_hardware_pubkey() {
+        use octet_verify::navigate::{DeviceAttestation, LocationProof};
+        use p256::ecdsa::SigningKey;
+
+        let sec1 = |seed: u8| {
+            SigningKey::from_slice(&[seed; 32])
+                .unwrap()
+                .verifying_key()
+                .to_sec1_bytes()
+                .to_vec()
+        };
+        let a = sec1(1);
+        let b = sec1(2);
+        assert_ne!(a, b);
+
+        let dir = std::env::temp_dir().join("octet-verify-test-resolve-hw");
+        std::fs::create_dir_all(&dir).unwrap();
+        let a_path = dir.join("a.sec1");
+        std::fs::write(&a_path, &a).unwrap();
+        let a_path = a_path.to_str().unwrap();
+
+        // certificate_chain[0] = an iOS-style raw SE key (parses as SEC1).
+        let proof = |chain0: Vec<u8>| LocationProof {
+            device_attestation: Some(DeviceAttestation {
+                certificate_chain: vec![chain0],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        // Flag A vs chain B → conflict (refused).
+        let err = super::resolve_hardware_key(&proof(b), Some(a_path)).unwrap_err();
+        assert!(err.to_string().contains("conflicts with certificate_chain"), "{err}");
+
+        // Flag A vs chain A → agree, resolves.
+        let (key, source) = super::resolve_hardware_key(&proof(a.clone()), Some(a_path)).unwrap();
+        assert!(key.is_some());
+        assert_eq!(source, "--hardware-pubkey");
+
+        // No chain → flag used, no conflict possible.
+        let (key, _) = super::resolve_hardware_key(&LocationProof::default(), Some(a_path)).unwrap();
+        assert!(key.is_some());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

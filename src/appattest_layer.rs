@@ -10,9 +10,10 @@ use crate::navigate::{DeviceAttestation, LocationProof};
 use crate::verify::{verify, Check, Report, Status, VerifyOptions};
 use base64::Engine;
 use octet_attest_verify::appattest::{
-    verify_assertion, verify_attestation, verify_device_signature, AppId, AttestedKey,
+    verify_assertion_with_binding, verify_attestation, verify_device_signature, AppId,
+    AssertionBinding, AttestedKey,
 };
-use octet_attest_verify::keyattest::{verify_key_attestation, SecurityLevel};
+use octet_attest_verify::keyattest::{verify_key_attestation, AttestMode, SecurityLevel};
 // Re-export the app-identity types a consumer needs to build an `Expectation`,
 // so downstream code needn't depend on `octet-attest-verify` directly.
 pub use octet_attest_verify::appattest::AcceptEnvironment;
@@ -70,13 +71,23 @@ fn chk(status: Status, detail: impl Into<String>) -> Check {
 /// Returns the `app-attest` check plus, when an attestation object was verified
 /// or an assertion advanced the counter, the [`AttestedKey`] the caller should
 /// cache (keyed by `key_id`) for subsequent proofs.
+///
+/// `signing_key_sec1` is the proof's Secure-Enclave signing key
+/// (`certificate_chain[0]`, resolved by the caller) — folded into the live
+/// assertion's `clientDataHash` for the #38 binding. `require_binding` (the
+/// `--require-attestation` flag) enforces the bound form: with a signing key it
+/// selects `RequireBound` (a pre-#317 nonce-only assertion is rejected), else
+/// `PreferBound` (rollout: accept either). `None` signing key with
+/// `require_binding` fails closed.
 pub fn appattest_check(
     proof: &LocationProof,
     expect: &Expectation,
     cached: Option<&AttestedKey>,
+    signing_key_sec1: Option<&[u8]>,
+    require_binding: bool,
 ) -> (Check, Option<AttestedKey>) {
     match &proof.device_attestation {
-        Some(da) => appattest_check_da(da, expect, cached),
+        Some(da) => appattest_check_da(da, expect, cached, signing_key_sec1, require_binding),
         None => (chk(Status::NotChecked, "no device attestation on proof"), None),
     }
 }
@@ -129,20 +140,74 @@ pub fn verify_attested_cached(
     expect: &Expectation,
     cached: Option<&AttestedKey>,
 ) -> (Report, Option<AttestedKey>) {
-    let mut report = verify(proof, opts);
-    // iOS App Attest against the cache (Android → NOT-CHECKED, no App Attest fields).
-    // The returned key (if any) carries the advanced counter for the caller to persist.
-    let (app_attest, updated_key) = appattest_check(proof, expect, cached);
+    // Clear require_attestation for the core call: this layer appends the real
+    // attestation checks below and re-applies the requirement afterward, so core
+    // must not also evaluate it (it would FAIL before the attestation checks
+    // exist). See #41.
+    let core_opts = VerifyOptions { require_attestation: false, ..*opts };
+    let mut report = verify(proof, &core_opts);
+    // The key `stage-signatures` verified against (`certificate_chain[0]` on iOS,
+    // the attestation leaf on Android). Binds both the Android attestation leaf
+    // (issue #31) and the iOS App Attest assertion (issue #38) to the key that
+    // actually signs each proof.
+    let signing_key_sec1 = opts.hardware_pubkey.map(|vk| vk.to_sec1_bytes());
+
+    // iOS App Attest against the cache (Android → NOT-CHECKED, no App Attest
+    // fields). #38 folds `signing_key_sec1` into the live assertion's
+    // clientDataHash; `opts.require_attestation` selects RequireBound (enforce)
+    // vs PreferBound (rollout). The returned key (if any) carries the advanced
+    // counter for the caller to persist.
+    let (app_attest, updated_key) = appattest_check(
+        proof,
+        expect,
+        cached,
+        signing_key_sec1.as_deref(),
+        opts.require_attestation,
+    );
     report.checks.push(app_attest);
     // Android key-attestation chain → Google root (iOS raw SE key → NOT-CHECKED),
-    // bound to the expected app identity when `expect.android` is set.
+    // bound to the expected app identity when `expect.android` is set, and to the
+    // signing key always.
     let now_unix_secs = (opts.now_ms / 1000).max(0) as u64;
-    report.checks.push(attestation_root_check(proof, now_unix_secs, expect.android.as_ref()));
+    report.checks.push(attestation_root_check(
+        proof,
+        now_unix_secs,
+        expect.android.as_ref(),
+        signing_key_sec1.as_deref(),
+    ));
     // Per-proof field-2 device-key signature (both platforms).
-    let pubkey_sec1 = opts.hardware_pubkey.map(|vk| vk.to_sec1_bytes());
-    report.checks.push(device_signature_check(proof, pubkey_sec1.as_deref()));
+    report.checks.push(device_signature_check(proof, signing_key_sec1.as_deref()));
+    // Fail-closed when attestation is required (#41): the attacker can otherwise
+    // strip evidence so a check reports NOT-CHECKED (which is_valid() ignores).
+    // Applied here, after the real attestation checks, using the core helper.
+    if opts.require_attestation {
+        let c = crate::verify::require_attestation_check(&report);
+        report.checks.push(c);
+    }
     (report, updated_key)
 }
+
+/// Compare two SEC1-encoded P-256 public keys for equality, tolerant of
+/// compressed vs uncompressed encoding (both sides are parsed to the affine
+/// point). A key that does not parse counts as **not** equal — fail closed.
+fn sec1_keys_equal(a: &[u8], b: &[u8]) -> bool {
+    use p256::ecdsa::VerifyingKey;
+    match (VerifyingKey::from_sec1_bytes(a), VerifyingKey::from_sec1_bytes(b)) {
+        (Ok(ka), Ok(kb)) => ka == kb,
+        _ => false,
+    }
+}
+
+// NOTE (issue #38): the iOS App Attest key (`DCAppAttestService`) and the
+// Secure-Enclave field-2 signing key (`certificate_chain[0]`,
+// `opts.hardware_pubkey`) are two DIFFERENT keys by design — App Attest keys
+// cannot sign arbitrary data, so we do NOT require them to be equal (that would
+// reject every genuine iOS proof). Instead the SDK (#317) commits the SE signing
+// key into the live assertion's `clientDataHash` (`SHA256(nonce ‖ SE_pubkey)`)
+// and this layer reconstructs that binding via the `AssertionBinding` passed to
+// `appattest_check` (PreferBound during rollout, RequireBound under
+// `--require-attestation`). Android's signing-key binding is separate and lives
+// in `attestation_root_check` (its StrongBox leaf both signs and is attested).
 
 /// Core of [`appattest_check`] operating directly on a [`DeviceAttestation`],
 /// shared with [`appattest_enroll`]. Pass `cached: None` for the object-bearing
@@ -152,12 +217,36 @@ fn appattest_check_da(
     da: &DeviceAttestation,
     expect: &Expectation,
     cached: Option<&AttestedKey>,
+    signing_key_sec1: Option<&[u8]>,
+    require_binding: bool,
 ) -> (Check, Option<AttestedKey>) {
     let (nonce, assertion) = match (da.attestation_nonce.as_deref(), da.app_attest_assertion.as_deref()) {
         (Some(n), Some(a)) if !n.is_empty() && !a.is_empty() => (n, a),
         _ => {
             return (
                 chk(Status::NotChecked, "no App Attest evidence (Android proof, or pre-attestation)"),
+                None,
+            )
+        }
+    };
+
+    // #38: how the live assertion's clientDataHash is reconstructed. The enrol /
+    // attestation-object path and pre-#317 SDKs are nonce-only; a #317 live proof
+    // folds the Secure-Enclave signing key in. PreferBound accepts either during
+    // rollout; RequireBound (the `--require-attestation` flag) enforces the bound
+    // form. Binding required but no signing key resolved ⇒ fail closed, never a
+    // silent downgrade to nonce-only.
+    let binding = match (signing_key_sec1, require_binding) {
+        (Some(sk), true) => AssertionBinding::RequireBound { signing_key_sec1: sk },
+        (Some(sk), false) => AssertionBinding::PreferBound { signing_key_sec1: sk },
+        (None, false) => AssertionBinding::NonceOnly,
+        (None, true) => {
+            return (
+                chk(
+                    Status::Fail,
+                    "iOS assertion binding required (--require-attestation) but no device \
+                     signing key is available to bind the assertion to",
+                ),
                 None,
             )
         }
@@ -173,7 +262,7 @@ fn appattest_check_da(
         // First proof of a key: verify the chain to Apple's root, recover the
         // key, then verify the assertion against it.
         Some(obj) => match verify_attestation(obj, nonce, &expect.app_id, &key_id, expect.accept_env) {
-            Ok(key) => match verify_assertion(assertion, nonce, &expect.app_id, &key) {
+            Ok(key) => match verify_assertion_with_binding(assertion, nonce, &expect.app_id, &key, binding) {
                 Ok(counter) => (
                     chk(Status::Pass,
                         format!("attestation chained to Apple App Attest root; assertion verified (counter {counter})")),
@@ -190,13 +279,30 @@ fn appattest_check_da(
                     "assertion present but this proof carries no attestation object and no cached key is available"),
                 None,
             ),
-            Some(key) => match verify_assertion(assertion, nonce, &expect.app_id, key) {
-                Ok(counter) => (
-                    chk(Status::Pass, format!("assertion verified against cached key (counter {counter})")),
-                    Some(AttestedKey { last_counter: counter, public_key_sec1: key.public_key_sec1.clone() }),
-                ),
-                Err(e) => (chk(Status::Fail, format!("assertion failed: {e}")), None),
-            },
+            Some(key) => {
+                // #41 (rec #5): bind `key_id` to the cached key on the assertion
+                // path too. `verify_attestation` enforces `key_id == SHA256(SPKI)`
+                // on the object path, but the crate's assertion verify does not —
+                // so without this a proof's `key_id` and the key its assertion is
+                // checked against are only tied together by the *caller's* cache
+                // lookup. Enforce it here so a (key_id, cached-key) pair that does
+                // not hash-match is rejected regardless of how the cache was keyed.
+                let expected_key_id: [u8; 32] = Sha256::digest(&key.public_key_sec1).into();
+                if expected_key_id.as_slice() != key_id.as_slice() {
+                    return (
+                        chk(Status::Fail,
+                            "key_id does not match the cached attested key (SHA-256(SPKI) mismatch)"),
+                        None,
+                    );
+                }
+                match verify_assertion_with_binding(assertion, nonce, &expect.app_id, key, binding) {
+                    Ok(counter) => (
+                        chk(Status::Pass, format!("assertion verified against cached key (counter {counter})")),
+                        Some(AttestedKey { last_counter: counter, public_key_sec1: key.public_key_sec1.clone() }),
+                    ),
+                    Err(e) => (chk(Status::Fail, format!("assertion failed: {e}")), None),
+                }
+            }
         },
     }
 }
@@ -236,7 +342,9 @@ pub fn appattest_enroll(
     if da.app_attest_attestation.as_deref().is_none_or(<[u8]>::is_empty) {
         anyhow::bail!("enrolment bundle carries no App Attest attestation object");
     }
-    let (check, key) = appattest_check_da(da, expect, None);
+    // The enrolment snapshot assertion is always nonce-only (a one-time bootstrap,
+    // not a per-proof replay vector) — no signing-key binding here (#38).
+    let (check, key) = appattest_check_da(da, expect, None, None, false);
     key.ok_or_else(|| anyhow::anyhow!("enrolment bundle failed verification: {}", check.detail))
 }
 
@@ -369,6 +477,7 @@ pub fn attestation_root_check(
     proof: &LocationProof,
     now_unix_secs: u64,
     expected_app: Option<&ExpectedAppIdentity>,
+    device_pubkey_sec1: Option<&[u8]>,
 ) -> Check {
     let c = |status, detail: &str| Check {
         name: "attestation-root",
@@ -397,8 +506,39 @@ pub fn attestation_root_check(
              iOS hardware-root assurance is the app-attest check (Apple App Attest)",
         );
     }
-    match verify_key_attestation(chain, &android_keygen_challenge(), now_unix_secs, expected_app) {
+    // `AttestMode::Proof` (2.0.0+): the proof-path posture — the crate's stricter
+    // `Bootstrap` mode (verified-boot + revocation) is for licence minting, not
+    // proof verification. Behaviour here is unchanged from the pre-2.0 call.
+    match verify_key_attestation(
+        chain,
+        &android_keygen_challenge(),
+        now_unix_secs,
+        expected_app,
+        AttestMode::Proof,
+    ) {
         Ok(att) => {
+            // SECURITY (issue #31): bind the attested leaf to the signing key. A
+            // valid Google-rooted chain proves *some* StrongBox/TEE key is genuine
+            // hardware; it says nothing about this proof unless that key is the one
+            // that signed it. Without this, a genuine chain borrowed from another
+            // device's proof confers `is_attested()` on any signing key.
+            match device_pubkey_sec1 {
+                None => {
+                    return c(
+                        Status::Fail,
+                        "key-attestation chain is valid but no device signing key is \
+                         available to bind it to",
+                    )
+                }
+                Some(dev) if !sec1_keys_equal(&att.leaf_pubkey_sec1, dev) => {
+                    return c(
+                        Status::Fail,
+                        "key-attestation chain attests a different key than the one that \
+                         signed this proof",
+                    )
+                }
+                Some(_) => {}
+            }
             let lvl = match att.security_level {
                 SecurityLevel::StrongBox => "StrongBox",
                 SecurityLevel::TrustedEnvironment => "TEE",
@@ -435,7 +575,7 @@ mod tests {
 
     #[test]
     fn no_device_attestation_is_not_checked() {
-        let (c, key) = appattest_check(&proof_with(None), &expectation(), None);
+        let (c, key) = appattest_check(&proof_with(None), &expectation(), None, None, false);
         assert_eq!(c.status, Status::NotChecked);
         assert!(key.is_none());
     }
@@ -444,8 +584,33 @@ mod tests {
     fn no_app_attest_fields_is_not_checked() {
         // An Android proof: device attestation present, but no App Attest fields.
         let da = DeviceAttestation { key_id: "abc".into(), ..Default::default() };
-        let (c, _) = appattest_check(&proof_with(Some(da)), &expectation(), None);
+        let (c, _) = appattest_check(&proof_with(Some(da)), &expectation(), None, None, false);
         assert_eq!(c.status, Status::NotChecked);
+    }
+
+    #[test]
+    fn require_binding_without_signing_key_fails_closed() {
+        // #38: a proof carrying an App Attest assertion, with binding REQUIRED
+        // (--require-attestation) but no device signing key resolved, must FAIL —
+        // never silently downgrade to the nonce-only form. The require flag is
+        // exactly what flips it: the identical proof is NOT-CHECKED without it.
+        let key_id = base64::engine::general_purpose::STANDARD.encode([0u8; 32]);
+        let da = DeviceAttestation {
+            key_id,
+            app_attest_assertion: Some(vec![1, 2, 3]),
+            attestation_nonce: Some(vec![9; 32]),
+            ..Default::default()
+        };
+        // require_binding = true, no signing key → fail closed.
+        let (fail, key) =
+            appattest_check(&proof_with(Some(da.clone())), &expectation(), None, None, true);
+        assert_eq!(fail.status, Status::Fail, "{}", fail.detail);
+        assert!(fail.detail.contains("no device signing key"), "{}", fail.detail);
+        assert!(key.is_none());
+        // Same proof, binding NOT required → proceeds (NOT-CHECKED: no cached key).
+        let (relaxed, _) =
+            appattest_check(&proof_with(Some(da)), &expectation(), None, None, false);
+        assert_eq!(relaxed.status, Status::NotChecked);
     }
 
     #[test]
@@ -457,9 +622,46 @@ mod tests {
             attestation_nonce: Some(vec![9; 32]),
             ..Default::default()
         };
-        let (c, key) = appattest_check(&proof_with(Some(da)), &expectation(), None);
+        let (c, key) = appattest_check(&proof_with(Some(da)), &expectation(), None, None, false);
         assert_eq!(c.status, Status::NotChecked);
         assert!(key.is_none());
+    }
+
+    #[test]
+    fn cached_path_binds_key_id_to_the_cached_key() {
+        // #41 (rec #5): on the assertion/cached path, `key_id` must hash-match the
+        // cached key (SHA-256(SPKI)) — otherwise a (key_id, cached-key) pair that
+        // doesn't correspond is rejected before the assertion is even checked.
+        use sha2::{Digest, Sha256};
+        let cached_pub = vec![4u8; 65]; // opaque "SPKI" bytes; identity is by hash
+        let cached = AttestedKey { public_key_sec1: cached_pub.clone(), last_counter: 0 };
+
+        // key_id that does NOT hash to the cached key → FAIL on the binding.
+        let mismatched = DeviceAttestation {
+            key_id: base64::engine::general_purpose::STANDARD.encode([0u8; 32]),
+            app_attest_assertion: Some(vec![1, 2, 3]),
+            attestation_nonce: Some(vec![9; 32]),
+            ..Default::default()
+        };
+        let (c, k) =
+            appattest_check(&proof_with(Some(mismatched)), &expectation(), Some(&cached), None, false);
+        assert_eq!(c.status, Status::Fail, "{}", c.detail);
+        assert!(c.detail.contains("key_id does not match"), "{}", c.detail);
+        assert!(k.is_none());
+
+        // key_id == SHA-256(cached SPKI) → passes the binding gate, then fails on
+        // the garbage assertion: a DIFFERENT error, proving the gate let it past.
+        let matching = DeviceAttestation {
+            key_id: base64::engine::general_purpose::STANDARD.encode(Sha256::digest(&cached_pub)),
+            app_attest_assertion: Some(vec![1, 2, 3]),
+            attestation_nonce: Some(vec![9; 32]),
+            ..Default::default()
+        };
+        let (c2, _) =
+            appattest_check(&proof_with(Some(matching)), &expectation(), Some(&cached), None, false);
+        assert_eq!(c2.status, Status::Fail, "{}", c2.detail);
+        assert!(!c2.detail.contains("key_id does not match"), "gate should pass: {}", c2.detail);
+        assert!(c2.detail.contains("assertion failed"), "{}", c2.detail);
     }
 
     #[test]
@@ -471,7 +673,7 @@ mod tests {
             app_attest_attestation: Some(vec![0xCB, 0x0B]),
             ..Default::default()
         };
-        let (c, _) = appattest_check(&proof_with(Some(da)), &expectation(), None);
+        let (c, _) = appattest_check(&proof_with(Some(da)), &expectation(), None, None, false);
         assert_eq!(c.status, Status::Fail);
         assert!(c.detail.contains("base64"));
     }
@@ -486,7 +688,7 @@ mod tests {
             app_attest_attestation: Some(vec![0, 1, 2, 3]), // not a valid CBOR attestation
             ..Default::default()
         };
-        let (c, key) = appattest_check(&proof_with(Some(da)), &expectation(), None);
+        let (c, key) = appattest_check(&proof_with(Some(da)), &expectation(), None, None, false);
         assert_eq!(c.status, Status::Fail);
         assert!(key.is_none());
     }
@@ -613,10 +815,10 @@ mod tests {
             max_age_s: 300,
             hardware_pubkey: None,
             hw_key_source: "test",
-            expect_region: None,
+            expect_region: None, expect_region_type: None, expect_region_contains: None,
             session_nonce: None,
             require_session_binding: false,
-            require_schema_v2: false,
+            require_schema_v2: false, require_attestation: false,
         };
 
         let report = verify_attested(&proof, &opts, &expectation());
@@ -642,10 +844,10 @@ mod tests {
             max_age_s: 300,
             hardware_pubkey: None,
             hw_key_source: "test",
-            expect_region: None,
+            expect_region: None, expect_region_type: None, expect_region_contains: None,
             session_nonce: None,
             require_session_binding: false,
-            require_schema_v2: false,
+            require_schema_v2: false, require_attestation: false,
         };
 
         // Cached variant returns (Report, Option<AttestedKey>); a bare proof
@@ -732,12 +934,12 @@ mod tests {
     #[test]
     fn attestation_root_not_checked_without_chain() {
         // No device attestation (e.g. iOS App Attest path or a bare key).
-        let c = attestation_root_check(&proof_with(None), 1_700_000_000, None);
+        let c = attestation_root_check(&proof_with(None), 1_700_000_000, None, None);
         assert_eq!(c.status, Status::NotChecked);
         // Device attestation present but empty cert chain → still nothing to anchor.
         let da = DeviceAttestation { key_id: "k".into(), ..Default::default() };
         assert_eq!(
-            attestation_root_check(&proof_with(Some(da)), 1_700_000_000, None).status,
+            attestation_root_check(&proof_with(Some(da)), 1_700_000_000, None, None).status,
             Status::NotChecked
         );
     }
@@ -750,7 +952,7 @@ mod tests {
             certificate_chain: vec![vec![0xDE, 0xAD, 0xBE, 0xEF]],
             ..Default::default()
         };
-        let c = attestation_root_check(&proof_with(Some(da)), 1_700_000_000, None);
+        let c = attestation_root_check(&proof_with(Some(da)), 1_700_000_000, None, None);
         assert_eq!(c.status, Status::Fail, "{}", c.detail);
     }
 
@@ -762,7 +964,7 @@ mod tests {
         let sk = SigningKey::from_slice(&[0x42u8; 32]).unwrap();
         let sec1 = sk.verifying_key().to_sec1_bytes().to_vec();
         let da = DeviceAttestation { certificate_chain: vec![sec1], ..Default::default() };
-        let c = attestation_root_check(&proof_with(Some(da)), 1_700_000_000, None);
+        let c = attestation_root_check(&proof_with(Some(da)), 1_700_000_000, None, None);
         assert_eq!(c.status, Status::NotChecked, "{}", c.detail);
         assert!(c.detail.contains("Secure Enclave"));
     }
@@ -787,7 +989,7 @@ mod tests {
         // before the app-identity binding), so supplying it never loosens the gate.
         let da = DeviceAttestation { certificate_chain: vec![vec![0xDE, 0xAD]], ..Default::default() };
         assert_eq!(
-            attestation_root_check(&proof_with(Some(da)), 1_700_000_000, Some(&expected)).status,
+            attestation_root_check(&proof_with(Some(da)), 1_700_000_000, Some(&expected), None).status,
             Status::Fail
         );
         // An iOS raw SE key is still NOT-CHECKED with an expected app — the Android
@@ -796,7 +998,7 @@ mod tests {
         let sec1 = sk.verifying_key().to_sec1_bytes().to_vec();
         let ios = DeviceAttestation { certificate_chain: vec![sec1], ..Default::default() };
         assert_eq!(
-            attestation_root_check(&proof_with(Some(ios)), 1_700_000_000, Some(&expected)).status,
+            attestation_root_check(&proof_with(Some(ios)), 1_700_000_000, Some(&expected), None).status,
             Status::NotChecked
         );
     }
@@ -808,5 +1010,22 @@ mod tests {
         let got = android_keygen_challenge();
         let want: [u8; 32] = Sha256::digest(b"navigate-stage-chain-v1").into();
         assert_eq!(got, want);
+    }
+
+    // --- SECURITY (issue #31): attestation must bind to the signing key ---
+
+    #[test]
+    fn sec1_equal_tolerates_compression_and_fails_closed() {
+        use p256::ecdsa::{SigningKey, VerifyingKey};
+        let vk: VerifyingKey = *SigningKey::from_slice(&[0x7u8; 32]).unwrap().verifying_key();
+        let unc = vk.to_encoded_point(false).as_bytes().to_vec();
+        let comp = vk.to_encoded_point(true).as_bytes().to_vec();
+        assert_ne!(unc, comp, "compressed and uncompressed differ byte-wise");
+        assert!(sec1_keys_equal(&unc, &comp), "same key, different encoding, must be equal");
+
+        let other: VerifyingKey = *SigningKey::from_slice(&[0x8u8; 32]).unwrap().verifying_key();
+        assert!(!sec1_keys_equal(&unc, other.to_encoded_point(false).as_bytes()));
+        // Unparseable bytes are never equal — fail closed.
+        assert!(!sec1_keys_equal(&unc, &[0u8; 10]));
     }
 }

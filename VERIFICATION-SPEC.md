@@ -120,11 +120,22 @@ preimage = DOMAIN_TAG || verdict || level || integrity || region || commitment
 The fields are length-prefixed and concatenated in a fixed order under a
 domain-separation tag, so the byte layout is unambiguous and shared verbatim with
 the SDK (cross-checked against the SDK's golden vector). The region component
-covers every region type: a geometric region (ellipse / H3 cell set / bounding
-box) folds into a stable digest so an edited polygon is caught too. Editing any
-bound field after signing changes the preimage, so the re-derived hash no longer
-matches the signed stage and the proof is rejected. A proof carrying no
-`semanticFields` stage reports NOT-CHECKED for this binding.
+covers the region **identity** for every region type, and the full **geometry**
+for ellipse / H3 cell set / bounding box (each folds every scalar into a stable
+digest, so an edited polygon is caught too). Editing a bound field after signing
+changes the preimage, so the re-derived hash no longer matches the signed stage
+and the proof is rejected.
+
+**v1 coverage gap (#32).** Under preimage v1, a `CityRegion`'s `center_lat` /
+`center_lon` / `radius_meters` and an `EarthRegion`'s `max_altitude_meters` are
+**not** in the preimage — only the city *name* / the earth *tag* are. Editing
+those geometry fields is therefore NOT detected. To avoid overclaiming, a
+matched city/earth `semanticFields` stage is reported `WARN` (not `PASS`) and
+`Report::is_semantically_bound()` returns `false` for it, so a consumer that
+trusts city coordinates fails closed. Binding city/earth geometry is the later
+`octet-semantic-binding-v2` pass (verifier + both SDK signers, in lockstep).
+
+A proof carrying no `semanticFields` stage reports NOT-CHECKED for this binding.
 
 ---
 

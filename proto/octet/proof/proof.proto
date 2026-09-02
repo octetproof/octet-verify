@@ -24,6 +24,18 @@ enum LocationProofVerdict {
   NOT_PROVABLE = 4;
 }
 
+// --- Inside/outside verdict (#26) ---
+// The device's own inside/outside answer for the claimed region, signed into the
+// proof via the octet-semantic-binding-v2 preimage. A trichotomy:
+// INDETERMINATE must survive as itself, never collapse into a boolean.
+// LOCATION_VERDICT_UNSPECIFIED (or a v1 proof) means "no signed verdict".
+enum LocationVerdict {
+  LOCATION_VERDICT_UNSPECIFIED = 0;
+  INSIDE = 1;
+  OUTSIDE = 2;
+  INDETERMINATE = 3;
+}
+
 // --- Proof Level ---
 
 enum ProofLevel {
@@ -200,6 +212,10 @@ message LocationProof {
   string sdk_version = 12;
   string platform = 13;  // "android" or "ios"
   bytes previous_token_hash = 16;  // hash of the prior proof's token (proof chaining)
+  // Device's inside/outside verdict for claimed_region (#26). Signed via the
+  // octet-semantic-binding-v2 preimage; UNSPECIFIED / a v1 proof ⇒ no signed
+  // verdict. Tag 17: next free after the reserved 9/14/15.
+  LocationVerdict location_verdict = 17;
 
   reserved 9, 14, 15;
 }

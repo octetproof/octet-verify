@@ -4,6 +4,61 @@ All notable changes to `octet-verify` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [1.3.0] - 2026-09-02
+
+Folds a post-1.2.0 security-hardening cluster and semantic-binding-v2 verifier
+support into one release. Additive and back-compat: a genuine pre-1.3.0 proof
+verifies unchanged, the new geometry/verdict bindings are understood but not
+required (their transition flag stays off by default), and only tampered or
+malformed proofs are newly rejected. Security hardening in this release resolves
+findings from an external audit by [Zellic](https://zellic.io) (the team behind
+V12.sh); we thank them for the review and remediation guidance.
+
+### Added
+- **Semantic-binding v2 (opt-in wire, v1-tolerant).** The verifier understands
+  the `octet-semantic-binding-v2` `semanticFields` preimage, which additionally
+  binds city-region geometry and earth altitude and a signed inside/outside
+  `location_verdict`. `Report::location_verdict()` exposes it and `--json` emits
+  `location_verdict`. v1 proofs verify unchanged (v2 is tried first, then v1);
+  requiring v2 is the existing `--require-schema-v2` flag, still off by default.
+- **`--expect-region-type`** and **`--expect-region-contains <lat>,<lon>`** —
+  positively assert a geometric or earth region (by type, or by point containment
+  for earth / city / ellipse / bbox), so such a proof can be *satisfied* rather
+  than only rejected. (h3 containment is a follow-up.)
+- **`--require-attestation`** (feature `appattest`) — fail closed when hardware
+  attestation is required, so a required attestation check cannot be dropped
+  without failing the proof. Off by default.
+- **`--android-app-identity <package>,<cert_sha256_hex>`** — require an Android
+  proof to name the expected app, not merely chain to a Google hardware root.
+- **Typed verification bits in `--json`** — `region_asserted`, `attested`, and
+  `semantically_bound` are emitted as booleans, and an `appattest` build always
+  emits the `app-attest` line, so automation need not string-match `checks`.
+
+### Changed
+- **`octet-attest-verify` dependency v1.1.0 → v2.2.0** (published crates.io
+  2.2.0), pinned as a tag-matched git rev plus `Cargo.lock` — reproducible and
+  content-addressed. Brings the certificate chain-extension fix and the iOS
+  Secure-Enclave key binding below.
+
+### Security
+- **Hardware attestation is bound to the signing key.** On both iOS and Android
+  the verifier now requires the attested secure-hardware key to be the exact key
+  that signed the proof, and reports attestation only for that key; a supplied
+  `--hardware-pubkey` that disagrees with the attested key is refused.
+- **Region assertion fails closed.** An armed `--expect-region` that cannot be
+  evaluated now fails instead of passing silently, and the comparison is typed
+  (country / subdivision / city) so a city name can no longer satisfy a
+  country/subdivision code.
+- **Honest semantic-binding coverage.** Under the v1 preimage, city centre/radius
+  and earth altitude are reported as *not* covered (WARN) instead of implied
+  signed; v2 binds them (see Added), and a consumer relying on those coordinates
+  fails closed until then.
+- **Backend-fetch hardening (`--features net`).** Redirect following is disabled
+  so a backend response cannot steer a fetch to an unintended host; backend error
+  output is bounded and sanitized before display; the proof identifier is
+  validated at the trust boundary; and the documented exit-code contract is
+  preserved even on an unexpected dependency panic.
+
 ## [1.2.0] - 2026-07-29
 
 ### Added

@@ -19,7 +19,10 @@ OPTIONS:
                                hex). Required to verify stage signatures for iOS
                                proofs that carry no certificate; for Android the
                                key is taken from the embedded certificate chain
-                               when this flag is absent.
+                               when this flag is absent. If the proof carries an
+                               attested certificate_chain[0], a supplied key must
+                               EQUAL it — a conflicting key is refused (verify
+                               against the attested key by omitting this flag).
     --ed25519-pubkey <file>    Enrolled device-signer Ed25519 public key (raw 32
                                bytes or hex). Used to verify the transport
                                signature in --envelope mode.
@@ -32,8 +35,27 @@ OPTIONS:
                                (appends). NOT concurrency-safe and NOT the
                                authoritative defense — cross-proof uniqueness is
                                enforced server-side at ingest.
-    --expect-region <id>       Assert the proof claims this region (country or
-                               subdivision ISO code, or city name).
+    --expect-region <id>       Assert the proof claims this region. Typed form
+                               country:US / subdivision:US-CA / city:San Francisco
+                               matches type and value; the bare form (US-CA) is a
+                               country/subdivision ISO-code alias. FAILS (not
+                               skipped) if the proof's region has no identifier to
+                               match (earth/ellipse/h3/bbox) or no region at all.
+    --expect-region-type <t>   Assert the claimed region is of this type: one of
+                               earth, country, subdivision, city, ellipse, h3,
+                               bbox. The positive counterpart to --expect-region —
+                               use it to affirmatively accept a geometric or
+                               earth-region proof. FAILS on a type mismatch or no
+                               region.
+    --expect-region-contains <lat>,<lon>
+                               Assert the claimed region CONTAINS this point
+                               (decimal degrees). Positively asserts a geometric
+                               proof by location: earth (always), city (disc),
+                               ellipse, and bbox are evaluated. FAILS for a named
+                               country/subdivision (no geometry — use
+                               --expect-region) and for h3 (needs an H3 library not
+                               in this build; use --expect-region-type h3), and on
+                               no region.
     --session-nonce <hex>      Assert the proof is bound to this per-login session
                                nonce (hex). Supply the nonce the relying party
                                issued at login; verification recomputes the
@@ -51,11 +73,28 @@ OPTIONS:
                                reporting NOT-CHECKED. Off by default (back-compat:
                                older proofs still verify). Arm this in lockstep
                                with the ingest gate; it is instantly reversible.
+    --require-attestation      Require hardware attestation to have affirmatively
+                               verified: FAIL unless App Attest (iOS) or the
+                               key-attestation chain (Android) passed. Closes the
+                               gap where stripped evidence reports NOT-CHECKED and
+                               the proof still passes. Off by default. On a build
+                               without --features appattest (which can't verify
+                               attestation) it always FAILs. iOS: pair it with
+                               --app-attest-config — App Attest is the only iOS
+                               hardware root, so without that config an iOS proof
+                               can never satisfy this and will FAIL.
     --app-attest-config <file> Verify the proof's Apple App Attest evidence
                                offline against the expected app identity in this
                                TOML config ([app_attest] team_id / bundle_id /
                                environment). Requires a build with the
                                `appattest` feature; otherwise reported NOT-CHECKED.
+    --android-app-identity <package>,<cert_sha256_hex>
+                               Bind the Android key-attestation chain to a specific
+                               app: its package name and the SHA-256 (64 hex chars)
+                               of the signing certificate's DER
+                               (attestationApplicationId). Without it the chain
+                               attests only "some key from some app". Requires the
+                               `appattest` feature.
     --skip-hardware-attestation
                                Scope an `appattest` build to core verification
                                only: skip the offline hardware-attestation layer
@@ -88,9 +127,12 @@ BACKEND FETCH MODE (subcommands; requires a build with --features net):
                            consistency). Always deduped within a single run.
     --interval <seconds>   watch poll interval. Default: 5.
     --since <ts> / --until <ts>   range bounds (RFC 3339, e.g. 2026-06-01T00:00:00Z).
-    --hardware-pubkey, --expect-region, --session-nonce, --require-session-binding,
-    --require-schema-v2, --max-age-seconds,
-    --json, --app-attest-config, --skip-hardware-attestation all apply as above — a
+    --hardware-pubkey, --expect-region, --expect-region-type,
+    --expect-region-contains, --session-nonce,
+    --require-session-binding, --require-schema-v2, --require-attestation,
+    --max-age-seconds,
+    --json, --app-attest-config, --android-app-identity,
+    --skip-hardware-attestation all apply as above — a
     fetched Android proof carries its real attestation chain, so on an
     `appattest` build attestation-root runs in fetch mode too. Historical proofs
     are older than the default freshness window — pass a wide --max-age-seconds

@@ -38,7 +38,8 @@ fn main() -> anyhow::Result<()> {
     let proof = LocationProof::decode(&*std::fs::read(&proof_path)?)?;
 
     // [3] Empty cache: nothing has established the key yet → NOT-CHECKED.
-    let (before, _) = appattest_check(&proof, &expect, None);
+    // (nonce-only fixtures: no SE signing key, binding not required — #38.)
+    let (before, _) = appattest_check(&proof, &expect, None, None, false);
     println!("[3] before enrol: {:<11} {}", before.status.tag(), before.detail);
 
     // [4] Enrol from the out-of-band JSON bundle: verify its attestation object
@@ -48,7 +49,7 @@ fn main() -> anyhow::Result<()> {
     println!("[4] enrolled:     key recovered (counter {})", key.last_counter);
 
     // [5] Same proof, now against the cached key → PASS.
-    let (after, _) = appattest_check(&proof, &expect, Some(&key));
+    let (after, _) = appattest_check(&proof, &expect, Some(&key), None, false);
     println!("[5] after enrol:  {:<11} {}", after.status.tag(), after.detail);
 
     Ok(())

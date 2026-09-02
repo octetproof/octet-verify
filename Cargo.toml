@@ -1,6 +1,6 @@
 [package]
 name = "octet-verify"
-version = "1.2.0"
+version = "1.3.0"
 edition = "2021"
 description = "Standalone, independent verifier for Octet LocationProof artifacts. Checks authenticity and integrity (signatures, hash-chain, freshness, region claim) without any device-side secret or proof-creation logic."
 repository = "https://github.com/octetproof/octet-verify"
@@ -56,11 +56,15 @@ anyhow = "1"
 # `octet-attest-verify` crate, pulled only under `--features appattest`.
 
 # --- App Attest layer (feature = "appattest" only) ---
-# Pinned git dependency on the public sibling repo (pinned to a rev, not a
-# branch, for reproducible default-build resolution). Only compiled under
+# Dual-specified on purpose: `git`+`rev` pins the exact source for reproducible
+# private builds (a rev, not a branch); `version` is the matching crates.io
+# release. Local/private builds resolve via git and verify the rev's crate
+# version satisfies `version` (so rev and version must be bumped together);
+# `cargo publish` drops the git source and keeps only `version`, so the crate is
+# directly publishable to crates.io with no manifest surgery. Only compiled under
 # `--features appattest`; a default / `--features net` build resolves it but
 # pulls none of its code.
-octet-attest-verify = { git = "https://github.com/octetproof/octet-attest-verify", rev = "d79045079bd0d39ede4ce1b3ddfbf1d60ab089e0", optional = true, features = ["config", "keyattest"] }
+octet-attest-verify = { version = "2.2.0", git = "https://github.com/octetproof/octet-attest-verify", rev = "37a329d32f1c2a125e29cb440b023ddf916b3c12", optional = true, features = ["config", "keyattest"] }
 
 # --- backend fetch mode (feature = "net" only) ---
 # rustls TLS (no OpenSSL / system dep); we parse bodies ourselves via

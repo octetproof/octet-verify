@@ -187,6 +187,15 @@ fn json_valid_reflects_signature_verification() {
     assert!(s.contains("\"valid\": false"), "unverified sigs must be valid:false:\n{s}");
     assert!(s.contains("\"signatures_verified\": false"), "missing signatures_verified:false:\n{s}");
     assert!(s.contains("INCONCLUSIVE"), "verdict should be INCONCLUSIVE:\n{s}");
+    // Typed machine-readable signals must always be emitted (#41 / #40 / #32): no
+    // attestation here, no --expect-region supplied, and this golden carries no
+    // semanticFields stage, so all three are false — but present, not absent.
+    assert!(s.contains("\"attested\": false"), "missing attested:false:\n{s}");
+    assert!(s.contains("\"region_asserted\": false"), "missing region_asserted:false:\n{s}");
+    assert!(
+        s.contains("\"semantically_bound\": false"),
+        "missing semantically_bound:false:\n{s}"
+    );
 
     // With the key → signatures verify → authentic.
     let out2 = Command::new(BIN)

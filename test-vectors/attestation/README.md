@@ -1,11 +1,9 @@
 # Real-device attestation fixtures
 
-Genuine, physical-device `LocationProof` artifacts that carry a **real hardware
-key-attestation chain** — unlike `../golden/` (software-signed, deterministic,
+Genuine, physical-device `LocationProof` artifacts that carry **real hardware
+attestation evidence** — unlike `../golden/` (software-signed, deterministic,
 `attestation-root` NOT-CHECKED). These exercise the `--features appattest` layer
-end to end: the chain validates to an embedded Google root, and the Android
-app-identity binding (`attestationApplicationId`) is checked against the
-producing app.
+end to end against genuine Apple / Google output.
 
 ## `pixel9-strongbox.bin`
 
@@ -22,3 +20,32 @@ Expected Android app identity (asserted by `tests/android_app_binding.rs`):
 windows, so the app-binding test pins verification time to a fixed instant
 within those windows (the capture time) — deterministic, and it never goes stale
 the way wall-clock verification of an expiring leaf would.
+
+## `ios-appattest.bin`
+
+A `LocationProof` captured from the sample app (`com.octetproof.sample`, team
+`6ZH5F97PWU`, env `development`) on an iPhone 11 (`#317` SDK build). It is a
+**first-of-key** proof, so it carries the Apple App Attest **attestation object**
+(the object-bearing green path), and its live per-proof assertion is the **#38
+bound form**: `clientDataHash = SHA256(nonce ‖ SE_signing_key)`, committing the
+Secure-Enclave key in `certificate_chain[0]` that signs the proof.
+
+Exercised by `tests/ios_app_attest.rs`: `app-attest PASS` (object → Apple App
+Attest root → recovered key → bound assertion verified under **RequireBound**),
+`device-attestation-sig PASS`, `attestation-root NOT-CHECKED` (iOS carries a raw
+Secure-Enclave key, not an X.509 chain — hardware-root assurance is `app-attest`).
+This is the iOS half of #31 / #38: before this fixture the object-bearing green
+path was verified from source only.
+
+**Centre coarsened.** The `claimed_region.city` centre is rounded to one decimal
+place (~11 km). Region geometry is not covered by the v1 semantic preimage — the
+verifier reports `region GEOMETRY is NOT covered` — so the centre is unsigned,
+carries no verification weight, and rewriting it breaks no signature or hash:
+every check status is identical before and after, and the byte length is
+unchanged. It was a real position on a real device and this fixture is public, so
+it is held to the granularity the 50 km claimed radius already implies.
+`tests/fixture_precision.rs` enforces that bound for every shipped fixture.
+
+**Not time-pinned to a cert window** (iOS attestation has no X.509 validity
+window); only proof freshness is time-sensitive, so the test uses a fixed `now`
+with a generous freshness window.

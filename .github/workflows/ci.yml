@@ -43,6 +43,12 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Least-privilege GITHUB_TOKEN. This workflow only checks out, builds, and
+# tests — it publishes nothing — so read-only access to repo contents is all it
+# needs. (Resolves the CodeQL `actions/missing-workflow-permissions` finding.)
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -80,3 +86,20 @@ jobs:
         # The `net` feature adds the backend fetch/watch/range subcommands
         # and their HTTP-fixture tests under test-vectors/backend/.
         run: cargo test --all-targets --locked --features net
+
+      - name: Build (--features appattest)
+        run: cargo build --all-targets --locked --features appattest
+
+      - name: Test (--features appattest)
+        # The `appattest` feature adds the offline hardware-attestation layer
+        # (Apple App Attest + Android key-attestation chain to a Google root +
+        # the field-2 device signature) and its real-hardware vector test
+        # (tests/android_app_binding.rs). Without this step the whole layer —
+        # and its signing-key-binding regression tests — never compile in CI.
+        run: cargo test --all-targets --locked --features appattest
+
+      - name: Build (--features net,appattest)
+        run: cargo build --all-targets --locked --features net,appattest
+
+      - name: Test (--features net,appattest)
+        run: cargo test --all-targets --locked --features net,appattest

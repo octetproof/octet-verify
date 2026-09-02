@@ -489,3 +489,154 @@ fn problem_json_error_is_parsed_and_surfaced() {
     assert!(stderr.contains("HTTP 403"), "status not surfaced:\n{stderr}");
     assert!(stderr.contains("license is revoked"), "problem detail not surfaced:\n{stderr}");
 }
+
+// --- SSRF regression: backend-controlled redirects must not be followed ---
+
+/// A throwaway server whose handler returns the *entire* raw HTTP response, so
+/// a test can emit arbitrary headers (e.g. `Location`) that `start_stub` can't.
+/// The returned counter increments once per accepted connection, so a test can
+/// assert a host was never contacted.
+fn start_raw<F>(handler: F) -> (String, Arc<AtomicUsize>)
+where
+    F: Fn(&str, &str) -> String + Send + Sync + 'static,
+{
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    let hits = Arc::new(AtomicUsize::new(0));
+    let hits_srv = hits.clone();
+    let handler = Arc::new(handler);
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request_line = String::new();
+            if reader.read_line(&mut request_line).is_err() {
+                continue;
+            }
+            hits_srv.fetch_add(1, Ordering::SeqCst);
+            let mut parts = request_line.split_whitespace();
+            let method = parts.next().unwrap_or("").to_string();
+            let full_path = parts.next().unwrap_or("").to_string();
+            loop {
+                let mut line = String::new();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) if line == "\r\n" || line == "\n" => break,
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
+            let path = full_path.split('?').next().unwrap_or("");
+            let resp = handler(&method, path);
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+    (base_url, hits)
+}
+
+/// SECURITY: an untrusted backend that 302-redirects the verifier at an
+/// internal host must not cause a second request. `check_url_scheme` only
+/// guards the base URL; the fix (`redirects(0)`) stops the client following any
+/// redirect. If it regresses, the internal target is contacted and its secret
+/// leaks back through the verifier's error output.
+#[test]
+fn redirect_target_is_not_followed_ssrf_guard() {
+    const SECRET: &str = "INTERNAL-SECRET-must-not-leak-9f31c7de55";
+
+    // Stands in for a service only reachable from the verifier's host.
+    let (target_base, target_hits) = start_raw(move |_m, _p| {
+        let body = format!(
+            "{{\"type\":\"x\",\"title\":\"i\",\"status\":500,\
+             \"detail\":\"internal diagnostics: {SECRET}\"}}"
+        );
+        format!(
+            "HTTP/1.1 500 Internal Server Error\r\n\
+             Content-Type: application/problem+json\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    });
+
+    // The untrusted backend: mints a token, then 302s every GET at the target.
+    let redirect_to = format!("{target_base}/internal/status");
+    let (backend_base, _) = start_raw(move |method, _path| {
+        if method == "POST" {
+            let b = r#"{"proof_upload_token":"pup_v1.t","expires_at":"2026-06-05T18:24:00Z"}"#;
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{b}",
+                b.len()
+            )
+        } else {
+            format!(
+                "HTTP/1.1 302 Found\r\nLocation: {redirect_to}\r\n\
+                 Content-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+        }
+    });
+
+    let out = run_cli(&[
+        "fetch", "lp_x",
+        "--backend", &backend_base,
+        "--token", "act_bearer",
+        "--skip-hardware-attestation",
+        "--max-age-seconds", HUGE_MAX_AGE,
+    ]);
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert_eq!(
+        target_hits.load(Ordering::SeqCst),
+        0,
+        "SSRF regression: verifier followed a backend redirect to the internal target\n{combined}"
+    );
+    assert!(
+        !combined.contains(SECRET),
+        "SSRF regression: internal secret leaked through the verifier:\n{combined}"
+    );
+    assert_ne!(out.status.code(), Some(0), "a 3xx must not verify as success:\n{combined}");
+}
+
+// --- #39: exit-code contract holds even for a hostless-Location redirect ---
+
+/// A backend that 302s to a hostless `Location` (`file:`/`data:`/`mailto:`) must
+/// not abort the process with exit 101 (the pre-`redirects(0)` panic, off the
+/// documented 0/1/2/3 contract). With redirect-following off the 3xx surfaces as
+/// a clean backend error → exit 2, and `backend_dispatch`'s panic-catch is the
+/// belt-and-braces backstop if any dependency ever panics again.
+#[test]
+fn hostless_redirect_exits_2_not_101() {
+    let (backend_base, _) = start_raw(move |method, _path| {
+        if method == "POST" {
+            let b = r#"{"proof_upload_token":"pup_v1.t","expires_at":"2026-06-05T18:24:00Z"}"#;
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{b}",
+                b.len()
+            )
+        } else {
+            // Hostless redirect target — the exact shape that used to panic ureq.
+            "HTTP/1.1 302 Found\r\nLocation: file:///etc/hostname\r\n\
+             Content-Length: 0\r\nConnection: close\r\n\r\n"
+                .to_string()
+        }
+    });
+
+    let out = run_cli(&[
+        "fetch", "lp_x",
+        "--backend", &backend_base,
+        "--token", "act_bearer",
+        "--skip-hardware-attestation",
+        "--max-age-seconds", HUGE_MAX_AGE,
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "hostless redirect must exit 2 (usage/backend error), never 101/abort:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
