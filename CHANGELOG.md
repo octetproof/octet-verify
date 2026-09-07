@@ -11,8 +11,7 @@ support into one release. Additive and back-compat: a genuine pre-1.3.0 proof
 verifies unchanged, the new geometry/verdict bindings are understood but not
 required (their transition flag stays off by default), and only tampered or
 malformed proofs are newly rejected. Security hardening in this release resolves
-findings from an external audit by [Zellic](https://zellic.io) (the team behind
-V12.sh); we thank them for the review and remediation guidance.
+findings from [V12](https://v12.sh/).
 
 ### Added
 - **Semantic-binding v2 (opt-in wire, v1-tolerant).** The verifier understands
