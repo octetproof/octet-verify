@@ -35,12 +35,26 @@ struct Args {
     require_schema_v2: bool,
     require_attestation: bool,
     app_attest_config: Option<String>,
+    /// Out-of-band App Attest **enrolment bundle** (#67): recovers the attested key
+    /// so an assertion-only iOS proof (one carrying no attestation object — the
+    /// steady state) can reach `app-attest` PASS via the cached-key path instead of
+    /// NOT-CHECKED. Requires `--app-attest-config`. JSON (`v:1`) or proto form.
+    app_attest_enrolment_bundle: Option<String>,
     /// Expected Android app identity `(package_name, signing_cert_sha256)` for the
     /// key-attestation `attestationApplicationId` binding (#41 rec: bind the
     /// Android chain to a specific app, not just "some app"). Parsed from
     /// `--android-app-identity <package>,<cert_sha256_hex>`.
     android_app_identity: Option<(String, [u8; 32])>,
     skip_hardware_attestation: bool,
+    /// Online Play Integrity (#12, feature `playintegrity`): the first-party
+    /// decode endpoint base URL, the verifier's own decode-scoped service token,
+    /// and the expected Android package. All three required to run the check;
+    /// absent ⇒ `play-integrity` NOT-CHECKED. `integrity_max_age_s` overrides the
+    /// token freshness window (defaults to `--max-age-seconds`).
+    integrity_decode_url: Option<String>,
+    integrity_decode_token: Option<String>,
+    integrity_package: Option<String>,
+    integrity_max_age_s: Option<i64>,
     json: bool,
 }
 
@@ -171,6 +185,7 @@ fn run(args: &Args) -> anyhow::Result<Report> {
             report.checks.push(appattest_from_config(
                 &proof,
                 cfg_path,
+                args.app_attest_enrolment_bundle.as_deref(),
                 hw_key.as_ref().map(|vk| vk.to_sec1_bytes()).as_deref(),
                 args.require_attestation,
             )?);
@@ -234,6 +249,32 @@ fn run(args: &Args) -> anyhow::Result<Report> {
         }
     }
 
+    // Online Play Integrity (#12, feature `playintegrity`): opt-in networked check
+    // against the decode endpoint. A separate signal — it does NOT feed
+    // is_attested() (that is hardware-key attestation); a FAIL here rejects the
+    // proof, NOT-CHECKED does not.
+    #[cfg(feature = "playintegrity")]
+    report.checks.extend(play_integrity_from_cfg(
+        &proof,
+        args.integrity_decode_url.as_deref(),
+        args.integrity_decode_token.as_deref(),
+        args.integrity_package.as_deref(),
+        args.integrity_max_age_s,
+        args.max_age_s.unwrap_or(DEFAULT_MAX_AGE_S),
+        now_ms,
+    ));
+    #[cfg(not(feature = "playintegrity"))]
+    if args.integrity_decode_url.is_some()
+        || args.integrity_decode_token.is_some()
+        || args.integrity_package.is_some()
+    {
+        report.checks.push(verify_mod::Check {
+            name: "play-integrity",
+            status: Status::NotChecked,
+            detail: "--integrity-* given but this binary was built without the `playintegrity` feature".into(),
+        });
+    }
+
     // Fail-closed when attestation is required (#41). Enforced here — after all
     // attestation checks are appended and OUTSIDE the `!skip_hardware_attestation`
     // block — so it runs on every build and cannot be bypassed by
@@ -253,6 +294,7 @@ fn run(args: &Args) -> anyhow::Result<Report> {
 fn appattest_from_config(
     proof: &octet_verify::navigate::LocationProof,
     cfg_path: &str,
+    enrolment_bundle: Option<&str>,
     signing_key_sec1: Option<&[u8]>,
     require_binding: bool,
 ) -> anyhow::Result<verify_mod::Check> {
@@ -265,12 +307,96 @@ fn appattest_from_config(
         .app_attest
         .ok_or_else(|| anyhow::anyhow!("app-attest config has no [app_attest] section"))?;
     let expect = Expectation::new(&aa.team_id, &aa.bundle_id, aa.environment.into());
-    // Stateless single-proof check: no cached key, so an assertion-only proof
-    // reports NOT-CHECKED (it needs the attestation object or a cached key).
+    // Cached key: without --app-attest-enrolment-bundle this is a stateless
+    // single-proof check (`None`), so an assertion-only proof reports NOT-CHECKED
+    // (it needs the attestation object or a cached key). With a bundle (#67) we
+    // recover the attested key out of band, so the assertion-only steady state
+    // reaches PASS via the cached-key path.
     // #38: the live assertion is bound to the SE signing key (certificate_chain[0])
     // — PreferBound by default, RequireBound under --require-attestation.
-    let (check, _key) = appattest_check(proof, &expect, None, signing_key_sec1, require_binding);
+    let cached = match enrolment_bundle {
+        Some(path) => Some(resolve_enrolment_key(path, &expect)?),
+        None => None,
+    };
+    let (check, _key) =
+        appattest_check(proof, &expect, cached.as_ref(), signing_key_sec1, require_binding);
     Ok(check)
+}
+
+/// Recover the attested key from an out-of-band App Attest **enrolment bundle**
+/// (#67) so an assertion-only proof can be verified via the cached-key path. The
+/// bundle is the object-bearing `{key_id, app_attest_attestation,
+/// app_attest_assertion, attestation_nonce}` subset the SDK exports; it is
+/// deserialized (JSON `v:1` or proto `DeviceAttestation`, sniffed by the leading
+/// non-whitespace byte), its attestation object verified to the Apple root against
+/// the expected app identity, and its recovered key returned.
+///
+/// The cached counter is seeded to **0**: a stateless CLI verifies one proof and
+/// holds no store, so it does not — and cannot — enforce cross-proof assertion
+/// counter monotonicity; that stays the stateful library consumer's job
+/// (`verify_attested_cached` + a persisted key). The assertion is still fully
+/// bound cryptographically — signature, app identity, and, in the #38 bound form,
+/// the Secure-Enclave signing key.
+#[cfg(feature = "appattest")]
+fn resolve_enrolment_key(
+    bundle_path: &str,
+    expect: &octet_verify::appattest_layer::Expectation,
+) -> anyhow::Result<octet_attest_verify::appattest::AttestedKey> {
+    use octet_verify::appattest_layer::{appattest_enroll, bundle_from_json, bundle_from_proto};
+
+    let bytes = std::fs::read(bundle_path)
+        .map_err(|e| anyhow::anyhow!("reading enrolment bundle {bundle_path}: {e}"))?;
+    // Sniff the format: a JSON bundle starts with '{' after optional whitespace;
+    // anything else is treated as proto DeviceAttestation wire bytes.
+    let is_json = bytes.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'{');
+    let da = if is_json {
+        bundle_from_json(&bytes)?
+    } else {
+        bundle_from_proto(&bytes)?
+    };
+    let mut key = appattest_enroll(&da, expect)?;
+    key.last_counter = 0;
+    Ok(key)
+}
+
+/// Build and run the online Play Integrity check (#12) from the resolved config
+/// fields, shared by the local and backend-fetch paths.
+///
+/// `None` when no `--integrity-*` config is given at all (the check is simply not
+/// present). When some but not all of url/token/package are given, returns a
+/// NOT-CHECKED so a partial config is loud rather than a silent no-op. Freshness
+/// window defaults to the proof's `max_age_s` unless overridden.
+#[cfg(feature = "playintegrity")]
+fn play_integrity_from_cfg(
+    proof: &octet_verify::navigate::LocationProof,
+    url: Option<&str>,
+    token: Option<&str>,
+    package: Option<&str>,
+    integrity_max_age_s: Option<i64>,
+    default_max_age_s: i64,
+    now_ms: i64,
+) -> Option<verify_mod::Check> {
+    use octet_verify::integrity::{play_integrity_check, IntegrityConfig};
+    match (url, token, package) {
+        (None, None, None) => None,
+        (Some(decode_url), Some(service_token), Some(pkg)) => {
+            let max_age_ms = integrity_max_age_s
+                .unwrap_or(default_max_age_s)
+                .saturating_mul(1000);
+            Some(play_integrity_check(
+                proof,
+                &IntegrityConfig { decode_url, service_token, package: pkg, max_age_ms },
+                now_ms,
+            ))
+        }
+        _ => Some(verify_mod::Check {
+            name: "play-integrity",
+            status: Status::NotChecked,
+            detail: "incomplete --integrity-* config (need --integrity-decode-url, \
+                     --integrity-decode-token, and --integrity-package)"
+                .into(),
+        }),
+    }
 }
 
 /// Detect (and record) reuse of a nullifier across runs using a simple
@@ -581,6 +707,17 @@ fn parse_args() -> Result<Args, String> {
             "--require-schema-v2" => args.require_schema_v2 = true,
             "--require-attestation" => args.require_attestation = true,
             "--app-attest-config" => args.app_attest_config = Some(need_value(&mut iter, &a)?),
+            "--integrity-decode-url" => args.integrity_decode_url = Some(need_value(&mut iter, &a)?),
+            "--integrity-decode-token" => args.integrity_decode_token = Some(need_value(&mut iter, &a)?),
+            "--integrity-package" => args.integrity_package = Some(need_value(&mut iter, &a)?),
+            "--integrity-max-age-seconds" => {
+                let v = need_value(&mut iter, &a)?;
+                args.integrity_max_age_s =
+                    Some(v.parse().map_err(|e| format!("bad --integrity-max-age-seconds: {e}"))?);
+            }
+            "--app-attest-enrolment-bundle" => {
+                args.app_attest_enrolment_bundle = Some(need_value(&mut iter, &a)?);
+            }
             "--android-app-identity" => {
                 let v = need_value(&mut iter, &a)?;
                 args.android_app_identity = Some(parse_android_identity(&v)?);
@@ -598,6 +735,11 @@ fn parse_args() -> Result<Args, String> {
                 args.path = Some(a);
             }
         }
+    }
+    // The enrolment bundle needs the app identity to verify against (#67); the
+    // config is the only source of team/bundle, so require it.
+    if args.app_attest_enrolment_bundle.is_some() && args.app_attest_config.is_none() {
+        return Err("--app-attest-enrolment-bundle requires --app-attest-config".to_string());
     }
     Ok(args)
 }
@@ -771,8 +913,13 @@ mod backend {
         since: Option<String>,
         until: Option<String>,
         app_attest_config: Option<String>,
+        app_attest_enrolment_bundle: Option<String>,
         android_app_identity: Option<(String, [u8; 32])>,
         skip_hardware_attestation: bool,
+        integrity_decode_url: Option<String>,
+        integrity_decode_token: Option<String>,
+        integrity_package: Option<String>,
+        integrity_max_age_s: Option<i64>,
     }
 
     pub fn run(argv: &[String]) -> Result<ExitCode> {
@@ -962,6 +1109,7 @@ mod backend {
                 report.checks.push(super::appattest_from_config(
                     &proof,
                     cfg_path,
+                    args.app_attest_enrolment_bundle.as_deref(),
                     hw_key.as_ref().map(|vk| vk.to_sec1_bytes()).as_deref(),
                     args.require_attestation,
                 )?);
@@ -994,6 +1142,30 @@ mod backend {
                     ));
             }
         }
+        // Online Play Integrity (#12, feature `playintegrity`), mirroring the
+        // local-file path — a fetched Android proof carries the same field-4 token.
+        #[cfg(feature = "playintegrity")]
+        report.checks.extend(super::play_integrity_from_cfg(
+            &proof,
+            args.integrity_decode_url.as_deref(),
+            args.integrity_decode_token.as_deref(),
+            args.integrity_package.as_deref(),
+            args.integrity_max_age_s,
+            args.max_age_s.unwrap_or(DEFAULT_MAX_AGE_S),
+            now_ms,
+        ));
+        #[cfg(not(feature = "playintegrity"))]
+        if args.integrity_decode_url.is_some()
+            || args.integrity_decode_token.is_some()
+            || args.integrity_package.is_some()
+        {
+            report.checks.push(octet_verify::verify::Check {
+                name: "play-integrity",
+                status: octet_verify::verify::Status::NotChecked,
+                detail: "--integrity-* given but this binary was built without the `playintegrity` feature".into(),
+            });
+        }
+
         // Fail-closed when attestation is required (#41) — after the attestation
         // checks and outside the skip block, on every build; the core call above
         // ran with require_attestation cleared, so this is the single evaluation.
@@ -1218,6 +1390,11 @@ mod backend {
         let mut since = None;
         let mut until = None;
         let mut app_attest_config = None;
+        let mut integrity_decode_url = None;
+        let mut integrity_decode_token = None;
+        let mut integrity_package = None;
+        let mut integrity_max_age_s = None;
+        let mut app_attest_enrolment_bundle = None;
         let mut android_app_identity = None;
         let mut skip_hardware_attestation = false;
         let mut proof_id: Option<String> = None;
@@ -1266,6 +1443,19 @@ mod backend {
                 "--since" => since = Some(need(&mut it, a)?),
                 "--until" => until = Some(need(&mut it, a)?),
                 "--app-attest-config" => app_attest_config = Some(need(&mut it, a)?),
+                "--integrity-decode-url" => integrity_decode_url = Some(need(&mut it, a)?),
+                "--integrity-decode-token" => integrity_decode_token = Some(need(&mut it, a)?),
+                "--integrity-package" => integrity_package = Some(need(&mut it, a)?),
+                "--integrity-max-age-seconds" => {
+                    integrity_max_age_s = Some(
+                        need(&mut it, a)?
+                            .parse()
+                            .map_err(|e| anyhow!("bad --integrity-max-age-seconds: {e}"))?,
+                    );
+                }
+                "--app-attest-enrolment-bundle" => {
+                    app_attest_enrolment_bundle = Some(need(&mut it, a)?)
+                }
                 "--android-app-identity" => {
                     android_app_identity =
                         Some(parse_android_identity(&need(&mut it, a)?).map_err(|e| anyhow!("{e}"))?);
@@ -1283,6 +1473,12 @@ mod backend {
 
         let backend = backend.ok_or_else(|| anyhow!("--backend <url> is required"))?;
         let token = token.ok_or_else(|| anyhow!("--token <activation_bearer> is required"))?;
+
+        // The enrolment bundle needs the app identity from the config to verify
+        // against (#67), so require --app-attest-config alongside it.
+        if app_attest_enrolment_bundle.is_some() && app_attest_config.is_none() {
+            bail!("--app-attest-enrolment-bundle requires --app-attest-config");
+        }
 
         let sub = match sub_name {
             "fetch" => Sub::Fetch {
@@ -1323,8 +1519,13 @@ mod backend {
             since,
             until,
             app_attest_config,
+            app_attest_enrolment_bundle,
             android_app_identity,
             skip_hardware_attestation,
+            integrity_decode_url,
+            integrity_decode_token,
+            integrity_package,
+            integrity_max_age_s,
         })
     }
 

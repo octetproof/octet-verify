@@ -109,6 +109,17 @@ The attested secure-hardware key must be the exact key that signed the proof
 (both platforms); `--require-attestation` additionally turns a missing or
 unverified attestation into a failure rather than a `NOT-CHECKED`.
 
+> **Exit `0` means *authentic*, not *attested*.** A proof whose signatures verify
+> is `VALID` / exit `0` **even if it carries no hardware attestation** — e.g. a
+> default-build run, or an `appattest` run over a proof with no attestation object
+> (a sandbox/bypass-bootstrapped proof is exactly this: `valid: true`,
+> `attested: false`, `app-attest: NOT-CHECKED`). Exit `3` does **not** catch it —
+> `3` is for *unverified signatures*, and these signatures do verify.
+> **To gate on hardware attestation, do one of:** build `--features appattest` and
+> pass **`--require-attestation`** (a non-attested proof then exits `1`), or read
+> the typed **`attested`** bit from `--json`. Gating on exit `0` (or `valid`) alone
+> accepts a non-attested proof.
+
 ## Trust model in one line
 
 A passing `octet-verify` run means: *this proof is internally consistent and

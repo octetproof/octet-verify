@@ -88,6 +88,19 @@ OPTIONS:
                                TOML config ([app_attest] team_id / bundle_id /
                                environment). Requires a build with the
                                `appattest` feature; otherwise reported NOT-CHECKED.
+    --app-attest-enrolment-bundle <file>
+                               Recover the attested key from an out-of-band App
+                               Attest enrolment bundle so an assertion-only proof
+                               (one carrying no attestation object — the steady
+                               state, since iOS emits the object only on a key's
+                               first proof) reaches app-attest PASS via the
+                               cached-key path instead of NOT-CHECKED. Accepts the
+                               JSON (v:1) or proto DeviceAttestation form,
+                               auto-detected. Requires --app-attest-config (the
+                               source of the expected app identity) and the
+                               `appattest` feature. A stateless CLI does not
+                               enforce cross-proof assertion-counter monotonicity
+                               (use the library + a persisted key for that).
     --android-app-identity <package>,<cert_sha256_hex>
                                Bind the Android key-attestation chain to a specific
                                app: its package name and the SHA-256 (64 hex chars)
@@ -101,6 +114,28 @@ OPTIONS:
                                (App Attest, Android key-attestation chain, and the
                                field-2 device-key signature). Useful for triaging
                                a legacy or synthetic proof with no real chain.
+    --integrity-decode-url <url>
+                               Online Google Play Integrity (opt-in). Base URL of
+                               the first-party decode endpoint (POST /v1/integrity/
+                               decode). Given with --integrity-decode-token and
+                               --integrity-package, the `play-integrity` check
+                               decodes the proof's PI token and verifies it binds
+                               to this proof (nonce + package), is fresh, and meets
+                               MEETS_DEVICE_INTEGRITY. Requires a build with the
+                               `playintegrity` feature; https:// (http:// LAN only).
+    --integrity-decode-token <token>
+                               The verifier's OWN decode-scoped service credential
+                               (octet_svc_) for the decode endpoint — NOT a device
+                               activation bearer.
+    --integrity-package <pkg>  The Android package the PI token was minted for:
+                               sent in the decode request and the accepted package
+                               for the binding check.
+    --integrity-max-age-seconds <n>
+                               Freshness window for the PI token's timestamp.
+                               Defaults to --max-age-seconds. (+60s forward skew.)
+                               A FAIL rejects the proof; transient/auth failures are
+                               NOT-CHECKED (never fail-open). Absent config ⇒
+                               play-integrity NOT-CHECKED.
     --json                     Emit a machine-readable report.
     -h, --help                 Show this help.
 
@@ -131,8 +166,10 @@ BACKEND FETCH MODE (subcommands; requires a build with --features net):
     --expect-region-contains, --session-nonce,
     --require-session-binding, --require-schema-v2, --require-attestation,
     --max-age-seconds,
-    --json, --app-attest-config, --android-app-identity,
-    --skip-hardware-attestation all apply as above — a
+    --json, --app-attest-config, --app-attest-enrolment-bundle,
+    --android-app-identity, --skip-hardware-attestation,
+    --integrity-decode-url / --integrity-decode-token / --integrity-package /
+    --integrity-max-age-seconds all apply as above — a
     fetched Android proof carries its real attestation chain, so on an
     `appattest` build attestation-root runs in fetch mode too. Historical proofs
     are older than the default freshness window — pass a wide --max-age-seconds

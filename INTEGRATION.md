@@ -15,7 +15,7 @@ binary you build.
 - [Verifying a local proof file](#verifying-a-local-proof-file)
 - [Fetching from the backend](#fetching-from-the-backend) — `fetch` / `watch` / `range`
 - [Reading the verdict](#reading-the-verdict) ← start here if you just ran it
-- [Enrolling a device key out of band](#enrolling-a-device-key-out-of-band-library) — library, `--features appattest`
+- [Enrolling a device key out of band](#enrolling-a-device-key-out-of-band) — CLI flag or library, `--features appattest`
 - [The trust model in practice](#the-trust-model-in-practice)
 - [Exit codes & scripting](#exit-codes--scripting)
 
@@ -198,6 +198,59 @@ verification (handy for a legacy or synthetic proof that carries no real chain).
 Online revocation (Google's status list) is **not** consulted even under the
 feature — see [`VERIFICATION-SPEC.md`](VERIFICATION-SPEC.md) §5.
 
+### Tier-2 (gateway-mode) proofs — honestly un-attested
+
+Some SDK transport modes deliberately skip per-proof OS attestation, emitting an
+honestly **un-attested** proof: `certificate_chain[0]` is a bare device-key point
+(no App Attest object/assertion on iOS; no X.509 key-attestation chain and no Play
+Integrity on Android), while the device-key (field-2) signature is still present
+and valid. These verify as **`valid: true` / authentic / `attested: false`** —
+`stage-signatures` and `device-attestation-sig` PASS, `app-attest` and
+`attestation-root` NOT-CHECKED. It is the same posture as any proof that carries no
+hardware attestation; nothing about the verdict is special-cased.
+
+What a consumer must do:
+
+- **Gate on `attested`, never on `valid` / exit `0`.** A Tier-2 proof is a real,
+  signed, authentic proof — but not hardware-attested. Build `--features appattest`
+  and pass `--require-attestation` (a Tier-2 proof then exits `1`), or read the
+  `attested` bit from `--json`. Gating on `valid`/exit `0` alone accepts it.
+- **A mandatory-attestation policy is not the verifier's to enforce.** It lives
+  upstream — device activation/bootstrap, or a policy-decision layer — and the
+  proof-ingestion API stores un-attested proofs like any other. If your deployment
+  must reject un-attested proofs, enforce it there and gate on `attested` here.
+
+Note the tier is about *attestation*, not the key's hardware-backing: the verifier
+cannot and does not read a bare-point proof's self-asserted security level, so a
+software-backed and a StrongBox-backed un-attested key are indistinguishable to it
+— both are honestly `attested: false`.
+
+### Online Play Integrity (optional, `--features playintegrity`)
+
+A **networked** Android signal. A Play Integrity token can only be turned into a
+verdict by Google, so — unlike the offline attestation layer — this calls a
+first-party decode endpoint using the **verifier's own** decode-scoped service
+credential (`octet_svc_`, never the device's activation bearer), then judges the
+result offline:
+
+```sh
+cargo build --release --features playintegrity
+octet-verify <id> ... \
+  --integrity-decode-url https://api.octetproof.com \
+  --integrity-decode-token "$OCTET_SVC_TOKEN" \
+  --integrity-package com.example.app
+```
+
+The `play-integrity` check is **PASS** iff the token decodes, its random nonce
+byte-equals the proof's `attestation_nonce`, `requestPackageName` matches
+`--integrity-package`, the token is fresh (window = `--integrity-max-age-seconds`,
+default `--max-age-seconds`, +60 s forward skew), and the device meets
+`MEETS_DEVICE_INTEGRITY`. It **FAIL**s — rejecting the proof — on a bad, unbindable,
+or stale token, or a package / device-integrity shortfall. It is **NOT-CHECKED**
+(no assurance, never fail-open) when the token or config is absent, or the endpoint
+is unavailable / rate-limited / unauthorized. `appRecognitionVerdict` is
+informational; Play *licensing* is ignored. Off by default.
+
 ### A failing verdict
 
 ```
@@ -259,10 +312,9 @@ too — see [Exit codes](#exit-codes--scripting) — so either signal is a safe 
 Note `backend_meta_untrusted`: those fields are echoed for convenience only and
 played **no part** in the verdict.
 
-## Enrolling a device key out of band (library)
+## Enrolling a device key out of band
 
-*Library API, `--features appattest`. Skip this unless you embed the crate in a
-service.*
+*Requires `--features appattest`.*
 
 On iOS, App Attest emits the attestation **object** — the evidence that certifies
 a device key to Apple's root — **once per key**. Every later proof from that key
@@ -271,9 +323,30 @@ later proofs with an empty key cache — a fresh deploy, a scaled-out instance, 
 after a cache migration — has never seen the object and can only report
 `app-attest` `NOT-CHECKED` for that key. It cannot recover from the proof alone.
 
-The `appattest` layer exposes an entrypoint to close that gap by taking the
-object-bearing evidence **out of band**, so a verifier can establish the key
-independently of whichever proof happens to carry the object:
+Take the object-bearing evidence **out of band** as an *enrolment bundle* and the
+verifier can establish the key independently of whichever proof happens to carry
+the object.
+
+**From the CLI.** Pass the bundle with `--app-attest-enrolment-bundle <file>`
+(alongside `--app-attest-config`); the verifier enrols it and checks the
+assertion-only proof against the recovered key, so `app-attest` reads `PASS`
+instead of `NOT-CHECKED`:
+
+```sh
+octet-verify <proof.bin> --app-attest-config app-attest.toml \
+  --app-attest-enrolment-bundle bundle.proto
+```
+
+The bundle is the SDK's `attestationEnrolmentBundle()` output — proto
+(`protoData()`) or JSON (`jsonString()`, schema `v:1`), auto-detected by the
+leading byte. A stateless CLI seeds the assertion counter to 0 for the single
+check, so it does **not** enforce cross-proof counter monotonicity; a service that
+verifies a *stream* from the same key should use the library path below and
+persist the returned key (see *Assertion counters are monotonic*).
+
+**From the library** (when you embed the crate in a service): the `appattest`
+layer exposes the same enrolment entrypoint, returning the key to cache by its
+`key_id`:
 
 ```rust
 use octet_verify::appattest_layer::{appattest_enroll, bundle_from_json};

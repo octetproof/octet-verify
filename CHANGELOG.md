@@ -4,6 +4,43 @@ All notable changes to `octet-verify` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+## [1.4.0] - 2026-09-18
+
+Adds opt-in online Google Play Integrity verification, a CLI path for verifying
+assertion-only iOS proofs via an App Attest enrolment bundle, and documented
+Tier-2 (gateway-mode) un-attested proof support. Additive and back-compat: a
+genuine pre-1.4.0 proof verifies unchanged; the new checks are opt-in.
+
+### Added
+- **Online Google Play Integrity check (`--features playintegrity`, #12).** Opt-in
+  and networked: with `--integrity-decode-url`, `--integrity-decode-token` (the
+  verifier's OWN decode-scoped `octet_svc_` credential — never a device bearer),
+  and `--integrity-package`, the verifier POSTs the proof's PI token to the
+  first-party decode endpoint, then verifies the returned verdict binds to the
+  proof (random-nonce byte-equality + package), is fresh (window + 60s forward
+  skew), and meets `MEETS_DEVICE_INTEGRITY` — emitting a `play-integrity` check.
+  A FAIL rejects the proof; auth / rate-limit / unavailable / malformed-request /
+  transport are `NOT-CHECKED` (never fail-open). Off by default → `NOT-CHECKED`;
+  the lean build has no PI surface. app-recognition is informational; licensing
+  ignored. Decode/verdict primitives come from the shared `octet-attest-verify`
+  crate; only the offline judgement runs here.
+- **Tier-2 (gateway-mode) un-attested proofs — documented + pinned.** Committed
+  real-device golden vectors (iPhone 11, Pixel 9) for honestly-un-attested proofs
+  (a bare device-key point in `certificate_chain[0]`, no App Attest / Play
+  Integrity) and a blessing test pinning them as `valid` / authentic /
+  `attested:false`; INTEGRATION.md gains a Tier-2 section (gate on `attested`, not
+  `valid`/exit 0; mandatory-attestation is an upstream policy). Supports
+  gateway-mode un-attested proofs. No verifier behavior change — such proofs
+  already verified this way.
+- **`--app-attest-enrolment-bundle <file>`.** Verify an assertion-only iOS proof
+  (one carrying no attestation object — the steady state) to `app-attest` PASS
+  from the CLI by supplying the out-of-band App Attest enrolment bundle (proto or
+  JSON, auto-detected), instead of reporting `NOT-CHECKED`. Previously only the
+  embedded library could recover the key this way. Requires `--app-attest-config`
+  and a `--features appattest` build. (#67)
+
 ## [1.3.0] - 2026-09-02
 
 Folds a post-1.2.0 security-hardening cluster and semantic-binding-v2 verifier

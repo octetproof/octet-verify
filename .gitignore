@@ -3,3 +3,4 @@ build.err
 *.tmp
 
 # Local editor / tooling state.
+/.cargo/
