@@ -56,6 +56,15 @@ OPTIONS:
                                --expect-region) and for h3 (needs an H3 library not
                                in this build; use --expect-region-type h3), and on
                                no region.
+    --expect-query-region <spec>
+                               Assert the proof's bound QUERIED region (semantic-
+                               binding v3) equals this region, so its signed
+                               location_verdict answers within(this region). Specs:
+                               earth | country:AT | subdivision:US-NY |
+                               disc:<lat>,<lon>,<radius_m> |
+                               ellipse:<lat>,<lon>,<semi_major_m>,<semi_minor_m>,<heading_deg>.
+                               FAILS if the proof binds no query (v2/v1, background,
+                               or a city query) or a different region.
     --session-nonce <hex>      Assert the proof is bound to this per-login session
                                nonce (hex). Supply the nonce the relying party
                                issued at login; verification recomputes the
@@ -163,7 +172,7 @@ BACKEND FETCH MODE (subcommands; requires a build with --features net):
     --interval <seconds>   watch poll interval. Default: 5.
     --since <ts> / --until <ts>   range bounds (RFC 3339, e.g. 2026-06-01T00:00:00Z).
     --hardware-pubkey, --expect-region, --expect-region-type,
-    --expect-region-contains, --session-nonce,
+    --expect-region-contains, --expect-query-region, --session-nonce,
     --require-session-binding, --require-schema-v2, --require-attestation,
     --max-age-seconds,
     --json, --app-attest-config, --app-attest-enrolment-bundle,

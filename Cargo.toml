@@ -1,6 +1,6 @@
 [package]
 name = "octet-verify"
-version = "1.4.0"
+version = "1.5.0"
 edition = "2021"
 description = "Standalone, independent verifier for Octet LocationProof artifacts. Checks authenticity and integrity (signatures, hash-chain, freshness, region claim) without any device-side secret or proof-creation logic."
 repository = "https://github.com/octetproof/octet-verify"
@@ -90,3 +90,5 @@ protoc-bin-vendored = "3.2.0"
 [dev-dependencies]
 p256 = "0.13"      # sign synthetic proofs in the golden/roundtrip harness
 base64 = "0.22"    # encode proof_bytes_b64 in the backend stub-server vectors
+serde_json = "1"   # parse the session-binding golden vectors (test-vectors/session-binding/vectors.json)
+hex = "0.4"        # decode nonce_hex / expected_data_hash in the session-binding harness

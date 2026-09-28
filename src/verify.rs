@@ -65,6 +65,22 @@ pub enum SignedLocationVerdict {
     Indeterminate,
 }
 
+/// The region a proof's `location_verdict` answers about, bound into the proof
+/// under **octet-semantic-binding-v3** (#632). It is a *reference* — the region's
+/// `ProofRegion` oneof tag plus the v2 `region_id` bytes for that region (an ISO
+/// code, an f64-be altitude, or a 32-byte geometry digest) — never the geometry.
+/// A consumer computes the same reference for a region R it cares about (via
+/// [`query_region_ref`]) and, when it equals this, reads the signed verdict as the
+/// answer to `within(R)` directly. Exposed only when a proof verifies under v3 and
+/// carries a well-formed, answered query; see [`Report::query_region`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueryRegion {
+    /// The `ProofRegion` oneof field number of the queried region (1..=7).
+    pub region_type: u32,
+    /// The v2 `region_id` bytes of that region.
+    pub region_id: Vec<u8>,
+}
+
 /// The full result of verifying one proof.
 pub struct Report {
     pub checks: Vec<Check>,
@@ -78,11 +94,16 @@ pub struct Report {
     /// `None` for v1 / unbound / UNSPECIFIED proofs — "no signed verdict",
     /// distinct from `Some(Outside)` (#26). Read via [`Report::location_verdict`].
     location_verdict: Option<SignedLocationVerdict>,
+    /// The bound queried region, set **only** when the proof verified under
+    /// **octet-semantic-binding-v3** and carries a well-formed, answered query
+    /// (#632). `None` for v2/v1 proofs and for a v3 proof with no bound query (a
+    /// background proof or a city query). Read via [`Report::query_region`].
+    query_region: Option<QueryRegion>,
 }
 
 impl Report {
     fn new() -> Self {
-        Report { checks: Vec::new(), region_expectation: false, location_verdict: None }
+        Report { checks: Vec::new(), region_expectation: false, location_verdict: None, query_region: None }
     }
 
     fn add(&mut self, name: &'static str, status: Status, detail: impl Into<String>) {
@@ -213,6 +234,16 @@ impl Report {
     /// independent re-derivation of region membership.
     pub fn location_verdict(&self) -> Option<SignedLocationVerdict> {
         self.location_verdict
+    }
+
+    /// The **bound queried region** the [`location_verdict`](Self::location_verdict)
+    /// answers about (#632, semantic-binding v3), or `None` when the proof carries
+    /// no bound query — a v2/v1 proof, a background proof, or a city query. A
+    /// consumer compares this to [`query_region_ref`] of a region R it cares about;
+    /// on equality the signed verdict answers `within(R)` directly. Set only when
+    /// the proof verified under v3 with a well-formed, answered query.
+    pub fn query_region(&self) -> Option<&QueryRegion> {
+        self.query_region.as_ref()
     }
 }
 
@@ -590,14 +621,36 @@ impl Report {
                 "no semanticFields stage, but schema-v2 binding is required (require_schema_v2): the spoofing_verdict / region / level / integrity / commitment are unbound"),
             None => self.add(NAME, Status::NotChecked,
                 "no semanticFields stage; spoofing_verdict / region / level / integrity / commitment not bound (proof predates semantic-field binding)"),
-            // v2 (octet-semantic-binding-v2, #26/#32) — tried first. Binds the
-            // city/earth geometry AND the inside/outside verdict that v1 omits, so
-            // a match here is FULLY bound and surfaces the signed verdict.
-            Some(st) if crypto::sha256(&semantic_preimage_v2(proof)).as_slice() == st.data_hash.as_slice() => {
+            // v3 (octet-semantic-binding-v3, #632) — tried first. The v2 body
+            // unchanged PLUS the queried region Q, so a match binds everything v2
+            // does and, additionally, the region the verdict answers about. Surfaces
+            // the verdict and (when the query is well-formed and answered) Q.
+            Some(st) if crypto::sha256(&semantic_preimage_v3(proof)).as_slice() == st.data_hash.as_slice() => {
                 self.location_verdict = signed_verdict(proof.location_verdict);
                 self.add(NAME, Status::Pass,
                     "spoofing_verdict / region (incl. geometry) / level / integrity / commitment / \
-                     location_verdict bound to the signed semanticFields stage (octet-semantic-binding-v2)")
+                     location_verdict / queried region bound to the signed semanticFields stage \
+                     (octet-semantic-binding-v3)");
+                self.add_query_region_v3(proof);
+            }
+            // v2 (octet-semantic-binding-v2, #26/#32) — tried after v3. Binds the
+            // city/earth geometry AND the inside/outside verdict that v1 omits, so
+            // a match here is FULLY bound and surfaces the signed verdict.
+            Some(st) if crypto::sha256(&semantic_preimage_v2(proof)).as_slice() == st.data_hash.as_slice() => {
+                // A query_region on a proof that verifies only under v2 was never
+                // signed (v2 has no Q in its preimage) — it was injected after the
+                // fact. FAIL outright rather than silently dropping it, so a
+                // consumer that reads Q off the wire can't see an unsigned region
+                // beside a PASS (#632, matches the SDK's on-device rule).
+                if proof.query_region.is_some() {
+                    self.add(NAME, Status::Fail,
+                        "query_region is present but the proof is bound only under v2 (v2 does not sign a queried region) — the query region was not signed")
+                } else {
+                    self.location_verdict = signed_verdict(proof.location_verdict);
+                    self.add(NAME, Status::Pass,
+                        "spoofing_verdict / region (incl. geometry) / level / integrity / commitment / \
+                         location_verdict bound to the signed semanticFields stage (octet-semantic-binding-v2)")
+                }
             }
             // v1 — still accepted during the cutover. A city/earth region binds
             // only its *identity*, not its geometry (city centre/radius, earth
@@ -607,7 +660,12 @@ impl Report {
             // country/subdivision (identity IS the region) and the geometric
             // digests ellipse/h3/bbox (every scalar folded) — is fully bound.
             Some(st) if crypto::sha256(&semantic_preimage(proof)).as_slice() == st.data_hash.as_slice() => {
-                if region_geometry_bound_v1(proof) {
+                if proof.query_region.is_some() {
+                    // Same rule as v2: an unsigned query region injected onto a v1
+                    // proof must FAIL, not pass unnoticed (#632).
+                    self.add(NAME, Status::Fail,
+                        "query_region is present but the proof is bound only under v1 (v1 does not sign a queried region) — the query region was not signed")
+                } else if region_geometry_bound_v1(proof) {
                     self.add(NAME, Status::Pass,
                         "spoofing_verdict / region / level / integrity / commitment bound to the signed semanticFields stage")
                 } else {
@@ -619,6 +677,41 @@ impl Report {
             }
             Some(_) => self.add(NAME, Status::Fail,
                 "semantic fields do not match the signed semanticFields stage (verdict / region / level / integrity / commitment / location_verdict tampered)"),
+        }
+    }
+
+    /// Validate and expose the bound queried region of a proof that verified under
+    /// **v3** (#632). Called only from the v3 branch, where `self.location_verdict`
+    /// is already set. Adds a `query-region` check and, on success, exposes Q:
+    ///
+    /// - no bound query (field 18 absent) → `Pass` ("no bound query region"): a
+    ///   valid background proof or a city query. Q's absence is inside the signed
+    ///   v3 preimage (`q_type = 0`), so it cannot be stripped to forge "unbound".
+    /// - present but `region_type`/`region_id` shape invalid (incl. a present
+    ///   `q_type` of 0 or 3/city) → `Fail`.
+    /// - present but `location_verdict` is UNSPECIFIED → `Fail` (the one-way rule:
+    ///   a bound query must carry an answer; the converse — a verdict without a
+    ///   bound query — is allowed, e.g. a city query).
+    /// - present, well-formed, answered → `Pass`, and Q is exposed on the report.
+    fn add_query_region_v3(&mut self, proof: &LocationProof) {
+        const NAME: &str = "query-region";
+        match proof.query_region.as_ref() {
+            None => self.add(NAME, Status::Pass,
+                "no bound query region (q_type=0); verdict, if any, is not tied to a specific region"),
+            Some(qr) if !query_region_id_shape_ok(qr.region_type, &qr.region_id) => self.add(
+                NAME, Status::Fail,
+                format!("query_region type {} / {}-byte region_id is not a supported, well-formed reference \
+                         (a present query must be country/subdivision/earth/ellipse/h3/bbox with a matching id)",
+                        qr.region_type, qr.region_id.len())),
+            // One-way presence rule: a bound query with no answer is incoherent.
+            Some(_) if self.location_verdict.is_none() => self.add(NAME, Status::Fail,
+                "query_region is present but location_verdict is UNSPECIFIED (a bound query must carry a signed answer)"),
+            Some(qr) => {
+                self.query_region = Some(QueryRegion { region_type: qr.region_type, region_id: qr.region_id.clone() });
+                self.add(NAME, Status::Pass,
+                    format!("bound queried region (type {}) carries a signed verdict; compare against query_region_ref(R) to read within(R)",
+                            qr.region_type));
+            }
         }
     }
 }
@@ -770,9 +863,11 @@ fn city_digest_v2(c: &crate::navigate::CityRegion) -> Vec<u8> {
     crypto::sha256(&m).to_vec()
 }
 
-/// v2 preimage: [`semantic_preimage`] under the v2 domain + v2 region digest,
-/// with the raw `location_verdict` enum ordinal appended last (#26).
-fn semantic_preimage_v2(proof: &LocationProof) -> Vec<u8> {
+/// The v2 preimage **body** — everything after the domain tag:
+/// `spoofing ‖ level ‖ integrity ‖ region_type ‖ len(region_id) ‖ region_id ‖
+/// len(commitment) ‖ commitment ‖ location_verdict`. Shared by the v2 and v3
+/// preimages so v3 is provably "v2 body + Q suffix" and the two can never drift.
+fn semantic_body_v2(proof: &LocationProof) -> Vec<u8> {
     let (region_type, region_id) = semantic_region_v2(proof);
     let integrity_status = proof
         .device_attestation
@@ -781,10 +876,7 @@ fn semantic_preimage_v2(proof: &LocationProof) -> Vec<u8> {
         .map(|iv| iv.status)
         .unwrap_or(0);
 
-    let mut m = Vec::with_capacity(
-        SEMANTIC_DOMAIN_V2.len() + 28 + region_id.len() + proof.position_commitment.len(),
-    );
-    m.extend_from_slice(SEMANTIC_DOMAIN_V2);
+    let mut m = Vec::with_capacity(24 + region_id.len() + proof.position_commitment.len());
     m.extend_from_slice(&(proof.spoofing_verdict as u32).to_be_bytes());
     m.extend_from_slice(&(proof.level as u32).to_be_bytes());
     m.extend_from_slice(&(integrity_status as u32).to_be_bytes());
@@ -795,6 +887,82 @@ fn semantic_preimage_v2(proof: &LocationProof) -> Vec<u8> {
     m.extend_from_slice(&proof.position_commitment);
     m.extend_from_slice(&(proof.location_verdict as u32).to_be_bytes());
     m
+}
+
+/// v2 preimage: [`semantic_preimage`] under the v2 domain + v2 region digest,
+/// with the raw `location_verdict` enum ordinal appended last (#26).
+fn semantic_preimage_v2(proof: &LocationProof) -> Vec<u8> {
+    let mut m = Vec::with_capacity(SEMANTIC_DOMAIN_V2.len() + 32);
+    m.extend_from_slice(SEMANTIC_DOMAIN_V2);
+    m.extend_from_slice(&semantic_body_v2(proof));
+    m
+}
+
+/// Domain-separation prefix for the **v3** semantic-field preimage
+/// (octet-semantic-binding-v3, #632): the v2 body unchanged, then the queried
+/// region Q. Binding Q lets a consumer read a signed INSIDE/OUTSIDE for a specific
+/// region (e.g. deciding a disc, which a country-level claim can't derive).
+const SEMANTIC_DOMAIN_V3: &[u8] = b"octet-semantic-binding-v3";
+
+/// v3 preimage: the v3 domain, the **v2 body verbatim**, then the queried region
+/// as `u32be(q_type) ‖ u32be(len(q_id)) ‖ q_id`. Q is read from the proof's
+/// `query_region` (field 18) exactly as the device encoded it; no bound query ⇒
+/// `q_type = 0`, empty `q_id` (field 18 absent).
+fn semantic_preimage_v3(proof: &LocationProof) -> Vec<u8> {
+    let (q_type, q_id): (u32, &[u8]) = match proof.query_region.as_ref() {
+        Some(qr) => (qr.region_type, qr.region_id.as_slice()),
+        None => (0, &[]),
+    };
+    let mut m = Vec::with_capacity(SEMANTIC_DOMAIN_V3.len() + 32 + 8 + q_id.len());
+    m.extend_from_slice(SEMANTIC_DOMAIN_V3);
+    m.extend_from_slice(&semantic_body_v2(proof));
+    m.extend_from_slice(&q_type.to_be_bytes());
+    m.extend_from_slice(&(q_id.len() as u32).to_be_bytes());
+    m.extend_from_slice(q_id);
+    m
+}
+
+/// The canonical **query-region reference** for a region — its `ProofRegion` oneof
+/// tag and the v2 `region_id` bytes — the single implementation a consumer uses to
+/// recognise a proof's bound query (#632). Returns `None` for a **city** region:
+/// city has no v2 `region_id`, so it is left unbound (`q_type = 0`). This is the
+/// exact digest folded into the v3 preimage's Q suffix, so a consumer that
+/// compares [`Report::query_region`] to `query_region_ref(R)` can never drift from
+/// the signer on the bytes (the disc float-packing in particular).
+///
+/// Inputs are canonical: a disc is an `ellipse(lat, lon, r, r, heading = +0.0)`,
+/// `earth` folds `max_altitude_meters` (default 10000), radii/coordinates are the
+/// raw f64 as stated (metres, degrees) — the caller normalises units (e.g. km→m)
+/// before calling.
+pub fn query_region_ref(region: &crate::navigate::ProofRegion) -> Option<QueryRegion> {
+    use crate::navigate::proof_region::Region::*;
+    let (region_type, region_id) = match region.region.as_ref()? {
+        Earth(e) => (1, f64be(e.max_altitude_meters).to_vec()),
+        Country(c) => (2, c.iso_code.clone().into_bytes()),
+        City(_) => return None, // unbound: no v2 region_id for a city
+        Ellipse(e) => (4, ellipse_digest(e)),
+        H3PolygonSet(h) => (5, h3_digest(h)),
+        BoundingBox3d(b) => (6, bbox_digest(b)),
+        Subdivision(s) => (7, s.iso_code.clone().into_bytes()),
+    };
+    Some(QueryRegion { region_type, region_id })
+}
+
+/// Does a bound `query_region`'s `region_id` have the shape its `region_type`
+/// implies (#632)? country = 2 bytes (ISO 3166-1 alpha-2), earth = 8 bytes
+/// (f64-be altitude), ellipse/h3/bbox = a 32-byte digest, subdivision = a
+/// non-empty ISO 3166-2 form (`"US-NY"`). `region_type` outside {1,2,4,5,6,7}
+/// (notably 0 or 3/city, which must never appear as a *present* query) is invalid.
+fn query_region_id_shape_ok(region_type: u32, region_id: &[u8]) -> bool {
+    match region_type {
+        1 => region_id.len() == 8,
+        2 => region_id.len() == 2,
+        4 | 5 | 6 => region_id.len() == 32,
+        7 => !region_id.is_empty()
+            && region_id.iter().all(|b| b.is_ascii())
+            && region_id.contains(&b'-'),
+        _ => false,
+    }
 }
 
 /// Map the proto `location_verdict` ordinal to the signed trichotomy. UNSPECIFIED
@@ -1765,6 +1933,263 @@ mod tests {
         ru.add_semantic_binding(&unspec, false);
         assert_eq!(ru.location_verdict(), None, "UNSPECIFIED ⇒ no signed verdict");
         assert_eq!(semantic_status(&unspec), Status::Pass, "still v2-bound with an UNSPECIFIED verdict");
+    }
+
+    /// #632 semantic-binding v3: binds the QUERIED region Q so a consumer reads a
+    /// signed verdict for a specific region. Covers the fallback (v3→v2→v1), the
+    /// one-way presence rule, the shape rule, Q exposure, and tamper.
+    #[test]
+    fn semantic_binding_v3_binds_query_region() {
+        use crate::navigate::{
+            proof_region::Region, CountryRegion, DeviceIntegrityVerdict, EllipseRegion,
+            LatLon, ProofRegion, RegionRef,
+        };
+
+        // A v3 proof: stage data_hash = SHA256(semantic_preimage_v3), claimed
+        // region Country, a signed verdict, and an optional bound query_region.
+        fn v3_proof(verdict: i32, query: Option<RegionRef>) -> LocationProof {
+            let mut proof = LocationProof {
+                spoofing_verdict: 1,
+                level: 2,
+                position_commitment: vec![0xC0; 16],
+                claimed_region: Some(ProofRegion {
+                    region: Some(Region::Country(CountryRegion { iso_code: "AT".into() })),
+                }),
+                location_verdict: verdict,
+                query_region: query,
+                device_attestation: Some(DeviceAttestation {
+                    integrity_verdict: Some(DeviceIntegrityVerdict { status: 3, ..Default::default() }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let preimage = semantic_preimage_v3(&proof);
+            proof.stage_attestations.push(StageAttestation {
+                stage: SEMANTIC_FIELDS_STAGE.to_string(),
+                timestamp_ms: 1,
+                data_hash: sha256(&preimage).to_vec(),
+                signature: vec![],
+                previous_hash: None,
+            });
+            proof
+        }
+
+        fn report(proof: &LocationProof) -> Report {
+            let mut r = Report::new();
+            r.add_semantic_binding(proof, false);
+            r
+        }
+
+        // Q = country AT, verdict INSIDE → v3 verifies, verdict + Q exposed.
+        let at = RegionRef { region_type: 2, region_id: b"AT".to_vec() };
+        let p = v3_proof(1, Some(at.clone()));
+        let r = report(&p);
+        assert_eq!(status_of(&r, "semantic-binding"), Status::Pass, "v3 binds → Pass");
+        assert_eq!(status_of(&r, "query-region"), Status::Pass, "well-formed answered query");
+        assert_eq!(r.location_verdict(), Some(SignedLocationVerdict::Inside));
+        assert_eq!(r.query_region(), Some(&QueryRegion { region_type: 2, region_id: b"AT".to_vec() }));
+
+        // query_region_ref agrees with the bound Q for the same country.
+        let ref_at = query_region_ref(&ProofRegion {
+            region: Some(Region::Country(CountryRegion { iso_code: "AT".into() })),
+        });
+        assert_eq!(ref_at, Some(QueryRegion { region_type: 2, region_id: b"AT".to_vec() }));
+
+        // Disc as ellipse(lat,lon,r,r,+0.0): the reference the engine recomputes
+        // for `contains(lat,lon,r)` must equal the bound Q's digest, and be
+        // insensitive to +0.0 vs the packed heading.
+        let disc = EllipseRegion {
+            center: Some(LatLon { latitude: 48.2082, longitude: 16.3738 }),
+            semi_major_m: 1500.5, semi_minor_m: 1500.5, heading_deg: 0.0,
+        };
+        let disc_region = ProofRegion { region: Some(Region::Ellipse(disc.clone())) };
+        let disc_ref = query_region_ref(&disc_region).expect("disc has a reference");
+        assert_eq!(disc_ref.region_type, 4);
+        let pd = v3_proof(1, Some(RegionRef { region_type: disc_ref.region_type, region_id: disc_ref.region_id.clone() }));
+        let rd = report(&pd);
+        assert_eq!(rd.query_region(), Some(&disc_ref), "bound disc Q equals query_region_ref");
+
+        // city → unbound (no v2 region_id), query_region_ref = None.
+        assert_eq!(
+            query_region_ref(&ProofRegion { region: Some(Region::City(crate::navigate::CityRegion {
+                name: "SF".into(), center_lat: 1.0, center_lon: 2.0, radius_meters: 3.0 })) }),
+            None, "city is unbound");
+
+        // No bound query (background): field 18 absent, verdict UNSPECIFIED → v3
+        // still verifies, query-region Pass, Q None.
+        let bg = v3_proof(0, None);
+        let rb = report(&bg);
+        assert_eq!(status_of(&rb, "semantic-binding"), Status::Pass, "v3 no-query verifies");
+        assert_eq!(status_of(&rb, "query-region"), Status::Pass, "no bound query is valid");
+        assert_eq!(rb.query_region(), None);
+        assert_eq!(rb.location_verdict(), None);
+
+        // One-way presence rule: verdict set + Q ABSENT is allowed (a city query),
+        // Q stays None.
+        let city_query = v3_proof(2 /* OUTSIDE */, None);
+        let rc = report(&city_query);
+        assert_eq!(status_of(&rc, "query-region"), Status::Pass, "verdict without Q is allowed");
+        assert_eq!(rc.location_verdict(), Some(SignedLocationVerdict::Outside));
+        assert_eq!(rc.query_region(), None, "no Q exposed without a bound query");
+
+        // One-way presence rule (the failing direction): Q PRESENT + verdict
+        // UNSPECIFIED → query-region FAIL. Signed self-consistently under v3, so the
+        // hash matches and only the semantic rule catches it.
+        let bad = v3_proof(0 /* UNSPECIFIED */, Some(at.clone()));
+        let rbad = report(&bad);
+        assert_eq!(status_of(&rbad, "semantic-binding"), Status::Pass, "hash matches v3");
+        assert_eq!(status_of(&rbad, "query-region"), Status::Fail, "bound query with no answer");
+        assert!(!rbad.is_valid());
+
+        // Shape rule: a present q_type=3 (city) is invalid, and a wrong-length id.
+        let city_present = v3_proof(1, Some(RegionRef { region_type: 3, region_id: b"whatever".to_vec() }));
+        assert_eq!(status_of(&report(&city_present), "query-region"), Status::Fail, "city must not be a present Q");
+        let wrong_len = v3_proof(1, Some(RegionRef { region_type: 2, region_id: vec![0u8; 32] }));
+        assert_eq!(status_of(&report(&wrong_len), "query-region"), Status::Fail, "country id must be 2 bytes");
+
+        // No downgrade by stripping Q: remove field 18 from a v3-with-Q proof; the
+        // v3 hash (over q present) no longer matches, and v2/v1 differ in domain →
+        // semantic-binding FAIL, not a silent v2 pass.
+        let mut stripped = v3_proof(1, Some(at.clone()));
+        stripped.query_region = None;
+        assert_eq!(status_of(&report(&stripped), "semantic-binding"), Status::Fail, "stripping Q must FAIL");
+
+        // Injected Q on a genuine v2 proof: sign the v2 preimage (no Q), then add
+        // field 18. It verifies as v2, but the Q was never signed → semantic-binding
+        // must FAIL (not PASS-with-Q-dropped), so an unsigned region can't sit next
+        // to a PASS (#632, mirrors the SDK's on-device rule).
+        let mut v2_injected = LocationProof {
+            spoofing_verdict: 1, level: 2, position_commitment: vec![0xC0; 16],
+            claimed_region: Some(ProofRegion { region: Some(Region::Country(CountryRegion { iso_code: "AT".into() })) }),
+            location_verdict: 1,
+            device_attestation: Some(DeviceAttestation {
+                integrity_verdict: Some(DeviceIntegrityVerdict { status: 3, ..Default::default() }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let v2_hash = sha256(&semantic_preimage_v2(&v2_injected)).to_vec();
+        v2_injected.stage_attestations.push(StageAttestation {
+            stage: SEMANTIC_FIELDS_STAGE.to_string(), timestamp_ms: 1,
+            data_hash: v2_hash, signature: vec![], previous_hash: None,
+        });
+        // Without Q it's a clean v2 PASS…
+        assert_eq!(status_of(&report(&v2_injected), "semantic-binding"), Status::Pass, "genuine v2 passes");
+        // …but injecting an (unsigned) Q must FAIL.
+        v2_injected.query_region = Some(at);
+        let rinj = report(&v2_injected);
+        assert_eq!(status_of(&rinj, "semantic-binding"), Status::Fail, "injected Q on a v2 proof must FAIL");
+        assert_eq!(rinj.query_region(), None, "no Q exposed for a non-v3 proof");
+    }
+
+    /// Cross-repo golden vectors (#632): the v3 preimage this verifier derives must
+    /// be **byte-identical** to the SDK's independent generator (`gen-semantic-v3-
+    /// vectors.py`, mirrored on iOS + Android). Pins the preimage hex, its SHA-256,
+    /// the `query_region_ref` digest, and the pass/fail + Q-exposure behaviour for
+    /// all 9 vectors — so a framing drift on any side fails CI on both repos.
+    #[test]
+    fn semantic_binding_v3_golden_vectors() {
+        use crate::navigate::{
+            proof_region::Region, CountryRegion, DeviceIntegrityVerdict, EarthRegion,
+            EllipseRegion, LatLon, ProofRegion, RegionRef, SubdivisionRegion,
+        };
+
+        fn build_region(v: &serde_json::Value) -> Region {
+            match v["kind"].as_str().expect("region kind") {
+                "ellipse" => Region::Ellipse(EllipseRegion {
+                    center: Some(LatLon { latitude: v["lat"].as_f64().unwrap(), longitude: v["lon"].as_f64().unwrap() }),
+                    semi_major_m: v["semi_major_m"].as_f64().unwrap(),
+                    semi_minor_m: v["semi_minor_m"].as_f64().unwrap(),
+                    heading_deg: v["heading_deg"].as_f64().unwrap(),
+                }),
+                "country" => Region::Country(CountryRegion { iso_code: v["iso"].as_str().unwrap().into() }),
+                "subdivision" => Region::Subdivision(SubdivisionRegion { iso_code: v["iso"].as_str().unwrap().into() }),
+                "earth" => Region::Earth(EarthRegion { max_altitude_meters: v["max_altitude_m"].as_f64().unwrap() }),
+                other => panic!("unhandled region kind {other}"),
+            }
+        }
+
+        let raw = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/test-vectors/semantic-binding-v3/vectors.json"));
+        let doc: serde_json::Value = serde_json::from_str(raw).expect("vectors.json parses");
+        let vectors = doc["vectors"].as_array().expect("vectors array");
+        assert_eq!(vectors.len(), 9, "expected 9 v3 golden vectors");
+
+        for v in vectors {
+            let name = v["name"].as_str().unwrap();
+            let inp = &v["input"];
+            let qr_field = v["query_region"].as_object().map(|_| RegionRef {
+                region_type: v["query_region"]["region_type"].as_u64().unwrap() as u32,
+                region_id: hex::decode(v["query_region"]["region_id_hex"].as_str().unwrap()).unwrap(),
+            });
+
+            let mut proof = LocationProof {
+                spoofing_verdict: inp["spoofing_verdict"].as_i64().unwrap() as i32,
+                level: inp["level"].as_i64().unwrap() as i32,
+                position_commitment: hex::decode(inp["commitment_hex"].as_str().unwrap()).unwrap(),
+                claimed_region: Some(ProofRegion { region: Some(build_region(&inp["claimed_region"])) }),
+                location_verdict: inp["location_verdict"].as_i64().unwrap() as i32,
+                query_region: qr_field,
+                device_attestation: Some(DeviceAttestation {
+                    integrity_verdict: Some(DeviceIntegrityVerdict {
+                        status: inp["integrity_status"].as_i64().unwrap_or(0) as i32,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+
+            let is_tamper = name.contains("tamper");
+
+            // 1. Preimage byte-parity with the SDK's independent generator.
+            let mine = semantic_preimage_v3(&proof);
+            assert_eq!(hex::encode(&mine), v["preimage_hex"].as_str().unwrap(),
+                "{name}: v3 preimage bytes must equal the SDK generator's");
+
+            // 2. Its SHA-256 == the stage hash (and, for the tamper vector, must NOT
+            //    match the original stage hash the vector carries).
+            let mine_hash = hex::encode(sha256(&mine));
+            if is_tamper {
+                assert_ne!(mine_hash, v["stage_hash_hex"].as_str().unwrap(),
+                    "{name}: an edited query_region must not re-derive the original stage hash");
+            } else {
+                assert_eq!(mine_hash, v["stage_hash_hex"].as_str().unwrap(), "{name}: stage hash");
+            }
+
+            // 3. query_region_ref digest parity (when a query is present). The km and
+            //    metre discs both normalise to 1500.5 m, so both hit the same q_id.
+            if inp["query"].is_object() {
+                let got = query_region_ref(&ProofRegion { region: Some(build_region(&inp["query"])) })
+                    .expect("a bound query has a reference");
+                assert_eq!(got.region_type, v["query_region"]["region_type"].as_u64().unwrap() as u32, "{name}: q_type");
+                assert_eq!(hex::encode(&got.region_id), v["query_region"]["region_id_hex"].as_str().unwrap(),
+                    "{name}: query_region_ref digest parity");
+            }
+
+            // 4. Full check via the real path: a semanticFields stage carrying the
+            //    SDK's stage hash. Non-tamper ⇒ PASS + Q exposed iff a query is bound;
+            //    tamper ⇒ FAIL.
+            proof.stage_attestations.push(StageAttestation {
+                stage: SEMANTIC_FIELDS_STAGE.to_string(),
+                timestamp_ms: 1,
+                data_hash: hex::decode(v["stage_hash_hex"].as_str().unwrap()).unwrap(),
+                signature: vec![],
+                previous_hash: None,
+            });
+            let mut r = Report::new();
+            r.add_semantic_binding(&proof, false);
+            if is_tamper {
+                assert_eq!(status_of(&r, "semantic-binding"), Status::Fail, "{name}: tamper ⇒ FAIL");
+            } else {
+                assert_eq!(status_of(&r, "semantic-binding"), Status::Pass, "{name}: PASS");
+                if v["query_region"].is_object() {
+                    let q = r.query_region().unwrap_or_else(|| panic!("{name}: Q exposed"));
+                    assert_eq!(q.region_type, v["query_region"]["region_type"].as_u64().unwrap() as u32, "{name}: exposed q_type");
+                } else {
+                    assert_eq!(r.query_region(), None, "{name}: no bound query");
+                }
+            }
+        }
     }
 
     /// v1 proofs stay accepted (cutover tolerance) and expose no signed verdict —

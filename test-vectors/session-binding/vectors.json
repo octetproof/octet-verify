@@ -1,0 +1,50 @@
+{
+  "domain": "octet-session-binding-v1",
+  "preimage": "ascii(domain) || uint32_be(len(nonce)) || nonce",
+  "hash": "sha256(preimage) \u2014 equals the proof's sessionBinding stage data_hash",
+  "note": "nonce_hex and expected_data_hash are lowercase hex; nonce is raw bytes (an empty string means a 0-byte nonce)",
+  "vectors": [
+    {
+      "name": "empty",
+      "nonce_hex": "",
+      "expected_data_hash": "b2c35f294fd2066b58aeae76f7e7a2a7f4fdc1b94c8d193b76537333ebd96f03",
+      "comment": "0-byte nonce: len prefix is 00000000, nonce empty"
+    },
+    {
+      "name": "abc",
+      "nonce_hex": "616263",
+      "expected_data_hash": "3767001e49592e4ee7f112d97ac5ecdb0a517fe8e88ff3c01e6ffcbc579df336",
+      "comment": "matches the octet-verify src/session.rs unit test"
+    },
+    {
+      "name": "login_nonce_16",
+      "nonce_hex": "00112233445566778899aabbccddeeff",
+      "expected_data_hash": "8cf7d487469c7e474d9c6a0727abc26843e4301edc92f37b7a3e3531f50e2d19",
+      "comment": "typical 16-byte per-login nonce"
+    },
+    {
+      "name": "all_ff_8",
+      "nonce_hex": "ffffffffffffffff",
+      "expected_data_hash": "04b520f6c521b57ffd4566053303f57c54e670b51704156bbb6eb0215281b457",
+      "comment": "high bytes, 8 bytes"
+    },
+    {
+      "name": "utf8_text",
+      "nonce_hex": "73657373696f6e3a396638612d6c6f67696e2d3432",
+      "expected_data_hash": "f547567aeb6f0eaafdabc1126c6c724b67fa8a2eab22f23ed9f1e88dfcae6df9",
+      "comment": "text-looking bytes (must be treated as raw bytes, not decoded)"
+    },
+    {
+      "name": "len_256_endianness",
+      "nonce_hex": "41414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141",
+      "expected_data_hash": "700be7cba964a2842c6ba8ac4d137e35b1deb2a9260731ed74ed163ecd965f75",
+      "comment": "len=256 (0x00000100): catches a wrong u32 endianness (BE vs LE) in the length prefix"
+    },
+    {
+      "name": "b64url_string_form_demo",
+      "nonce_hex": "41414543417751464267634943516f4c4441304f4478415245684d554652595847426b6147787764486838",
+      "expected_data_hash": "aab74288842bc907814ef3165cceb829f05aafdcaf9d25563cb137013e3f227f",
+      "comment": "CANONICAL WIRE FORM: the nonce is the 43-char base64url STRING 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8' (b64url-no-pad of the 32 raw bytes 0x00..0x1f), and the bound nonce is that string's ASCII bytes (len=43, prefix 0x0000002b) — NOT the decoded 32 bytes. The engine binds session_nonce = challenge.nonce.as_bytes() (the b64url string as transmitted). Binding the decoded 32 bytes instead yields a DIFFERENT hash (7f435f10dc8848ee7ac73816e3ce9380a80375245eb828c72c7f97af589d63f0), so producer/verifier/engine must all use this string form."
+    }
+  ]
+}

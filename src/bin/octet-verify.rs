@@ -30,6 +30,12 @@ struct Args {
     expect_region: Option<String>,
     expect_region_type: Option<String>,
     expect_region_contains: Option<(f64, f64)>,
+    /// Expected **queried region** (#632): assert the proof's bound `query_region`
+    /// equals the reference for this region, so its signed verdict answers
+    /// `within(this region)`. Uses the one canonical digest ([`query_region_ref`]).
+    /// Specs: `earth`, `country:AT`, `subdivision:US-NY`, `disc:<lat>,<lon>,<r_m>`,
+    /// `ellipse:<lat>,<lon>,<semi_major_m>,<semi_minor_m>,<heading_deg>`.
+    expect_query_region: Option<String>,
     session_nonce: Option<Vec<u8>>,
     require_session_binding: bool,
     require_schema_v2: bool,
@@ -286,7 +292,78 @@ fn run(args: &Args) -> anyhow::Result<Report> {
         report.checks.push(c);
     }
 
+    // #632: --expect-query-region — assert the proof's bound query region equals the
+    // reference for the region the operator names, via the one canonical digest.
+    if let Some(spec) = args.expect_query_region.as_deref() {
+        report.checks.push(query_region_match_check(spec, &report));
+    }
+
     Ok(report)
+}
+
+/// Parse an `--expect-query-region` spec into a `ProofRegion`, whose canonical
+/// reference is then taken with [`query_region_ref`]. Mirrors how Magistrate/the
+/// engine build a required region: a disc is `ellipse(lat, lon, r, r, +0.0)`,
+/// `earth` uses the default 10000 m altitude, codes are uppercased.
+fn parse_query_region_spec(spec: &str) -> Result<octet_verify::navigate::ProofRegion, String> {
+    use octet_verify::navigate::{
+        proof_region::Region, CountryRegion, EarthRegion, EllipseRegion, LatLon, ProofRegion,
+        SubdivisionRegion,
+    };
+    let floats = |csv: &str, n: usize| -> Result<Vec<f64>, String> {
+        let v: Vec<f64> = csv
+            .split(',')
+            .map(|x| x.trim().parse::<f64>().map_err(|_| format!("{x:?} is not a number")))
+            .collect::<Result<_, _>>()?;
+        if v.len() != n {
+            return Err(format!("expected {n} comma-separated numbers, got {}", v.len()));
+        }
+        Ok(v)
+    };
+    let region = match spec.split_once(':') {
+        None if spec.eq_ignore_ascii_case("earth") => {
+            Region::Earth(EarthRegion { max_altitude_meters: 10000.0 })
+        }
+        None => return Err(format!("unknown spec {spec:?} (expected earth / country:… / subdivision:… / disc:… / ellipse:…)")),
+        Some(("country", v)) => Region::Country(CountryRegion { iso_code: v.trim().to_uppercase() }),
+        Some(("subdivision", v)) => Region::Subdivision(SubdivisionRegion { iso_code: v.trim().to_uppercase() }),
+        Some(("disc", v)) => {
+            let f = floats(v, 3)?;
+            Region::Ellipse(EllipseRegion {
+                center: Some(LatLon { latitude: f[0], longitude: f[1] }),
+                semi_major_m: f[2], semi_minor_m: f[2], heading_deg: 0.0,
+            })
+        }
+        Some(("ellipse", v)) => {
+            let f = floats(v, 5)?;
+            Region::Ellipse(EllipseRegion {
+                center: Some(LatLon { latitude: f[0], longitude: f[1] }),
+                semi_major_m: f[2], semi_minor_m: f[3], heading_deg: f[4],
+            })
+        }
+        Some((kind, _)) => return Err(format!("unknown region kind {kind:?}")),
+    };
+    Ok(ProofRegion { region: Some(region) })
+}
+
+/// Compare the proof's bound `query_region` to the reference for the named region.
+fn query_region_match_check(spec: &str, report: &Report) -> verify_mod::Check {
+    use octet_verify::verify::query_region_ref;
+    const NAME: &str = "query-region-match";
+    let want = match parse_query_region_spec(spec) {
+        Ok(region) => query_region_ref(&region),
+        Err(e) => return verify_mod::Check { name: NAME, status: Status::Fail, detail: format!("--expect-query-region: {e}") },
+    };
+    match (want, report.query_region()) {
+        (None, _) => verify_mod::Check { name: NAME, status: Status::Fail,
+            detail: "--expect-query-region: that region has no bound reference (a city is unbound)".into() },
+        (Some(w), Some(got)) if &w == got => verify_mod::Check { name: NAME, status: Status::Pass,
+            detail: "proof's bound query region matches the expected region; its signed verdict answers within(that region)".into() },
+        (Some(_), Some(_)) => verify_mod::Check { name: NAME, status: Status::Fail,
+            detail: "proof is bound to a DIFFERENT queried region than expected".into() },
+        (Some(_), None) => verify_mod::Check { name: NAME, status: Status::Fail,
+            detail: "proof carries no bound query region (v2/v1, a background proof, or a city query)".into() },
+    }
 }
 
 /// Load the shared App Attest config and verify the proof's evidence against it.
@@ -524,6 +601,19 @@ fn location_verdict_json(report: &Report) -> &'static str {
     }
 }
 
+/// JSON value for the bound queried region (#632): `{"region_type":N,"region_id":"<hex>"}`
+/// or `null` when the proof carries no bound query (v2/v1, background, or city).
+fn query_region_json(report: &Report) -> String {
+    match report.query_region() {
+        Some(q) => format!(
+            "{{\"region_type\": {}, \"region_id\": \"{}\"}}",
+            q.region_type,
+            q.region_id.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        ),
+        None => "null".into(),
+    }
+}
+
 /// Tri-state CLI exit code — the single source of truth for every command:
 ///   `0` = authentic (VALID) · `1` = invalid (a check failed) ·
 ///   `3` = inconclusive (structure ok, signatures not verified).
@@ -579,6 +669,10 @@ fn print_json(report: &Report) {
     // The device's SIGNED inside/outside verdict (#26), or null when there is no
     // signed verdict (v1 / unbound / UNSPECIFIED). INDETERMINATE is preserved.
     out.push_str(&format!("  \"location_verdict\": {},\n", location_verdict_json(report)));
+    // The bound queried region the verdict answers about (#632, v3), or null. A
+    // consumer matches `region_id` against its own query_region_ref(R) to read
+    // within(R) directly. region_id is hex.
+    out.push_str(&format!("  \"query_region\": {},\n", query_region_json(report)));
     out.push_str("  \"checks\": [\n");
     for (i, c) in report.checks.iter().enumerate() {
         let comma = if i + 1 < report.checks.len() { "," } else { "" };
@@ -685,6 +779,7 @@ fn parse_args() -> Result<Args, String> {
             "--ed25519-pubkey" => args.ed25519_pubkey = Some(need_value(&mut iter, &a)?),
             "--nullifier-store" => args.nullifier_store = Some(need_value(&mut iter, &a)?),
             "--expect-region" => args.expect_region = Some(need_value(&mut iter, &a)?),
+            "--expect-query-region" => args.expect_query_region = Some(need_value(&mut iter, &a)?),
             "--expect-region-type" => {
                 let v = need_value(&mut iter, &a)?;
                 if !octet_verify::verify::is_known_region_type(&v) {
@@ -1538,8 +1633,38 @@ mod backend {
 
 #[cfg(test)]
 mod tests {
-    use super::{json_escape, sanitize_terminal, wire_check};
-    use octet_verify::verify::Status;
+    use super::{json_escape, parse_query_region_spec, sanitize_terminal, wire_check};
+    use octet_verify::verify::{query_region_ref, Status};
+
+    /// The `--expect-query-region` spec parser maps to the same `ProofRegion` the
+    /// SDK/engine bind, so `query_region_ref` of the parsed region equals the
+    /// proof's bound `query_region` (#632).
+    #[test]
+    fn expect_query_region_spec_parses_to_canonical_refs() {
+        // country / subdivision → uppercased ISO bytes.
+        let c = query_region_ref(&parse_query_region_spec("country:at").unwrap()).unwrap();
+        assert_eq!((c.region_type, c.region_id.as_slice()), (2, b"AT".as_slice()));
+        let s = query_region_ref(&parse_query_region_spec("subdivision:us-ny").unwrap()).unwrap();
+        assert_eq!((s.region_type, s.region_id.as_slice()), (7, b"US-NY".as_slice()));
+
+        // earth → default 10000 m altitude, f64-be.
+        let e = query_region_ref(&parse_query_region_spec("earth").unwrap()).unwrap();
+        assert_eq!((e.region_type, e.region_id.as_slice()), (1, 10000.0f64.to_be_bytes().as_slice()));
+
+        // disc → ellipse(lat,lon,r,r,+0.0), a 32-byte digest; and the same disc via
+        // the explicit ellipse spec gives an identical digest.
+        let d = query_region_ref(&parse_query_region_spec("disc:48.2082,16.3738,1500.5").unwrap()).unwrap();
+        assert_eq!(d.region_type, 4);
+        assert_eq!(d.region_id.len(), 32);
+        let el = query_region_ref(&parse_query_region_spec("ellipse:48.2082,16.3738,1500.5,1500.5,0").unwrap()).unwrap();
+        assert_eq!(d.region_id, el.region_id, "disc == ellipse(r,r,+0.0)");
+
+        // bad specs error, city is unbound.
+        assert!(parse_query_region_spec("nonsense").is_err());
+        assert!(parse_query_region_spec("disc:1,2").is_err());
+        // city:… parses to a region, but it has no bound reference.
+        assert!(parse_query_region_spec("country:").unwrap().region.is_some());
+    }
 
     /// Attacker-controlled strings (stage names, region labels, backend ids)
     /// flow into `detail` and the JSON output. ESC (0x1b) drives ANSI/OSC
