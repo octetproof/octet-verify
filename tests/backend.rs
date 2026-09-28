@@ -601,7 +601,7 @@ fn redirect_target_is_not_followed_ssrf_guard() {
     assert_ne!(out.status.code(), Some(0), "a 3xx must not verify as success:\n{combined}");
 }
 
-// --- #39: exit-code contract holds even for a hostless-Location redirect ---
+// ---: exit-code contract holds even for a hostless-Location redirect ---
 
 /// A backend that 302s to a hostless `Location` (`file:`/`data:`/`mailto:`) must
 /// not abort the process with exit 101 (the pre-`redirects(0)` panic, off the

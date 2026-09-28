@@ -126,7 +126,7 @@ digest, so an edited polygon is caught too). Editing a bound field after signing
 changes the preimage, so the re-derived hash no longer matches the signed stage
 and the proof is rejected.
 
-**v1 coverage gap (#32).** Under preimage v1, a `CityRegion`'s `center_lat` /
+**v1 coverage gap.** Under preimage v1, a `CityRegion`'s `center_lat` /
 `center_lon` / `radius_meters` and an `EarthRegion`'s `max_altitude_meters` are
 **not** in the preimage — only the city *name* / the earth *tag* are. Editing
 those geometry fields is therefore NOT detected. To avoid overclaiming, a

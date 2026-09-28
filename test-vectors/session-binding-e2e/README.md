@@ -11,7 +11,7 @@ with no network.
 `fixtures.json` holds two Tier-2 (**software-signed, un-attested**)
 `LocationProof` envelopes emitted by the SDK's real `ProofGenerator` for the
 `geofence_at` policy (required region: Country **AT**), each bound to the
-canonical #76 session nonce:
+canonical session nonce:
 
 - `inside` — device in AT → `location_verdict = Inside` (the **permit** shape).
 - `outside` — device in DE → `location_verdict = Outside`, region claim ≠ AT (the

@@ -1,10 +1,10 @@
-//! CLI `--app-attest-enrolment-bundle` (#67): recover an attested key from an
+//! CLI `--app-attest-enrolment-bundle`: recover an attested key from an
 //! out-of-band bundle so an assertion-only iOS proof — one carrying no attestation
 //! object, the steady state — reaches `app-attest` PASS via the cached-key path
 //! instead of the NOT-CHECKED it reports without it.
 //!
-//! Fixture reality: the only committed real-device App Attest vector (#52) carries
-//! a **bound-form** assertion (clientDataHash = SHA256(nonce ‖ SE_key), #38/#317).
+//! Fixture reality: the only committed real-device App Attest vector carries
+//! a **bound-form** assertion (clientDataHash = SHA256(nonce ‖ SE_key),).
 //! A genuine *enrolment* bundle instead carries a **nonce-only** assertion (the
 //! one-time bootstrap form) that only a device can produce, so a fully-green
 //! enrol→PASS end-to-end awaits a device bundle (the dev E2E). What we can prove
@@ -35,7 +35,7 @@ fn full_proof() -> LocationProof {
     LocationProof::decode(PROOF).expect("real iOS proof decodes")
 }
 
-/// The Secure-Enclave signing key (certificate_chain[0]) the #38 bound assertion
+/// The Secure-Enclave signing key (certificate_chain[0]) the bound assertion
 /// commits to and the field-2 signature is verified against.
 fn se_key(proof: &LocationProof) -> P256VerifyingKey {
     let sec1 = &proof
@@ -93,7 +93,7 @@ fn cached_key_path_yields_app_attest_pass_and_object_path_does_not() {
     let mut key = recovered.expect("object path recovers the attested key");
     key.last_counter = 0;
 
-    // Assertion-only proof + NO cached key → NOT-CHECKED (the gap #67 closes).
+    // Assertion-only proof + NO cached key → NOT-CHECKED (the gap closes).
     let bare = assertion_only(&proof);
     let (uncached, _) = verify_attested_cached(&bare, &opts(&hw), &expectation(), None);
     assert_eq!(
@@ -116,7 +116,7 @@ fn cached_key_path_yields_app_attest_pass_and_object_path_does_not() {
 #[test]
 fn cli_flag_threads_proto_bundle_through_enrolment_to_the_apple_root() {
     // The CLI --app-attest-enrolment-bundle flag: deserialize a proto bundle and
-    // drive it through enrolment. We feed the #52 object with its (bound) assertion
+    // drive it through enrolment. We feed the object with its (bound) assertion
     // — a real bundle's assertion is nonce-only, so this correctly stops at the
     // assertion step, but only AFTER the object has chained to Apple's root. That
     // proves the whole new path runs on real data: parse → bundle_from_proto →

@@ -172,7 +172,7 @@ const DETAIL_DISPLAY_LIMIT: usize = 512;
 ///
 /// ureq's own default read limit is 10 MiB, and until now that was the only
 /// bound: `into_string()` would read up to 10 MiB before any of our size
-/// handling ran (#39, Zellic backend-SSRF finding rec #3 — a memory-DoS
+/// handling ran (, Zellic backend-SSRF finding rec — a memory-DoS
 /// residual on the `net` endpoints). The largest legitimate single response is
 /// one `RANGE_PAGE_LIMIT`-sized page (100 proofs; a proof envelope with a full
 /// hardware-attestation chain is tens of KiB), i.e. low single-digit MiB, so
@@ -558,7 +558,7 @@ mod tests {
         assert!(!valid_proof_id("a#frag"));
         assert!(!valid_proof_id("a b"));
         assert!(!valid_proof_id("a\nb"));
-        // #36: a bare dot-segment normalises to a different path — reject.
+        //: a bare dot-segment normalises to a different path — reject.
         assert!(!valid_proof_id("."));
         assert!(!valid_proof_id(".."));
         assert!(!valid_proof_id("..."));
@@ -588,7 +588,7 @@ mod tests {
         let s = big.summary();
         assert!(s.len() <= DETAIL_DISPLAY_LIMIT + 32);
         assert!(s.ends_with("…[truncated]"));
-        // #36: C1 controls (U+0080–U+009F) must also be escaped, not passed through.
+        //: C1 controls (U+0080–U+009F) must also be escaped, not passed through.
         let c1 = Problem {
             title: None,
             detail: Some("x\u{9b}y\u{9d}z".into()), // CSI, OSC
@@ -602,7 +602,7 @@ mod tests {
 
     #[test]
     fn decode_json_error_does_not_echo_the_whole_body() {
-        // #36: a malformed 2xx/3xx body must not be echoed verbatim — the error
+        //: a malformed 2xx/3xx body must not be echoed verbatim — the error
         // reports length + a bounded snippet, not the whole (up to 10 MiB) body.
         let body = format!("\"{}\"", "P".repeat(10_000)); // valid JSON string, wrong type
         let err = decode_json::<ProofWrapper>(&body, "GET /v1/proofs/{id}").unwrap_err();
@@ -697,7 +697,7 @@ mod tests {
     #[test]
     fn read_capped_truncates_an_oversized_body() {
         // An unbounded (here, effectively infinite) body is read only up to the
-        // cap, not whole — the #39 memory-DoS guard on the net endpoints.
+        // cap, not whole — the memory-DoS guard on the net endpoints.
         let cap = 4096u64;
         let s = read_capped(std::io::repeat(b'x'), cap).unwrap();
         assert_eq!(s.len() as u64, cap);
