@@ -151,7 +151,7 @@ mod tests {
         assert!(c.detail.contains("no sessionBinding stage"), "{}", c.detail);
     }
 
-    /// #15 fail-closed: with `require` set, an unsupplied binding (no nonce) FAILs
+    /// fail-closed: with `require` set, an unsupplied binding (no nonce) FAILs
     /// instead of NOT-CHECKED — so a consumer that intends freshness never gets a
     /// silent pass. A supplied+matching nonce still PASSes; a supplied nonce over
     /// a proof with no stage still FAILs (unchanged).

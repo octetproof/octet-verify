@@ -24,7 +24,7 @@ enum LocationProofVerdict {
   NOT_PROVABLE = 4;
 }
 
-// --- Inside/outside verdict (#26) ---
+// --- Inside/outside verdict ---
 // The device's own inside/outside answer for the claimed region, signed into the
 // proof via the octet-semantic-binding-v2 preimage. A trichotomy:
 // INDETERMINATE must survive as itself, never collapse into a boolean.
@@ -212,12 +212,12 @@ message LocationProof {
   string sdk_version = 12;
   string platform = 13;  // "android" or "ios"
   bytes previous_token_hash = 16;  // hash of the prior proof's token (proof chaining)
-  // Device's inside/outside verdict for claimed_region (#26). Signed via the
+  // Device's inside/outside verdict for claimed_region. Signed via the
   // octet-semantic-binding-v2 preimage; UNSPECIFIED / a v1 proof ⇒ no signed
   // verdict. Tag 17: next free after the reserved 9/14/15.
   LocationVerdict location_verdict = 17;
 
-  // The region the predicate was asked about (#632, semantic-binding v3). Carries
+  // The region the predicate was asked about (, semantic-binding v3). Carries
   // the REFERENCE (region_type + the v2 region_id of that region), not geometry,
   // so a verifier can read a signed INSIDE/OUTSIDE for a specific region. Signed
   // via the octet-semantic-binding-v3 preimage. Present exactly when the query is
@@ -228,7 +228,7 @@ message LocationProof {
   reserved 9, 14, 15;
 }
 
-// Reference to a region by its v2 claim-table encoding (#632, semantic-binding
+// Reference to a region by its v2 claim-table encoding (, semantic-binding
 // v3). region_type is the ProofRegion oneof field number (1..7); region_id is the
 // same bytes semantic-binding folds for that region's claimed_region (ISO code,
 // f64-be altitude, or a 32-byte geometry digest). It names a region without

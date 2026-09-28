@@ -90,7 +90,7 @@ fn no_expected_identity_passes_on_hardware_root_alone() {
     assert!(!c.detail.contains("bound to the expected app identity"), "{}", c.detail);
 }
 
-// --- SECURITY (issue #31): the attested leaf must be the signing key ---
+// --- SECURITY (issue): the attested leaf must be the signing key ---
 
 /// The exploit this closes: an attacker borrows this genuine Google-rooted
 /// StrongBox chain and attaches it to a proof their *own* key signed. The chain
@@ -120,7 +120,7 @@ fn genuine_chain_with_no_signing_key_fails_closed() {
     assert!(c.detail.contains("no device signing key"), "{}", c.detail);
 }
 
-// --- #41: --require-attestation through the shipping verify_attested_cached path ---
+// ---: --require-attestation through the shipping verify_attested_cached path ---
 
 /// A genuine attested proof satisfies require_attestation (attestation-root PASS
 /// → is_attested → attestation-required PASS); stripping the chain flips it to

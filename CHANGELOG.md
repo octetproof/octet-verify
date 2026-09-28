@@ -4,8 +4,6 @@ All notable changes to `octet-verify` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
-## [Unreleased]
-
 ## [1.5.0] - 2026-09-28
 
 Additive and back-compat: the public API a 1.3/1.4 consumer uses (`verify`,
@@ -17,7 +15,7 @@ deferred to a later version, gated on the client fleet aging past the pre-2.0.0
 SDK, so that re-verifying genuine older/stored proofs does not start failing.)
 
 ### Added
-- **Semantic-binding v3 — the queried region is bound into the proof (#632).**
+- **Semantic-binding v3 — the queried region is bound into the proof.**
   A new `LocationProof.query_region` (field 18, `RegionRef { region_type, region_id }`)
   carries a *reference* to the region a proof's `location_verdict` answers about,
   signed under a new `octet-semantic-binding-v3` preimage (the v2 body verbatim,
@@ -50,7 +48,7 @@ Tier-2 (gateway-mode) un-attested proof support. Additive and back-compat: a
 genuine pre-1.4.0 proof verifies unchanged; the new checks are opt-in.
 
 ### Added
-- **Online Google Play Integrity check (`--features playintegrity`, #12).** Opt-in
+- **Online Google Play Integrity check (`--features playintegrity`,).** Opt-in
   and networked: with `--integrity-decode-url`, `--integrity-decode-token` (the
   verifier's OWN decode-scoped `octet_svc_` credential — never a device bearer),
   and `--integrity-package`, the verifier POSTs the proof's PI token to the
@@ -75,7 +73,7 @@ genuine pre-1.4.0 proof verifies unchanged; the new checks are opt-in.
   from the CLI by supplying the out-of-band App Attest enrolment bundle (proto or
   JSON, auto-detected), instead of reporting `NOT-CHECKED`. Previously only the
   embedded library could recover the key this way. Requires `--app-attest-config`
-  and a `--features appattest` build. (#67)
+  and a `--features appattest` build.
 
 ## [1.3.0] - 2026-09-02
 

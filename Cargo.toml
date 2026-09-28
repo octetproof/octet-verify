@@ -43,7 +43,7 @@ net = ["dep:ureq", "dep:serde", "dep:serde_json", "dep:base64", "dep:ctrlc"]
 # asked. Pulls serde_json only for the out-of-band key-enrolment bundle
 # (`appattest_layer::bundle_from_json`); the proto bundle path reuses prost.
 appattest = ["dep:octet-attest-verify", "dep:base64", "dep:serde", "dep:serde_json"]
-# Opt-in ONLINE Google Play Integrity check (#12). Calls the first-party decode
+# Opt-in ONLINE Google Play Integrity check. Calls the first-party decode
 # endpoint (POST /v1/integrity/decode) with the verifier's own service credential,
 # then runs the offline crate primitives (from_decoded_json / check_binding_packages
 # / check_freshness) on the returned verdict. Needs the network (ureq, via `net`)

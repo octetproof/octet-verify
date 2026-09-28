@@ -30,7 +30,7 @@ struct Args {
     expect_region: Option<String>,
     expect_region_type: Option<String>,
     expect_region_contains: Option<(f64, f64)>,
-    /// Expected **queried region** (#632): assert the proof's bound `query_region`
+    /// Expected **queried region**: assert the proof's bound `query_region`
     /// equals the reference for this region, so its signed verdict answers
     /// `within(this region)`. Uses the one canonical digest ([`query_region_ref`]).
     /// Specs: `earth`, `country:AT`, `subdivision:US-NY`, `disc:<lat>,<lon>,<r_m>`,
@@ -41,18 +41,18 @@ struct Args {
     require_schema_v2: bool,
     require_attestation: bool,
     app_attest_config: Option<String>,
-    /// Out-of-band App Attest **enrolment bundle** (#67): recovers the attested key
+    /// Out-of-band App Attest **enrolment bundle**: recovers the attested key
     /// so an assertion-only iOS proof (one carrying no attestation object — the
     /// steady state) can reach `app-attest` PASS via the cached-key path instead of
     /// NOT-CHECKED. Requires `--app-attest-config`. JSON (`v:1`) or proto form.
     app_attest_enrolment_bundle: Option<String>,
     /// Expected Android app identity `(package_name, signing_cert_sha256)` for the
-    /// key-attestation `attestationApplicationId` binding (#41 rec: bind the
+    /// key-attestation `attestationApplicationId` binding ( rec: bind the
     /// Android chain to a specific app, not just "some app"). Parsed from
     /// `--android-app-identity <package>,<cert_sha256_hex>`.
     android_app_identity: Option<(String, [u8; 32])>,
     skip_hardware_attestation: bool,
-    /// Online Play Integrity (#12, feature `playintegrity`): the first-party
+    /// Online Play Integrity (, feature `playintegrity`): the first-party
     /// decode endpoint base URL, the verifier's own decode-scoped service token,
     /// and the expected Android package. All three required to run the check;
     /// absent ⇒ `play-integrity` NOT-CHECKED. `integrity_max_age_s` overrides the
@@ -138,7 +138,7 @@ fn run(args: &Args) -> anyhow::Result<Report> {
         require_session_binding: args.require_session_binding,
         require_schema_v2: args.require_schema_v2,
         // Cleared for the core call: the CLI appends the attestation checks below
-        // and re-applies --require-attestation once, afterward (#41).
+        // and re-applies --require-attestation once, afterward.
         require_attestation: false,
     };
 
@@ -206,7 +206,7 @@ fn run(args: &Args) -> anyhow::Result<Report> {
             }
         } else {
             // No --app-attest-config: still surface `app-attest` as NOT-CHECKED so
-            // it is never silently *absent* on an `appattest` build (#41 rec #4) —
+            // it is never silently *absent* on an `appattest` build ( rec) —
             // an iOS proof otherwise shows no app-attest line at all here. A
             // default build has no App Attest surface, so this is feature-gated.
             #[cfg(feature = "appattest")]
@@ -228,7 +228,7 @@ fn run(args: &Args) -> anyhow::Result<Report> {
             // rely on the app-attest check above instead.
             let now_unix_secs = (now_ms / 1000).max(0) as u64;
             let pubkey_sec1 = hw_key.as_ref().map(|vk| vk.to_sec1_bytes());
-            // #41: bind the Android chain to the expected app identity when
+            //: bind the Android chain to the expected app identity when
             // supplied (--android-app-identity), so it attests THIS app, not just
             // "some key from some app". `None` keeps the hardware-root-only check.
             let expected_app = args.android_app_identity.as_ref().map(|(pkg, cert)| {
@@ -243,7 +243,7 @@ fn run(args: &Args) -> anyhow::Result<Report> {
                     &proof,
                     now_unix_secs,
                     expected_app.as_ref(),
-                    pubkey_sec1.as_deref(), // always bind the attested leaf to the signing key (#31)
+                    pubkey_sec1.as_deref(), // always bind the attested leaf to the signing key
                 ));
 
             report
@@ -255,7 +255,7 @@ fn run(args: &Args) -> anyhow::Result<Report> {
         }
     }
 
-    // Online Play Integrity (#12, feature `playintegrity`): opt-in networked check
+    // Online Play Integrity (, feature `playintegrity`): opt-in networked check
     // against the decode endpoint. A separate signal — it does NOT feed
     // is_attested() (that is hardware-key attestation); a FAIL here rejects the
     // proof, NOT-CHECKED does not.
@@ -281,7 +281,7 @@ fn run(args: &Args) -> anyhow::Result<Report> {
         });
     }
 
-    // Fail-closed when attestation is required (#41). Enforced here — after all
+    // Fail-closed when attestation is required. Enforced here — after all
     // attestation checks are appended and OUTSIDE the `!skip_hardware_attestation`
     // block — so it runs on every build and cannot be bypassed by
     // --skip-hardware-attestation (skip ⇒ no attestation checks ⇒ is_attested()
@@ -292,7 +292,7 @@ fn run(args: &Args) -> anyhow::Result<Report> {
         report.checks.push(c);
     }
 
-    // #632: --expect-query-region — assert the proof's bound query region equals the
+    //: --expect-query-region — assert the proof's bound query region equals the
     // reference for the region the operator names, via the one canonical digest.
     if let Some(spec) = args.expect_query_region.as_deref() {
         report.checks.push(query_region_match_check(spec, &report));
@@ -386,10 +386,10 @@ fn appattest_from_config(
     let expect = Expectation::new(&aa.team_id, &aa.bundle_id, aa.environment.into());
     // Cached key: without --app-attest-enrolment-bundle this is a stateless
     // single-proof check (`None`), so an assertion-only proof reports NOT-CHECKED
-    // (it needs the attestation object or a cached key). With a bundle (#67) we
+    // (it needs the attestation object or a cached key). With a bundle we
     // recover the attested key out of band, so the assertion-only steady state
     // reaches PASS via the cached-key path.
-    // #38: the live assertion is bound to the SE signing key (certificate_chain[0])
+    //: the live assertion is bound to the SE signing key (certificate_chain[0])
     // — PreferBound by default, RequireBound under --require-attestation.
     let cached = match enrolment_bundle {
         Some(path) => Some(resolve_enrolment_key(path, &expect)?),
@@ -401,7 +401,7 @@ fn appattest_from_config(
 }
 
 /// Recover the attested key from an out-of-band App Attest **enrolment bundle**
-/// (#67) so an assertion-only proof can be verified via the cached-key path. The
+/// so an assertion-only proof can be verified via the cached-key path. The
 /// bundle is the object-bearing `{key_id, app_attest_attestation,
 /// app_attest_assertion, attestation_nonce}` subset the SDK exports; it is
 /// deserialized (JSON `v:1` or proto `DeviceAttestation`, sniffed by the leading
@@ -412,7 +412,7 @@ fn appattest_from_config(
 /// holds no store, so it does not — and cannot — enforce cross-proof assertion
 /// counter monotonicity; that stays the stateful library consumer's job
 /// (`verify_attested_cached` + a persisted key). The assertion is still fully
-/// bound cryptographically — signature, app identity, and, in the #38 bound form,
+/// bound cryptographically — signature, app identity, and, in the bound form,
 /// the Secure-Enclave signing key.
 #[cfg(feature = "appattest")]
 fn resolve_enrolment_key(
@@ -436,7 +436,7 @@ fn resolve_enrolment_key(
     Ok(key)
 }
 
-/// Build and run the online Play Integrity check (#12) from the resolved config
+/// Build and run the online Play Integrity check from the resolved config
 /// fields, shared by the local and backend-fetch paths.
 ///
 /// `None` when no `--integrity-*` config is given at all (the check is simply not
@@ -522,12 +522,12 @@ fn resolve_hardware_key(
     match flag {
         Some(p) => {
             let key = keys::load_hardware_pubkey(&PathBuf::from(p))?;
-            // #41 (rec #2): a supplied --hardware-pubkey must AGREE with the key
+            // (rec): a supplied --hardware-pubkey must AGREE with the key
             // in the proof's own certificate_chain[0] when one is extractable.
             // The attested leaf is the signing key by design (it is what the
             // chain attests and what stage-signatures verify against); allowing an
             // operator to override it with a different key is the bug class the
-            // #31 attested-leaf binding only catches after the fact. Refuse the
+            // attested-leaf binding only catches after the fact. Refuse the
             // conflict up front — verify against the attested key by omitting the
             // flag.
             if let Some(da) = proof.device_attestation.as_ref() {
@@ -589,7 +589,7 @@ fn headline(report: &Report) -> &'static str {
     }
 }
 
-/// JSON value for the signed inside/outside verdict (#26): a quoted string, or
+/// JSON value for the signed inside/outside verdict: a quoted string, or
 /// `null` when there is no signed verdict. INDETERMINATE stays distinct.
 fn location_verdict_json(report: &Report) -> &'static str {
     use octet_verify::verify::SignedLocationVerdict::*;
@@ -601,7 +601,7 @@ fn location_verdict_json(report: &Report) -> &'static str {
     }
 }
 
-/// JSON value for the bound queried region (#632): `{"region_type":N,"region_id":"<hex>"}`
+/// JSON value for the bound queried region: `{"region_type":N,"region_id":"<hex>"}`
 /// or `null` when the proof carries no bound query (v2/v1, background, or city).
 fn query_region_json(report: &Report) -> String {
     match report.query_region() {
@@ -658,18 +658,18 @@ fn print_json(report: &Report) {
     out.push_str(&format!("  \"valid\": {},\n", report.is_authentic()));
     out.push_str(&format!("  \"signatures_verified\": {},\n", report.sigs_verified()));
     // Typed signals so automation needn't string-match `checks`: `attested` is
-    // the hardware-attestation bit (#41), `region_asserted` is true only when an
-    // operator region expectation was supplied and held (#40), and
+    // the hardware-attestation bit, `region_asserted` is true only when an
+    // operator region expectation was supplied and held, and
     // `semantically_bound` is the tamper-evidence bit for the human-meaningful
-    // fields (#32) — false for a v1 city/earth region, whose geometry the v1
+    // fields — false for a v1 city/earth region, whose geometry the v1
     // preimage does not cover, so a consumer reading those fails closed.
     out.push_str(&format!("  \"attested\": {},\n", report.is_attested()));
     out.push_str(&format!("  \"region_asserted\": {},\n", report.region_asserted()));
     out.push_str(&format!("  \"semantically_bound\": {},\n", report.is_semantically_bound()));
-    // The device's SIGNED inside/outside verdict (#26), or null when there is no
+    // The device's SIGNED inside/outside verdict, or null when there is no
     // signed verdict (v1 / unbound / UNSPECIFIED). INDETERMINATE is preserved.
     out.push_str(&format!("  \"location_verdict\": {},\n", location_verdict_json(report)));
-    // The bound queried region the verdict answers about (#632, v3), or null. A
+    // The bound queried region the verdict answers about (, v3), or null. A
     // consumer matches `region_id` against its own query_region_ref(R) to read
     // within(R) directly. region_id is hex.
     out.push_str(&format!("  \"query_region\": {},\n", query_region_json(report)));
@@ -831,7 +831,7 @@ fn parse_args() -> Result<Args, String> {
             }
         }
     }
-    // The enrolment bundle needs the app identity to verify against (#67); the
+    // The enrolment bundle needs the app identity to verify against; the
     // config is the only source of team/bundle, so require it.
     if args.app_attest_enrolment_bundle.is_some() && args.app_attest_config.is_none() {
         return Err("--app-attest-enrolment-bundle requires --app-attest-config".to_string());
@@ -945,7 +945,7 @@ fn backend_dispatch(_argv: &[String]) -> ExitCode {
 #[cfg(feature = "net")]
 fn backend_dispatch(argv: &[String]) -> ExitCode {
     // A dependency panic (an unexpected ureq/url/serde edge) must not abort the
-    // process with exit 101 — outside the documented 0/1/2/3 contract (#39). The
+    // process with exit 101 — outside the documented 0/1/2/3 contract. The
     // default panic hook still prints the panic to stderr (fail loud), but we
     // catch the unwind and map it to the usage/IO/backend-error code (2).
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| backend::run(argv))) {
@@ -1088,7 +1088,7 @@ mod backend {
         // No proofs seen yet → success. Updated to the tri-state code of every
         // verified proof; INCONCLUSIVE never collapses into success.
         let mut last_exit = ExitCode::SUCCESS;
-        // #39: make a long run of empty polls observable, so a `watch` that is
+        //: make a long run of empty polls observable, so a `watch` that is
         // quietly returning nothing (backend has no proofs, or is mis-pointed) is
         // distinguishable from one that is verifying. A transport error already
         // fails loud via `?`; a 404 on /latest is the legitimate "no proofs yet"
@@ -1188,7 +1188,7 @@ mod backend {
             require_session_binding: args.require_session_binding,
             require_schema_v2: args.require_schema_v2,
             // Cleared for the core call; re-applied once after the attestation
-            // checks below (#41).
+            // checks below.
             require_attestation: false,
         };
         let mut report = verify(&proof, &opts);
@@ -1213,7 +1213,7 @@ mod backend {
             {
                 let now_unix_secs = (now_ms / 1000).max(0) as u64;
                 let pubkey_sec1 = hw_key.as_ref().map(|vk| vk.to_sec1_bytes());
-                // #41: bind the Android chain to the expected app identity when
+                //: bind the Android chain to the expected app identity when
                 // supplied (--android-app-identity), same as the local-file path.
                 let expected_app = args.android_app_identity.as_ref().map(|(pkg, cert)| {
                     octet_verify::appattest_layer::ExpectedAppIdentity {
@@ -1227,7 +1227,7 @@ mod backend {
                         &proof,
                         now_unix_secs,
                         expected_app.as_ref(),
-                        pubkey_sec1.as_deref(), // always bind the attested leaf to the signing key (#31)
+                        pubkey_sec1.as_deref(), // always bind the attested leaf to the signing key
                     ));
                 report
                     .checks
@@ -1237,7 +1237,7 @@ mod backend {
                     ));
             }
         }
-        // Online Play Integrity (#12, feature `playintegrity`), mirroring the
+        // Online Play Integrity (, feature `playintegrity`), mirroring the
         // local-file path — a fetched Android proof carries the same field-4 token.
         #[cfg(feature = "playintegrity")]
         report.checks.extend(super::play_integrity_from_cfg(
@@ -1261,7 +1261,7 @@ mod backend {
             });
         }
 
-        // Fail-closed when attestation is required (#41) — after the attestation
+        // Fail-closed when attestation is required — after the attestation
         // checks and outside the skip block, on every build; the core call above
         // ran with require_attestation cleared, so this is the single evaluation.
         if args.require_attestation {
@@ -1570,7 +1570,7 @@ mod backend {
         let token = token.ok_or_else(|| anyhow!("--token <activation_bearer> is required"))?;
 
         // The enrolment bundle needs the app identity from the config to verify
-        // against (#67), so require --app-attest-config alongside it.
+        // against, so require --app-attest-config alongside it.
         if app_attest_enrolment_bundle.is_some() && app_attest_config.is_none() {
             bail!("--app-attest-enrolment-bundle requires --app-attest-config");
         }
@@ -1638,7 +1638,7 @@ mod tests {
 
     /// The `--expect-query-region` spec parser maps to the same `ProofRegion` the
     /// SDK/engine bind, so `query_region_ref` of the parsed region equals the
-    /// proof's bound `query_region` (#632).
+    /// proof's bound `query_region`.
     #[test]
     fn expect_query_region_spec_parses_to_canonical_refs() {
         // country / subdivision → uppercased ISO bytes.
@@ -1721,7 +1721,7 @@ mod tests {
         assert!(parse_latlon("0.0,181.0").is_err()); // lon out of range
     }
 
-    /// `--android-app-identity` parsing (#41): "package,cert_sha256_hex".
+    /// `--android-app-identity` parsing: "package,cert_sha256_hex".
     #[test]
     fn parse_android_identity_parses_and_validates() {
         use super::parse_android_identity;
@@ -1736,7 +1736,7 @@ mod tests {
         assert!(parse_android_identity(&format!("com.x,{}", "ab".repeat(31))).is_err()); // 62 chars
     }
 
-    /// #41 (rec #2): a --hardware-pubkey that disagrees with the proof's own
+    /// (rec): a --hardware-pubkey that disagrees with the proof's own
     /// attested certificate_chain[0] is refused — you cannot verify against a key
     /// other than the attested one when the proof carries an attestation.
     #[test]

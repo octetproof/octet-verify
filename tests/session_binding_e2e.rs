@@ -6,7 +6,7 @@
 //! `test-vectors/session-binding-e2e/fixtures.json` holds two Tier-2
 //! (software-signed, un-attested) `LocationProof` envelopes emitted by the SDK's
 //! real `ProofGenerator` for the `geofence_at` policy (Country AT), each bound to
-//! the #76 golden nonce: one **Inside** (device in AT) and one **Outside** (device
+//! the golden nonce: one **Inside** (device in AT) and one **Outside** (device
 //! in DE). `proof_bytes_b64` is the exact `URL_SAFE_NO_PAD` bytes `prove()` emits
 //! and the backend `/v1/decide` receives.
 //!
@@ -16,7 +16,7 @@
 //!   SEC1 key sourced from `certificate_chain[0]` (Tier-2 needs no hardware root,
 //!   so `require_attestation` is off);
 //! - it is **session-bound** to the challenge nonce — the `sessionBinding` stage
-//!   matches, and its `data_hash` equals the #76 pin `aab74288…`, tying this
+//!   matches, and its `data_hash` equals the pin `aab74288…`, tying this
 //!   end-to-end fixture to the byte-level golden vectors;
 //! - the **Inside** envelope is a *permit* shape (valid, region claim = AT,
 //!   `location_verdict = Inside`, coverage of the one required region);
@@ -35,7 +35,7 @@ use octet_verify::prost::Message;
 use octet_verify::verify::{verify, Report, SignedLocationVerdict, Status, VerifyOptions};
 
 const FIXTURES: &str = "test-vectors/session-binding-e2e/fixtures.json";
-/// The #76 golden pin: SHA256("octet-session-binding-v1" ‖ u32be(43) ‖ <nonce>)
+/// The golden pin: SHA256("octet-session-binding-v1" ‖ u32be(43) ‖ <nonce>)
 /// for the canonical 43-char base64url nonce. The fixture's `sessionBinding`
 /// stage must carry exactly this, tying the e2e envelope to the byte-level vectors.
 const SESSION_HASH_76: &str = "aab74288842bc907814ef3165cceb829f05aafdcaf9d25563cb137013e3f227f";
@@ -122,7 +122,7 @@ fn session_binding_e2e_real_envelope() {
     let f: serde_json::Value = serde_json::from_str(&raw).expect("fixtures.json parses");
     let nonce = f["nonce_b64url"].as_str().expect("nonce_b64url").as_bytes().to_vec();
 
-    // The e2e nonce is the #76 canonical string form.
+    // The e2e nonce is the canonical string form.
     assert_eq!(nonce.len(), 43, "nonce is the 43-char base64url string");
 
     // ---- INSIDE: the permit shape ----
@@ -130,7 +130,7 @@ fn session_binding_e2e_real_envelope() {
     assert_eq!(
         session_binding_hash_hex(&inside),
         SESSION_HASH_76,
-        "inside sessionBinding data_hash must equal the #76 golden pin"
+        "inside sessionBinding data_hash must equal the golden pin"
     );
     let r = verify_bound(&inside, &nonce, true);
     assert_authentic_and_bound(&r, "inside");
@@ -145,7 +145,7 @@ fn session_binding_e2e_real_envelope() {
     assert_eq!(
         session_binding_hash_hex(&outside),
         SESSION_HASH_76,
-        "outside sessionBinding data_hash must equal the #76 golden pin"
+        "outside sessionBinding data_hash must equal the golden pin"
     );
     let r = verify_bound(&outside, &nonce, true);
     assert_authentic_and_bound(&r, "outside"); // still a real, session-bound proof

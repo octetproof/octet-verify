@@ -50,7 +50,7 @@ pub struct Check {
 }
 
 /// The device's inside/outside verdict for the claimed region, exposed **only**
-/// when it is cryptographically bound (octet-semantic-binding-v2, #26). The
+/// when it is cryptographically bound (octet-semantic-binding-v2,). The
 /// trichotomy is preserved — `Indeterminate` never collapses into a boolean, and
 /// "no signed verdict" is `None` from [`Report::location_verdict`], distinct from
 /// `Some(Outside)`.
@@ -66,7 +66,7 @@ pub enum SignedLocationVerdict {
 }
 
 /// The region a proof's `location_verdict` answers about, bound into the proof
-/// under **octet-semantic-binding-v3** (#632). It is a *reference* — the region's
+/// under **octet-semantic-binding-v3**. It is a *reference* — the region's
 /// `ProofRegion` oneof tag plus the v2 `region_id` bytes for that region (an ISO
 /// code, an f64-be altitude, or a 32-byte geometry digest) — never the geometry.
 /// A consumer computes the same reference for a region R it cares about (via
@@ -92,11 +92,11 @@ pub struct Report {
     /// The signed inside/outside verdict, set only when the semantic binding
     /// verified under **v2** and the proof carries a non-UNSPECIFIED verdict.
     /// `None` for v1 / unbound / UNSPECIFIED proofs — "no signed verdict",
-    /// distinct from `Some(Outside)` (#26). Read via [`Report::location_verdict`].
+    /// distinct from `Some(Outside)`. Read via [`Report::location_verdict`].
     location_verdict: Option<SignedLocationVerdict>,
     /// The bound queried region, set **only** when the proof verified under
     /// **octet-semantic-binding-v3** and carries a well-formed, answered query
-    /// (#632). `None` for v2/v1 proofs and for a v3 proof with no bound query (a
+    ///. `None` for v2/v1 proofs and for a v3 proof with no bound query (a
     /// background proof or a city query). Read via [`Report::query_region`].
     query_region: Option<QueryRegion>,
 }
@@ -180,7 +180,7 @@ impl Report {
     /// automated consumer asking "was the operator's region policy satisfied?"
     /// should read this rather than string-matching `checks`. Returns `false`
     /// when no expectation was supplied — nothing was asserted, so nothing was
-    /// affirmatively satisfied (#40).
+    /// affirmatively satisfied.
     pub fn region_asserted(&self) -> bool {
         if !self.region_expectation {
             return false;
@@ -212,7 +212,7 @@ impl Report {
     /// consumer that reads `spoofing_verdict` / `claimed_region` should gate on
     /// `is_authentic() && is_semantically_bound()` and fail closed otherwise.
     ///
-    /// Returns **false** for a `city` or `earth` region under preimage v1 (#32):
+    /// Returns **false** for a `city` or `earth` region under preimage v1:
     /// their geometry — city centre/radius, earth `max_altitude_meters` — is not
     /// covered by the v1 preimage, so the binding is reported `Warn`, not `Pass`,
     /// and a consumer that trusts `CityRegion` coordinates fails closed. Full v1
@@ -224,7 +224,7 @@ impl Report {
     }
 
     /// The device's **signed** inside/outside verdict for the claimed region
-    /// (#26), or `None` when there is no signed verdict — a v1 proof, an unbound
+    ///, or `None` when there is no signed verdict — a v1 proof, an unbound
     /// proof, or a v2 proof whose verdict is `UNSPECIFIED`. `None` is distinct
     /// from `Some(Outside)`: a consumer that cannot tell those apart would read a
     /// verdict-less proof as a denial, so this deliberately preserves the
@@ -237,7 +237,7 @@ impl Report {
     }
 
     /// The **bound queried region** the [`location_verdict`](Self::location_verdict)
-    /// answers about (#632, semantic-binding v3), or `None` when the proof carries
+    /// answers about (, semantic-binding v3), or `None` when the proof carries
     /// no bound query — a v2/v1 proof, a background proof, or a city query. A
     /// consumer compares this to [`query_region_ref`] of a region R it cares about;
     /// on equality the signed verdict answers `within(R)` directly. Set only when
@@ -253,7 +253,7 @@ impl Report {
 /// `Copy` so a caller that runs the attestation layer can derive a variant with
 /// `require_attestation` cleared for its internal core [`verify`] call
 /// (`VerifyOptions { require_attestation: false, ..*opts }`) and re-apply the
-/// requirement once, after the real attestation checks (see #41).
+/// requirement once, after the real attestation checks (see).
 #[derive(Clone, Copy)]
 pub struct VerifyOptions<'a> {
     pub now_ms: i64,
@@ -261,15 +261,15 @@ pub struct VerifyOptions<'a> {
     pub hardware_pubkey: Option<&'a P256VerifyingKey>,
     pub hw_key_source: &'a str,
     pub expect_region: Option<&'a str>,
-    /// Positive region-**type** assertion (issue #40). When set, the
+    /// Positive region-**type** assertion (issue). When set, the
     /// `region-type` check requires the claimed region to be of this oneof type
     /// — one of `earth` / `country` / `subdivision` / `city` / `ellipse` / `h3`
     /// / `bbox` — and FAILs otherwise (including when the proof carries no
     /// region). This is the positive counterpart to [`Self::expect_region`],
-    /// which after the #30 fix can only *reject* an identifier-less region; it
+    /// which after the fix can only *reject* an identifier-less region; it
     /// lets an operator affirmatively accept a geometric or earth-region proof.
     pub expect_region_type: Option<&'a str>,
-    /// Positive region-**containment** assertion (issue #40): `(lat, lon)` in
+    /// Positive region-**containment** assertion (issue): `(lat, lon)` in
     /// degrees that the claimed region must contain. This is what makes a
     /// *geometric* proof positively assertable rather than only rejectable —
     /// `--expect-region` matches by name and can't evaluate a geometric region.
@@ -299,7 +299,7 @@ pub struct VerifyOptions<'a> {
     /// requiring schema-v2; arm it in lockstep with the backend's schema-v2
     /// ingest gate. Instantly reversible: set back to `false`.
     pub require_schema_v2: bool,
-    /// Require hardware attestation to have **affirmatively verified** (#41).
+    /// Require hardware attestation to have **affirmatively verified**.
     /// When `true`, an `attestation-required` check FAILs unless
     /// [`Report::is_attested`] holds — i.e. unless the App Attest (iOS) or the
     /// key-attestation chain (Android) passed. This closes the amplifier where an
@@ -313,8 +313,8 @@ pub struct VerifyOptions<'a> {
     /// [`crate::appattest_layer::verify_attested`] and the CLI clear it for their
     /// internal `verify` call and re-apply it after appending the real attestation
     /// checks. A build without the `appattest` feature cannot verify attestation,
-    /// so it always FAILs there. It does not yet require the #38 *bound* assertion
-    /// form — that gate lands once the bound-binding rev is in (see #38/#41).
+    /// so it always FAILs there. It does not yet require the *bound* assertion
+    /// form — that gate lands once the bound-binding rev is in (see).
     pub require_attestation: bool,
 }
 
@@ -437,7 +437,7 @@ pub fn verify(proof: &LocationProof, opts: &VerifyOptions) -> Report {
         || opts.expect_region_type.is_some()
         || opts.expect_region_contains.is_some();
 
-    // -- region type (positive assertion; issue #40) --
+    // -- region type (positive assertion; issue) --
     // The counterpart to --expect-region: assert the claimed region is OF a
     // given oneof type. Lets an operator affirmatively accept a geometric or
     // earth-region proof, which --expect-region alone can only reject.
@@ -459,12 +459,12 @@ pub fn verify(proof: &LocationProof, opts: &VerifyOptions) -> Report {
         }
     }
 
-    // -- region contains (positive geometric assertion; issue #40) --
+    // -- region contains (positive geometric assertion; issue) --
     // Assert the claimed region CONTAINS a given point. This is what makes a
     // geometric proof positively assertable — `--expect-region` matches by name
     // and can only reject an identifier-less region. Unevaluable regions (named
     // country/subdivision with no embedded geometry; h3 without an H3 library)
-    // FAIL, per #40's rule that an expectation which cannot be evaluated is not
+    // FAIL, per's rule that an expectation which cannot be evaluated is not
     // satisfied.
     if let Some((lat, lon)) = opts.expect_region_contains {
         let (status, detail) = region_contains(proof, lat, lon);
@@ -499,7 +499,7 @@ pub fn verify(proof: &LocationProof, opts: &VerifyOptions) -> Report {
         None => r.add("zk-proof", Status::NotChecked, "no ZK proof present"),
     }
 
-    // Fail-closed attestation requirement (#41). Enforced here so a bare
+    // Fail-closed attestation requirement. Enforced here so a bare
     // `verify()` cannot silently ignore `require_attestation` on any build: core
     // never records a passing `app-attest`/`attestation-root`, so `is_attested()`
     // is false and this FAILs. Callers that DO run the attestation layer
@@ -515,14 +515,14 @@ pub fn verify(proof: &LocationProof, opts: &VerifyOptions) -> Report {
     r
 }
 
-/// The `attestation-required` check (#41): `Pass` iff [`Report::is_attested`]
+/// The `attestation-required` check: `Pass` iff [`Report::is_attested`]
 /// holds — a hardware attestation (iOS App Attest or the Android key-attestation
 /// chain) affirmatively verified — else `Fail`. Platform-correct: it does not
 /// demand that *every* attestation line passed (iOS leaves `attestation-root`
 /// NOT-CHECKED, Android leaves `app-attest` NOT-CHECKED), only that one did.
 /// Applied by the terminal assembler (core [`verify`] for a bare call, or
 /// [`crate::appattest_layer::verify_attested_cached`] / the CLI after they append
-/// the real attestation checks). It does not yet require the #38 *bound*
+/// the real attestation checks). It does not yet require the *bound*
 /// assertion form; that gate lands with the bound-binding rev.
 pub fn require_attestation_check(report: &Report) -> Check {
     if report.is_attested() {
@@ -621,7 +621,7 @@ impl Report {
                 "no semanticFields stage, but schema-v2 binding is required (require_schema_v2): the spoofing_verdict / region / level / integrity / commitment are unbound"),
             None => self.add(NAME, Status::NotChecked,
                 "no semanticFields stage; spoofing_verdict / region / level / integrity / commitment not bound (proof predates semantic-field binding)"),
-            // v3 (octet-semantic-binding-v3, #632) — tried first. The v2 body
+            // v3 (octet-semantic-binding-v3,) — tried first. The v2 body
             // unchanged PLUS the queried region Q, so a match binds everything v2
             // does and, additionally, the region the verdict answers about. Surfaces
             // the verdict and (when the query is well-formed and answered) Q.
@@ -633,7 +633,7 @@ impl Report {
                      (octet-semantic-binding-v3)");
                 self.add_query_region_v3(proof);
             }
-            // v2 (octet-semantic-binding-v2, #26/#32) — tried after v3. Binds the
+            // v2 (octet-semantic-binding-v2,) — tried after v3. Binds the
             // city/earth geometry AND the inside/outside verdict that v1 omits, so
             // a match here is FULLY bound and surfaces the signed verdict.
             Some(st) if crypto::sha256(&semantic_preimage_v2(proof)).as_slice() == st.data_hash.as_slice() => {
@@ -641,7 +641,7 @@ impl Report {
                 // signed (v2 has no Q in its preimage) — it was injected after the
                 // fact. FAIL outright rather than silently dropping it, so a
                 // consumer that reads Q off the wire can't see an unsigned region
-                // beside a PASS (#632, matches the SDK's on-device rule).
+                // beside a PASS (, matches the SDK's on-device rule).
                 if proof.query_region.is_some() {
                     self.add(NAME, Status::Fail,
                         "query_region is present but the proof is bound only under v2 (v2 does not sign a queried region) — the query region was not signed")
@@ -656,13 +656,13 @@ impl Report {
             // only its *identity*, not its geometry (city centre/radius, earth
             // max_altitude). Report those as Warn with an honest detail so
             // `is_semantically_bound()` returns false and a consumer that trusts
-            // the coordinates fails closed (#32). Everything else —
+            // the coordinates fails closed. Everything else —
             // country/subdivision (identity IS the region) and the geometric
             // digests ellipse/h3/bbox (every scalar folded) — is fully bound.
             Some(st) if crypto::sha256(&semantic_preimage(proof)).as_slice() == st.data_hash.as_slice() => {
                 if proof.query_region.is_some() {
                     // Same rule as v2: an unsigned query region injected onto a v1
-                    // proof must FAIL, not pass unnoticed (#632).
+                    // proof must FAIL, not pass unnoticed.
                     self.add(NAME, Status::Fail,
                         "query_region is present but the proof is bound only under v1 (v1 does not sign a queried region) — the query region was not signed")
                 } else if region_geometry_bound_v1(proof) {
@@ -672,7 +672,7 @@ impl Report {
                     self.add(NAME, Status::Warn,
                         "spoofing_verdict / region identity / level / integrity / commitment bound, \
                          but region GEOMETRY is NOT covered by preimage v1 (city centre/radius, earth \
-                         max_altitude) — not semantically bound (#32); pending octet-semantic-binding-v2")
+                         max_altitude) — not semantically bound; pending octet-semantic-binding-v2")
                 }
             }
             Some(_) => self.add(NAME, Status::Fail,
@@ -681,7 +681,7 @@ impl Report {
     }
 
     /// Validate and expose the bound queried region of a proof that verified under
-    /// **v3** (#632). Called only from the v3 branch, where `self.location_verdict`
+    /// **v3**. Called only from the v3 branch, where `self.location_verdict`
     /// is already set. Adds a `query-region` check and, on success, exposes Q:
     ///
     /// - no bound query (field 18 absent) → `Pass` ("no bound query region"): a
@@ -729,7 +729,7 @@ const SEMANTIC_FIELDS_STAGE: &str = "semanticFields";
 /// (country/subdivision), the geometric digests that fold every scalar
 /// (ellipse/h3/bbox), and a no-region proof. False for `city` and `earth`, whose
 /// `center_lat/lon/radius_meters` / `max_altitude_meters` are absent from the v1
-/// preimage (#32) — so a matching stage must not be reported as fully
+/// preimage — so a matching stage must not be reported as fully
 /// semantically bound. Folds into the `octet-semantic-binding-v2` pass later.
 fn region_geometry_bound_v1(proof: &LocationProof) -> bool {
     use crate::navigate::proof_region::Region::*;
@@ -832,14 +832,14 @@ fn semantic_preimage(proof: &LocationProof) -> Vec<u8> {
 }
 
 /// Domain-separation prefix for the **v2** semantic-field preimage
-/// (octet-semantic-binding-v2, #26/#32): binds the city/earth geometry and the
+/// (octet-semantic-binding-v2,): binds the city/earth geometry and the
 /// inside/outside verdict that v1 omits. Byte-identical across the verifier, both
-/// SDK signers, and the SDK's on-device verifier (tracker #54).
+/// SDK signers, and the SDK's on-device verifier (tracker).
 const SEMANTIC_DOMAIN_V2: &[u8] = b"octet-semantic-binding-v2";
 
 /// v2 region digest: identical to [`semantic_region`] except `city` folds its
 /// geometry (centre + radius) and `earth` folds its altitude cap — the v1 gaps
-/// (#32). All other arms already fold their full identity/geometry under v1.
+///. All other arms already fold their full identity/geometry under v1.
 fn semantic_region_v2(proof: &LocationProof) -> (u32, Vec<u8>) {
     use crate::navigate::proof_region::Region::*;
     match proof.claimed_region.as_ref().and_then(|r| r.region.as_ref()) {
@@ -890,7 +890,7 @@ fn semantic_body_v2(proof: &LocationProof) -> Vec<u8> {
 }
 
 /// v2 preimage: [`semantic_preimage`] under the v2 domain + v2 region digest,
-/// with the raw `location_verdict` enum ordinal appended last (#26).
+/// with the raw `location_verdict` enum ordinal appended last.
 fn semantic_preimage_v2(proof: &LocationProof) -> Vec<u8> {
     let mut m = Vec::with_capacity(SEMANTIC_DOMAIN_V2.len() + 32);
     m.extend_from_slice(SEMANTIC_DOMAIN_V2);
@@ -899,7 +899,7 @@ fn semantic_preimage_v2(proof: &LocationProof) -> Vec<u8> {
 }
 
 /// Domain-separation prefix for the **v3** semantic-field preimage
-/// (octet-semantic-binding-v3, #632): the v2 body unchanged, then the queried
+/// (octet-semantic-binding-v3,): the v2 body unchanged, then the queried
 /// region Q. Binding Q lets a consumer read a signed INSIDE/OUTSIDE for a specific
 /// region (e.g. deciding a disc, which a country-level claim can't derive).
 const SEMANTIC_DOMAIN_V3: &[u8] = b"octet-semantic-binding-v3";
@@ -924,7 +924,7 @@ fn semantic_preimage_v3(proof: &LocationProof) -> Vec<u8> {
 
 /// The canonical **query-region reference** for a region — its `ProofRegion` oneof
 /// tag and the v2 `region_id` bytes — the single implementation a consumer uses to
-/// recognise a proof's bound query (#632). Returns `None` for a **city** region:
+/// recognise a proof's bound query. Returns `None` for a **city** region:
 /// city has no v2 `region_id`, so it is left unbound (`q_type = 0`). This is the
 /// exact digest folded into the v3 preimage's Q suffix, so a consumer that
 /// compares [`Report::query_region`] to `query_region_ref(R)` can never drift from
@@ -949,7 +949,7 @@ pub fn query_region_ref(region: &crate::navigate::ProofRegion) -> Option<QueryRe
 }
 
 /// Does a bound `query_region`'s `region_id` have the shape its `region_type`
-/// implies (#632)? country = 2 bytes (ISO 3166-1 alpha-2), earth = 8 bytes
+/// implies? country = 2 bytes (ISO 3166-1 alpha-2), earth = 8 bytes
 /// (f64-be altitude), ellipse/h3/bbox = a 32-byte digest, subdivision = a
 /// non-empty ISO 3166-2 form (`"US-NY"`). `region_type` outside {1,2,4,5,6,7}
 /// (notably 0 or 3/city, which must never appear as a *present* query) is invalid.
@@ -966,7 +966,7 @@ fn query_region_id_shape_ok(region_type: u32, region_id: &[u8]) -> bool {
 }
 
 /// Map the proto `location_verdict` ordinal to the signed trichotomy. UNSPECIFIED
-/// (0) — or any unknown value — is `None`: "no signed verdict" (#26).
+/// (0) — or any unknown value — is `None`: "no signed verdict".
 fn signed_verdict(v: i32) -> Option<SignedLocationVerdict> {
     match v {
         1 => Some(SignedLocationVerdict::Inside),
@@ -1094,7 +1094,7 @@ pub fn is_known_region_type(s: &str) -> bool {
 /// - `ellipse` uses a local east/north projection about its centre;
 /// - `bbox` is a lat/lon range (altitude not testable from a 2D point).
 ///
-/// Regions with no embedded geometry cannot be evaluated and FAIL (per #40's
+/// Regions with no embedded geometry cannot be evaluated and FAIL (per's
 /// "unevaluable ⇒ not satisfied"): `country`/`subdivision` carry only an ISO code
 /// (use `--expect-region`), and `h3` needs an H3 library the lean build omits.
 fn region_contains(proof: &LocationProof, lat: f64, lon: f64) -> (Status, String) {
@@ -1219,7 +1219,7 @@ fn split_region_expectation(want: &str) -> (Option<&'static str>, &str) {
 /// Evaluate an armed `--expect-region` against the proof's claimed region,
 /// returning the `region-claim` check status and detail.
 ///
-/// SECURITY (issue #30): an armed expectation that cannot be evaluated is **not
+/// SECURITY (issue): an armed expectation that cannot be evaluated is **not
 /// satisfied**. A region with no string identifier (earth / ellipse / h3 / bbox)
 /// or no region at all is a `Fail`, never `NotChecked` — mapping "cannot
 /// evaluate" to `NotChecked` let an armed policy fail open, because
@@ -1654,7 +1654,7 @@ mod tests {
         assert_eq!(semantic_status(&commitment), Status::Fail);
     }
 
-    /// #41: a bare `verify()` with `require_attestation` FAILs closed on ANY
+    ///: a bare `verify()` with `require_attestation` FAILs closed on ANY
     /// build — core records no passing attestation, so `is_attested()` is false.
     /// This is the fail-open the audit flagged: a public options field must not
     /// silently do nothing on an appattest build.
@@ -1684,7 +1684,7 @@ mod tests {
         assert!(verify(&proof, &opts_off).checks.iter().all(|c| c.name != "attestation-required"));
     }
 
-    /// #41: `require_attestation_check` Passes iff a hardware attestation
+    ///: `require_attestation_check` Passes iff a hardware attestation
     /// affirmatively verified (is_attested), Fails when evidence is merely
     /// NOT-CHECKED — platform-agnostic (either app-attest OR attestation-root).
     #[test]
@@ -1699,7 +1699,7 @@ mod tests {
         assert_eq!(require_attestation_check(&bare).status, Status::Fail);
     }
 
-    /// #40: `region_asserted()` is true only when an expectation was supplied AND
+    ///: `region_asserted()` is true only when an expectation was supplied AND
     /// it held — never on the informational `region-claim` Pass emitted when no
     /// expectation was given.
     #[test]
@@ -1736,7 +1736,7 @@ mod tests {
         assert!(type_ok.region_asserted());
     }
 
-    /// #40 item 4: the unarmed baseline — with no `--expect-region` /
+    /// item 4: the unarmed baseline — with no `--expect-region` /
     /// `--expect-region-type` / `--expect-region-contains`, `region-claim` is an
     /// informational PASS (it reports the claimed region), and `region_asserted()`
     /// is false because nothing was asserted. Complements the fail-closed armed
@@ -1772,7 +1772,7 @@ mod tests {
         assert!(!report.region_asserted(), "no expectation supplied ⇒ nothing asserted");
     }
 
-    /// #32: a matching semanticFields stage on a city/earth proof binds
+    ///: a matching semanticFields stage on a city/earth proof binds
     /// identity but NOT geometry under v1, so it reports Warn (not Pass) and
     /// `is_semantically_bound()` is false — while country stays Pass. Warn never
     /// rejects the proof.
@@ -1822,7 +1822,7 @@ mod tests {
         let mut r = Report::new();
         r.add_semantic_binding(&city, false);
         assert!(r.is_valid(), "Warn must not fail the proof");
-        assert!(!r.is_semantically_bound(), "city geometry is not bound under v1 (#32)");
+        assert!(!r.is_semantically_bound(), "city geometry is not bound under v1");
 
         let mut rc = Report::new();
         rc.add_semantic_binding(&country, false);
@@ -1854,7 +1854,7 @@ mod tests {
         assert_eq!(semantic_status(&moved), Status::Warn, "geometry edit is the v1 gap: still Warn, not Fail");
     }
 
-    /// #26/#32 — `octet-semantic-binding-v2` binds the city/earth GEOMETRY and the
+    /// — `octet-semantic-binding-v2` binds the city/earth GEOMETRY and the
     /// inside/outside verdict that v1 drops. A v2 proof is fully bound (city/earth
     /// Pass, not Warn), surfaces the signed verdict, and now detects tampering of
     /// the newly-bound fields.
@@ -1935,7 +1935,7 @@ mod tests {
         assert_eq!(semantic_status(&unspec), Status::Pass, "still v2-bound with an UNSPECIFIED verdict");
     }
 
-    /// #632 semantic-binding v3: binds the QUERIED region Q so a consumer reads a
+    /// semantic-binding v3: binds the QUERIED region Q so a consumer reads a
     /// signed verdict for a specific region. Covers the fallback (v3→v2→v1), the
     /// one-way presence rule, the shape rule, Q exposure, and tamper.
     #[test]
@@ -2057,7 +2057,7 @@ mod tests {
         // Injected Q on a genuine v2 proof: sign the v2 preimage (no Q), then add
         // field 18. It verifies as v2, but the Q was never signed → semantic-binding
         // must FAIL (not PASS-with-Q-dropped), so an unsigned region can't sit next
-        // to a PASS (#632, mirrors the SDK's on-device rule).
+        // to a PASS (, mirrors the SDK's on-device rule).
         let mut v2_injected = LocationProof {
             spoofing_verdict: 1, level: 2, position_commitment: vec![0xC0; 16],
             claimed_region: Some(ProofRegion { region: Some(Region::Country(CountryRegion { iso_code: "AT".into() })) }),
@@ -2082,7 +2082,7 @@ mod tests {
         assert_eq!(rinj.query_region(), None, "no Q exposed for a non-v3 proof");
     }
 
-    /// Cross-repo golden vectors (#632): the v3 preimage this verifier derives must
+    /// Cross-repo golden vectors: the v3 preimage this verifier derives must
     /// be **byte-identical** to the SDK's independent generator (`gen-semantic-v3-
     /// vectors.py`, mirrored on iOS + Android). Pins the preimage hex, its SHA-256,
     /// the `query_region_ref` digest, and the pass/fail + Q-exposure behaviour for
@@ -2193,7 +2193,7 @@ mod tests {
     }
 
     /// v1 proofs stay accepted (cutover tolerance) and expose no signed verdict —
-    /// absent ⇒ absent (#26).
+    /// absent ⇒ absent.
     #[test]
     fn v1_proof_exposes_no_signed_location_verdict() {
         let proof = proof_with_semantic_stage(1, 3, "US", vec![0xC0; 16]);
@@ -2203,9 +2203,9 @@ mod tests {
         assert_eq!(r.location_verdict(), None, "v1 proof carries no signed verdict");
     }
 
-    /// CROSS-REPO GOLDEN PIN (#345/#346): `SHA256(semantic_preimage_v2)` must
+    /// CROSS-REPO GOLDEN PIN: `SHA256(semantic_preimage_v2)` must
     /// equal the hex pinned on both signers + an independent Python
-    /// reference — byte-identity across all four consumers (#54). Canonical inputs:
+    /// reference — byte-identity across all four consumers. Canonical inputs:
     /// commitment = 32×0x11, spoofing_verdict = VERIFIED(1), integrity_status = 3,
     /// city = "Springfield"/39.7817/-89.6501/5000.0, earth max_altitude 10000.0.
 
@@ -2461,7 +2461,7 @@ mod tests {
         assert_eq!(h3_digest(&h), want, "h3 digest must match the SDK cross-platform golden");
     }
 
-    /// SECURITY (issue #30): an armed `--expect-region` must fail closed. For
+    /// SECURITY (issue): an armed `--expect-region` must fail closed. For
     /// every region type with no string identifier — and for a proof with no
     /// region at all — the result is `Fail`, never `NotChecked` (which
     /// `is_valid()` ignores, so the armed policy would fail open). Also covers
@@ -2531,11 +2531,11 @@ mod tests {
         }
     }
 
-    /// #40: `--expect-region-contains` positively asserts a *geometric* region by
+    ///: `--expect-region-contains` positively asserts a *geometric* region by
     /// point containment — the capability `--expect-region` (name match) can't
     /// provide. Geometric types are evaluated with pure math; regions with no
     /// embedded geometry (named country/subdivision, and h3 without an H3 lib)
-    /// FAIL rather than pass, per #40's unevaluable-⇒-not-satisfied rule.
+    /// FAIL rather than pass, per's unevaluable-⇒-not-satisfied rule.
     #[test]
     fn region_contains_evaluates_geometric_regions() {
         use crate::navigate::{
@@ -2595,7 +2595,7 @@ mod tests {
         assert_eq!(region_contains(&no_region, sf_lat, sf_lon).0, Status::Fail);
     }
 
-    /// #40: `--expect-region-type` is a positive type assertion — the
+    ///: `--expect-region-type` is a positive type assertion — the
     /// counterpart to `--expect-region`, which can only *reject* an
     /// identifier-less region. Each variant PASSes its own type (case-
     /// insensitive) and FAILs any other; no region FAILs; unarmed emits nothing.
@@ -2668,7 +2668,7 @@ mod tests {
         assert!(!is_known_region_type("province"));
     }
 
-    /// #40: `--expect-region-contains` end-to-end through `verify()` — it adds a
+    ///: `--expect-region-contains` end-to-end through `verify()` — it adds a
     /// `region-contains` check and drives `region_asserted()`, and is absent when
     /// unarmed.
     #[test]

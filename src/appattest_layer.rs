@@ -74,9 +74,9 @@ fn chk(status: Status, detail: impl Into<String>) -> Check {
 ///
 /// `signing_key_sec1` is the proof's Secure-Enclave signing key
 /// (`certificate_chain[0]`, resolved by the caller) — folded into the live
-/// assertion's `clientDataHash` for the #38 binding. `require_binding` (the
+/// assertion's `clientDataHash` for the binding. `require_binding` (the
 /// `--require-attestation` flag) enforces the bound form: with a signing key it
-/// selects `RequireBound` (a pre-#317 nonce-only assertion is rejected), else
+/// selects `RequireBound` (a pre- nonce-only assertion is rejected), else
 /// `PreferBound` (rollout: accept either). `None` signing key with
 /// `require_binding` fails closed.
 pub fn appattest_check(
@@ -143,17 +143,17 @@ pub fn verify_attested_cached(
     // Clear require_attestation for the core call: this layer appends the real
     // attestation checks below and re-applies the requirement afterward, so core
     // must not also evaluate it (it would FAIL before the attestation checks
-    // exist). See #41.
+    // exist). See.
     let core_opts = VerifyOptions { require_attestation: false, ..*opts };
     let mut report = verify(proof, &core_opts);
     // The key `stage-signatures` verified against (`certificate_chain[0]` on iOS,
     // the attestation leaf on Android). Binds both the Android attestation leaf
-    // (issue #31) and the iOS App Attest assertion (issue #38) to the key that
+    // (issue) and the iOS App Attest assertion (issue) to the key that
     // actually signs each proof.
     let signing_key_sec1 = opts.hardware_pubkey.map(|vk| vk.to_sec1_bytes());
 
     // iOS App Attest against the cache (Android → NOT-CHECKED, no App Attest
-    // fields). #38 folds `signing_key_sec1` into the live assertion's
+    // fields). folds `signing_key_sec1` into the live assertion's
     // clientDataHash; `opts.require_attestation` selects RequireBound (enforce)
     // vs PreferBound (rollout). The returned key (if any) carries the advanced
     // counter for the caller to persist.
@@ -177,7 +177,7 @@ pub fn verify_attested_cached(
     ));
     // Per-proof field-2 device-key signature (both platforms).
     report.checks.push(device_signature_check(proof, signing_key_sec1.as_deref()));
-    // Fail-closed when attestation is required (#41): the attacker can otherwise
+    // Fail-closed when attestation is required: the attacker can otherwise
     // strip evidence so a check reports NOT-CHECKED (which is_valid() ignores).
     // Applied here, after the real attestation checks, using the core helper.
     if opts.require_attestation {
@@ -198,11 +198,11 @@ fn sec1_keys_equal(a: &[u8], b: &[u8]) -> bool {
     }
 }
 
-// NOTE (issue #38): the iOS App Attest key (`DCAppAttestService`) and the
+// NOTE (issue): the iOS App Attest key (`DCAppAttestService`) and the
 // Secure-Enclave field-2 signing key (`certificate_chain[0]`,
 // `opts.hardware_pubkey`) are two DIFFERENT keys by design — App Attest keys
 // cannot sign arbitrary data, so we do NOT require them to be equal (that would
-// reject every genuine iOS proof). Instead the SDK (#317) commits the SE signing
+// reject every genuine iOS proof). Instead the SDK commits the SE signing
 // key into the live assertion's `clientDataHash` (`SHA256(nonce ‖ SE_pubkey)`)
 // and this layer reconstructs that binding via the `AssertionBinding` passed to
 // `appattest_check` (PreferBound during rollout, RequireBound under
@@ -230,8 +230,8 @@ fn appattest_check_da(
         }
     };
 
-    // #38: how the live assertion's clientDataHash is reconstructed. The enrol /
-    // attestation-object path and pre-#317 SDKs are nonce-only; a #317 live proof
+    //: how the live assertion's clientDataHash is reconstructed. The enrol /
+    // attestation-object path and pre- SDKs are nonce-only; a live proof
     // folds the Secure-Enclave signing key in. PreferBound accepts either during
     // rollout; RequireBound (the `--require-attestation` flag) enforces the bound
     // form. Binding required but no signing key resolved ⇒ fail closed, never a
@@ -280,7 +280,7 @@ fn appattest_check_da(
                 None,
             ),
             Some(key) => {
-                // #41 (rec #5): bind `key_id` to the cached key on the assertion
+                // (rec): bind `key_id` to the cached key on the assertion
                 // path too. `verify_attestation` enforces `key_id == SHA256(SPKI)`
                 // on the object path, but the crate's assertion verify does not —
                 // so without this a proof's `key_id` and the key its assertion is
@@ -343,7 +343,7 @@ pub fn appattest_enroll(
         anyhow::bail!("enrolment bundle carries no App Attest attestation object");
     }
     // The enrolment snapshot assertion is always nonce-only (a one-time bootstrap,
-    // not a per-proof replay vector) — no signing-key binding here (#38).
+    // not a per-proof replay vector) — no signing-key binding here.
     let (check, key) = appattest_check_da(da, expect, None, None, false);
     key.ok_or_else(|| anyhow::anyhow!("enrolment bundle failed verification: {}", check.detail))
 }
@@ -517,7 +517,7 @@ pub fn attestation_root_check(
         AttestMode::Proof,
     ) {
         Ok(att) => {
-            // SECURITY (issue #31): bind the attested leaf to the signing key. A
+            // SECURITY (issue): bind the attested leaf to the signing key. A
             // valid Google-rooted chain proves *some* StrongBox/TEE key is genuine
             // hardware; it says nothing about this proof unless that key is the one
             // that signed it. Without this, a genuine chain borrowed from another
@@ -590,7 +590,7 @@ mod tests {
 
     #[test]
     fn require_binding_without_signing_key_fails_closed() {
-        // #38: a proof carrying an App Attest assertion, with binding REQUIRED
+        //: a proof carrying an App Attest assertion, with binding REQUIRED
         // (--require-attestation) but no device signing key resolved, must FAIL —
         // never silently downgrade to the nonce-only form. The require flag is
         // exactly what flips it: the identical proof is NOT-CHECKED without it.
@@ -629,7 +629,7 @@ mod tests {
 
     #[test]
     fn cached_path_binds_key_id_to_the_cached_key() {
-        // #41 (rec #5): on the assertion/cached path, `key_id` must hash-match the
+        // (rec): on the assertion/cached path, `key_id` must hash-match the
         // cached key (SHA-256(SPKI)) — otherwise a (key_id, cached-key) pair that
         // doesn't correspond is rejected before the assertion is even checked.
         use sha2::{Digest, Sha256};
@@ -1012,7 +1012,7 @@ mod tests {
         assert_eq!(got, want);
     }
 
-    // --- SECURITY (issue #31): attestation must bind to the signing key ---
+    // --- SECURITY (issue): attestation must bind to the signing key ---
 
     #[test]
     fn sec1_equal_tolerates_compression_and_fails_closed() {

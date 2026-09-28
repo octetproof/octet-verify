@@ -38,7 +38,7 @@ fn main() -> anyhow::Result<()> {
     let proof = LocationProof::decode(&*std::fs::read(&proof_path)?)?;
 
     // [3] Empty cache: nothing has established the key yet → NOT-CHECKED.
-    // (nonce-only fixtures: no SE signing key, binding not required — #38.)
+    // (nonce-only fixtures: no SE signing key, binding not required —.)
     let (before, _) = appattest_check(&proof, &expect, None, None, false);
     println!("[3] before enrol: {:<11} {}", before.status.tag(), before.detail);
 

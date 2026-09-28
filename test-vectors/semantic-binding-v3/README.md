@@ -2,7 +2,7 @@
 
 Cross-repo source of truth for the **octet-semantic-binding-v3** preimage — the
 binding that carries the *queried* region Q into a proof so a consumer can read a
-signed INSIDE/OUTSIDE for a specific region (#632). Produced byte-identical by an
+signed INSIDE/OUTSIDE for a specific region. Produced byte-identical by an
 independent generator and both SDK platforms; frozen here as the verifier's parity
 fixture. A framing drift on any side fails CI on both repos rather than on-device.
 
