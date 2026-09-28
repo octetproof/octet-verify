@@ -44,7 +44,7 @@ pub mod wire;
 #[cfg(feature = "appattest")]
 pub mod appattest_layer;
 
-/// Online Google Play Integrity check (feature `playintegrity`, #12). Opt-in and
+/// Online Google Play Integrity check (feature `playintegrity`,). Opt-in and
 /// networked: calls the first-party decode endpoint with the verifier's own
 /// service credential, then runs the shared `octet-attest-verify` crate's offline
 /// primitives on the returned verdict. Off by default; the lean build has no PI

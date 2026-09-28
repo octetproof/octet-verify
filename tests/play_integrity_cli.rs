@@ -1,4 +1,4 @@
-//! CLI wiring for the online Play Integrity check (#12, feature `playintegrity`).
+//! CLI wiring for the online Play Integrity check (, feature `playintegrity`).
 //! The decode logic + §6 mapping are unit-tested in `src/integrity.rs`; here we
 //! only confirm the flags reach the check and the no-network paths behave (a
 //! green PASS needs a live decode endpoint, exercised in the dev e2e).

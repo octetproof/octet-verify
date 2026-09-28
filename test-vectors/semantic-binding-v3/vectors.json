@@ -1,0 +1,250 @@
+{
+  "note": "octet-semantic-binding-v3 (queried-region binding) cross-repo golden vectors. Produced byte-identical by an independent generator and both SDK platforms; frozen here as the verifier's parity fixture. See README.md.",
+  "domain": "octet-semantic-binding-v3",
+  "vectors": [
+    {
+      "name": "disc_inside",
+      "input": {
+        "spoofing_verdict": 1,
+        "level": 3,
+        "integrity_status": 2,
+        "commitment_hex": "abababababababababababababababababababababababababababababababab",
+        "claimed_region": {
+          "kind": "ellipse",
+          "lat": 48.2085,
+          "lon": 16.3741,
+          "semi_major_m": 40.0,
+          "semi_minor_m": 25.0,
+          "heading_deg": 30.0
+        },
+        "location_verdict": 1,
+        "query": {
+          "kind": "ellipse",
+          "lat": 48.2082,
+          "lon": 16.3738,
+          "semi_major_m": 2000.0,
+          "semi_minor_m": 2000.0,
+          "heading_deg": 0.0
+        }
+      },
+      "query_region": {
+        "region_type": 4,
+        "region_id_hex": "e8658ae85b73cc156ba63a092ed6865841b7223c933c471580483647e82d1f73"
+      },
+      "preimage_hex": "6f637465742d73656d616e7469632d62696e64696e672d76330000000100000003000000020000000400000020f4c11aefe82d28a91d93df4fba1d5e95808c5e0667b677325b7dc882b414e2b300000020abababababababababababababababababababababababababababababababab000000010000000400000020e8658ae85b73cc156ba63a092ed6865841b7223c933c471580483647e82d1f73",
+      "stage_hash_hex": "8dda05d3fb4d6dc44dc033002a4525b3937a539bc2987d72dfb02b918675fd49"
+    },
+    {
+      "name": "disc_outside",
+      "input": {
+        "spoofing_verdict": 1,
+        "level": 3,
+        "integrity_status": 2,
+        "commitment_hex": "abababababababababababababababababababababababababababababababab",
+        "claimed_region": {
+          "kind": "ellipse",
+          "lat": 47.0707,
+          "lon": 15.4395,
+          "semi_major_m": 40.0,
+          "semi_minor_m": 25.0,
+          "heading_deg": 30.0
+        },
+        "location_verdict": 2,
+        "query": {
+          "kind": "ellipse",
+          "lat": 48.2082,
+          "lon": 16.3738,
+          "semi_major_m": 2000.0,
+          "semi_minor_m": 2000.0,
+          "heading_deg": 0.0
+        }
+      },
+      "query_region": {
+        "region_type": 4,
+        "region_id_hex": "e8658ae85b73cc156ba63a092ed6865841b7223c933c471580483647e82d1f73"
+      },
+      "preimage_hex": "6f637465742d73656d616e7469632d62696e64696e672d76330000000100000003000000020000000400000020a8e8d49ae636cbcdfb6d89d3d5a03415f2dc31a157f6d1c7fe62d1bcbbecfcb700000020abababababababababababababababababababababababababababababababab000000020000000400000020e8658ae85b73cc156ba63a092ed6865841b7223c933c471580483647e82d1f73",
+      "stage_hash_hex": "55bfa1e0d4603eff6207034bd768ec464706f259b1d496e9df49265283d8958d"
+    },
+    {
+      "name": "country_at_claim_gb",
+      "input": {
+        "spoofing_verdict": 1,
+        "level": 2,
+        "integrity_status": 2,
+        "commitment_hex": "abababababababababababababababababababababababababababababababab",
+        "claimed_region": {
+          "kind": "country",
+          "iso": "GB"
+        },
+        "location_verdict": 2,
+        "query": {
+          "kind": "country",
+          "iso": "AT"
+        }
+      },
+      "query_region": {
+        "region_type": 2,
+        "region_id_hex": "4154"
+      },
+      "preimage_hex": "6f637465742d73656d616e7469632d62696e64696e672d76330000000100000002000000020000000200000002474200000020abababababababababababababababababababababababababababababababab0000000200000002000000024154",
+      "stage_hash_hex": "399d40989776013fe38c3daa26a22bbcf68cdca61a0bc356782714b7e9a376bb"
+    },
+    {
+      "name": "subdivision_us_ny",
+      "input": {
+        "spoofing_verdict": 1,
+        "level": 6,
+        "integrity_status": 2,
+        "commitment_hex": "abababababababababababababababababababababababababababababababab",
+        "claimed_region": {
+          "kind": "subdivision",
+          "iso": "US-NY"
+        },
+        "location_verdict": 1,
+        "query": {
+          "kind": "subdivision",
+          "iso": "US-NY"
+        }
+      },
+      "query_region": {
+        "region_type": 7,
+        "region_id_hex": "55532d4e59"
+      },
+      "preimage_hex": "6f637465742d73656d616e7469632d62696e64696e672d7633000000010000000600000002000000070000000555532d4e5900000020abababababababababababababababababababababababababababababababab00000001000000070000000555532d4e59",
+      "stage_hash_hex": "4085b2ed35c30faeaff5723912ae631f4c6db3f000fd0c8108bb5e7720af130d"
+    },
+    {
+      "name": "earth_default",
+      "input": {
+        "spoofing_verdict": 1,
+        "level": 2,
+        "integrity_status": 2,
+        "commitment_hex": "abababababababababababababababababababababababababababababababab",
+        "claimed_region": {
+          "kind": "country",
+          "iso": "AT"
+        },
+        "location_verdict": 1,
+        "query": {
+          "kind": "earth",
+          "max_altitude_m": 10000.0
+        }
+      },
+      "query_region": {
+        "region_type": 1,
+        "region_id_hex": "40c3880000000000"
+      },
+      "preimage_hex": "6f637465742d73656d616e7469632d62696e64696e672d76330000000100000002000000020000000200000002415400000020abababababababababababababababababababababababababababababababab00000001000000010000000840c3880000000000",
+      "stage_hash_hex": "0421f20108086c68c65a2eebd96770d50838904ffb58e9e34d6ffdc0d0050a2f"
+    },
+    {
+      "name": "no_query",
+      "input": {
+        "spoofing_verdict": 1,
+        "level": 2,
+        "integrity_status": 2,
+        "commitment_hex": "abababababababababababababababababababababababababababababababab",
+        "claimed_region": {
+          "kind": "country",
+          "iso": "AT"
+        },
+        "location_verdict": 0,
+        "query": null
+      },
+      "query_region": null,
+      "preimage_hex": "6f637465742d73656d616e7469632d62696e64696e672d76330000000100000002000000020000000200000002415400000020abababababababababababababababababababababababababababababababab000000000000000000000000",
+      "stage_hash_hex": "79b028549fb1c7925bf7a7a52aa0440f1c51c27c820c85bf0e8cff7d8715028d"
+    },
+    {
+      "name": "disc_fractional_m",
+      "input": {
+        "spoofing_verdict": 1,
+        "level": 3,
+        "integrity_status": 2,
+        "commitment_hex": "abababababababababababababababababababababababababababababababab",
+        "claimed_region": {
+          "kind": "ellipse",
+          "lat": 48.2085,
+          "lon": 16.3741,
+          "semi_major_m": 40.0,
+          "semi_minor_m": 25.0,
+          "heading_deg": 30.0
+        },
+        "location_verdict": 1,
+        "query": {
+          "kind": "ellipse",
+          "lat": 48.2082,
+          "lon": 16.3738,
+          "semi_major_m": 1500.5,
+          "semi_minor_m": 1500.5,
+          "heading_deg": 0.0
+        }
+      },
+      "query_region": {
+        "region_type": 4,
+        "region_id_hex": "225ce79ba4c23033f626c7898572cbbb0748c6e30a39bf7174c0c63e51919b6e"
+      },
+      "preimage_hex": "6f637465742d73656d616e7469632d62696e64696e672d76330000000100000003000000020000000400000020f4c11aefe82d28a91d93df4fba1d5e95808c5e0667b677325b7dc882b414e2b300000020abababababababababababababababababababababababababababababababab000000010000000400000020225ce79ba4c23033f626c7898572cbbb0748c6e30a39bf7174c0c63e51919b6e",
+      "stage_hash_hex": "c3b4d4af678a1c13343294bf8984158d54ae8a50b59983b55a8650b3b29b0f8c"
+    },
+    {
+      "name": "disc_fractional_km",
+      "input": {
+        "spoofing_verdict": 1,
+        "level": 3,
+        "integrity_status": 2,
+        "commitment_hex": "abababababababababababababababababababababababababababababababab",
+        "claimed_region": {
+          "kind": "ellipse",
+          "lat": 48.2085,
+          "lon": 16.3741,
+          "semi_major_m": 40.0,
+          "semi_minor_m": 25.0,
+          "heading_deg": 30.0
+        },
+        "location_verdict": 1,
+        "query": {
+          "kind": "ellipse",
+          "lat": 48.2082,
+          "lon": 16.3738,
+          "semi_major_m": 1500.5,
+          "semi_minor_m": 1500.5,
+          "heading_deg": 0.0
+        },
+        "query_radius_km": 1.5005
+      },
+      "query_region": {
+        "region_type": 4,
+        "region_id_hex": "225ce79ba4c23033f626c7898572cbbb0748c6e30a39bf7174c0c63e51919b6e"
+      },
+      "preimage_hex": "6f637465742d73656d616e7469632d62696e64696e672d76330000000100000003000000020000000400000020f4c11aefe82d28a91d93df4fba1d5e95808c5e0667b677325b7dc882b414e2b300000020abababababababababababababababababababababababababababababababab000000010000000400000020225ce79ba4c23033f626c7898572cbbb0748c6e30a39bf7174c0c63e51919b6e",
+      "stage_hash_hex": "c3b4d4af678a1c13343294bf8984158d54ae8a50b59983b55a8650b3b29b0f8c"
+    },
+    {
+      "name": "tamper_query_region",
+      "input": {
+        "spoofing_verdict": 1,
+        "level": 2,
+        "integrity_status": 2,
+        "commitment_hex": "abababababababababababababababababababababababababababababababab",
+        "claimed_region": {
+          "kind": "country",
+          "iso": "GB"
+        },
+        "location_verdict": 2,
+        "query": {
+          "kind": "country",
+          "iso": "DE"
+        }
+      },
+      "query_region": {
+        "region_type": 2,
+        "region_id_hex": "4445"
+      },
+      "preimage_hex": "6f637465742d73656d616e7469632d62696e64696e672d76330000000100000002000000020000000200000002474200000020abababababababababababababababababababababababababababababababab0000000200000002000000024445",
+      "stage_hash_hex": "399d40989776013fe38c3daa26a22bbcf68cdca61a0bc356782714b7e9a376bb",
+      "expect": "FAIL: the signed stage hash is country_at_claim_gb's; field 18 was edited"
+    }
+  ]
+}

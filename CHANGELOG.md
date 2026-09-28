@@ -4,7 +4,41 @@ All notable changes to `octet-verify` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [1.5.0] - 2026-09-28
+
+Additive and back-compat: the public API a 1.3/1.4 consumer uses (`verify`,
+`VerifyOptions`, `Report::location_verdict`, the `appattest_*` functions) is
+unchanged, and a genuine pre-1.5.0 proof verifies exactly as before — v3 is tried
+first, then falls back to v2/v1. (The App Attest `RequireBound` and
+`require_schema_v2` default-posture flips are **not** in this release; they are
+deferred to a later version, gated on the client fleet aging past the pre-2.0.0
+SDK, so that re-verifying genuine older/stored proofs does not start failing.)
+
+### Added
+- **Semantic-binding v3 — the queried region is bound into the proof.**
+  A new `LocationProof.query_region` (field 18, `RegionRef { region_type, region_id }`)
+  carries a *reference* to the region a proof's `location_verdict` answers about,
+  signed under a new `octet-semantic-binding-v3` preimage (the v2 body verbatim,
+  then `q_type ‖ len(q_id) ‖ q_id`). This lets a consumer read a signed
+  INSIDE/OUTSIDE for a *specific* region — the only way to decide a disc, which a
+  country-level claim can't derive.
+  - `verify()` tries v3 → v2 → v1. On a v3 match it exposes the bound region via
+    **`Report::query_region()`** (only when v3 verified) alongside
+    `location_verdict()`, and adds a `query-region` check enforcing: a present
+    query must carry an answer (one-way presence rule — a verdict without a bound
+    query is allowed, e.g. a city query); a present `region_type` must be one of
+    country/subdivision/earth/ellipse/h3/bbox with a well-formed `region_id`
+    (a present `q_type` of 0 or city → FAIL). Stripping or editing field 18 breaks
+    the v3 hash and cannot fall back to v2/v1 (different domain) → FAIL, never a
+    silent downgrade.
+  - **`query_region_ref(region)`** — the single canonical reference digest a
+    consumer computes for a region R it cares about; on equality with a proof's
+    exposed query region, the signed verdict answers `within(R)` directly. A disc
+    is `ellipse(lat, lon, r, r, heading = +0.0)`; a city has no reference (unbound).
+  - CLI: **`--expect-query-region <spec>`** (`earth` / `country:AT` /
+    `subdivision:US-NY` / `disc:<lat>,<lon>,<r_m>` /
+    `ellipse:<lat>,<lon>,<smaj_m>,<smin_m>,<heading>`) asserts the proof's bound
+    query region equals that region; JSON output gains a `query_region` field.
 
 ## [1.4.0] - 2026-09-18
 
@@ -14,7 +48,7 @@ Tier-2 (gateway-mode) un-attested proof support. Additive and back-compat: a
 genuine pre-1.4.0 proof verifies unchanged; the new checks are opt-in.
 
 ### Added
-- **Online Google Play Integrity check (`--features playintegrity`, #12).** Opt-in
+- **Online Google Play Integrity check (`--features playintegrity`,).** Opt-in
   and networked: with `--integrity-decode-url`, `--integrity-decode-token` (the
   verifier's OWN decode-scoped `octet_svc_` credential — never a device bearer),
   and `--integrity-package`, the verifier POSTs the proof's PI token to the
@@ -39,7 +73,7 @@ genuine pre-1.4.0 proof verifies unchanged; the new checks are opt-in.
   from the CLI by supplying the out-of-band App Attest enrolment bundle (proto or
   JSON, auto-detected), instead of reporting `NOT-CHECKED`. Previously only the
   embedded library could recover the key this way. Requires `--app-attest-config`
-  and a `--features appattest` build. (#67)
+  and a `--features appattest` build.
 
 ## [1.3.0] - 2026-09-02
 

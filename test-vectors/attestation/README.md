@@ -24,9 +24,9 @@ the way wall-clock verification of an expiring leaf would.
 ## `ios-appattest.bin`
 
 A `LocationProof` captured from the sample app (`com.octetproof.sample`, team
-`6ZH5F97PWU`, env `development`) on an iPhone 11 (`#317` SDK build). It is a
+`6ZH5F97PWU`, env `development`) on an iPhone 11 (`` SDK build). It is a
 **first-of-key** proof, so it carries the Apple App Attest **attestation object**
-(the object-bearing green path), and its live per-proof assertion is the **#38
+(the object-bearing green path), and its live per-proof assertion is the **
 bound form**: `clientDataHash = SHA256(nonce ‖ SE_signing_key)`, committing the
 Secure-Enclave key in `certificate_chain[0]` that signs the proof.
 
@@ -34,7 +34,7 @@ Exercised by `tests/ios_app_attest.rs`: `app-attest PASS` (object → Apple App
 Attest root → recovered key → bound assertion verified under **RequireBound**),
 `device-attestation-sig PASS`, `attestation-root NOT-CHECKED` (iOS carries a raw
 Secure-Enclave key, not an X.509 chain — hardware-root assurance is `app-attest`).
-This is the iOS half of #31 / #38: before this fixture the object-bearing green
+This is the iOS half of /: before this fixture the object-bearing green
 path was verified from source only.
 
 **Centre coarsened.** The `claimed_region.city` centre is rounded to one decimal

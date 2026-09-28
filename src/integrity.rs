@@ -1,4 +1,4 @@
-//! Online Google Play Integrity check (feature `playintegrity`, #12).
+//! Online Google Play Integrity check (feature `playintegrity`,).
 //!
 //! **Opt-in, online.** Unlike the offline attestation layer, a Play Integrity
 //! token can only be turned into a verdict by Google (keyed to the app's Cloud
