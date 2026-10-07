@@ -1,0 +1,65 @@
+{
+  "description": "Real dev v=3 verdict from octet-browser main f1877b7, built under the rules: no clientNet; clientNetMatch from a loopback clientIp (127.0.0.1) sent with POST /v1/challenge. Test pair on octet-dev: edge -> geo, S1 sealed, S2 edge-signed, S0 challenge (carries the opaque cn tag), EDGE_CHAIN_LOG=1. EdDSA dev key; ES256 follows with the prod KMS switch. Safe to publish.",
+  "generatedAt": "2026-10-05T09:43:03.000Z",
+  "nowForChecks": 1791193483,
+  "lid": "27196c57-1a2b-42f9-819e-5327ae7a15d0",
+  "sessionRef": "dev-vector-1791193381",
+  "token": "eyJhbGciOiJFZERTQSIsInR5cCI6Im9jdGV0LWJyb3dzZXItdmVyZGljdCtqd3Q7dj0zIiwia2lkIjoib2N0ZXQtYnJvd3Nlci12ZXJkaWN0LWRldi0yMDI2LTA5In0.eyJpc3MiOiJvY3RldC1icm93c2VyIiwiaWF0IjoxNzkxMTkzMzgzLCJleHAiOjE3OTExOTM2ODMsInNlc3Npb25SZWYiOiJkZXYtdmVjdG9yLTE3OTExOTMzODEiLCJjb3VudHJ5IjoiVVMiLCJjb25maWRlbmNlIjoxLCJhbGFybSI6Im5vbmUiLCJjbGllbnROZXRNYXRjaCI6dHJ1ZSwiZGV2aWNlS2V5IjoiZGtkZXZfMjJrT1ZtR3hRaFRKWU1KZlR5ZDlUa21PcmZYT3FleTVONThRRW5jMVQtbyIsImNoYWluIjp7InYiOjEsInMwIjoiNkJ1dGFSVFo1bEtFaW1LbEFpVFNpeTFqUXp6a2plYTdOZ2xqWll5eUNsQSIsInJlcG9ydHMiOlt7InMxIjp7ImJ1bmRsZSI6IjhIdGdnUzc1YVl4MXl3dXZUaXllVlYxa3hYY0ROdUIyczZ4cVJ1MmdhcVUiLCJ0IjoxNzkxMTkzMzgyMzU5LCJzaWciOiI3R0FDSTVqeGVMeHlORURHRV9faXhHTVYyNVU0elViWUpPU3JGZ3BvWTFRIn0sImVudiI6IlBsbVYtUDdma20xVEVTbm9OcVBUcE9mVl84QzNLMnR1RzhRWEVHcE92VU0iLCJzMiI6eyJraWQiOiJlZGdlLWRldiIsImgiOiJPSURLY0pHOW12Yjl6eEJNZzZ2OHktT1pUc0ZoaFVpTm02eVhGUlRTNF9BIn19XX0sImNoYWluX3Jvb3QiOiJxT2VBRUF6cEw1dXJCVzlkTFl5UDNORGIwWWNLekpHd3BsU0JSNVpyTmdFIiwibW9kZWxWZXJzaW9uIjoiMS40LjAifQ.zskYNDdvGIUoHXQcifPSFLmd5dRpFKo7zJxZuJk1WBg8I4F3ej_C60S9ZwixPdNRiKnnlc3hOGdipfthiDZ6CQ",
+  "verdictResponse": {
+    "country": "US",
+    "confidence": 1,
+    "alarm": "none",
+    "deviceKey": "dkdev_22kOVmGxQhTJYMJfTyd9TkmOrfXOqey5N58QEnc1T-o"
+  },
+  "verdictJwks": {
+    "keys": [
+      {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "use": "sig",
+        "alg": "EdDSA",
+        "kid": "octet-browser-verdict-dev-2026-09",
+        "x": "rg-T30E1w2EcvMRfafPTYTXX3xaHKsUxII9m3tYnPo8",
+        "octet_purpose": "browser-verdict"
+      }
+    ]
+  },
+  "verdictJwksArchive": {
+    "keys": [
+      {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "use": "sig",
+        "alg": "EdDSA",
+        "kid": "octet-browser-verdict-dev-2026-09",
+        "x": "rg-T30E1w2EcvMRfafPTYTXX3xaHKsUxII9m3tYnPo8",
+        "octet_purpose": "browser-verdict"
+      }
+    ]
+  },
+  "challenge": "v4.public.eyJ2IjoxLCJ0eXAiOiJvY3RldC1icm93c2VyLWNoYWxsZW5nZSIsIm5vbmNlIjoidHRTbEpJOXpDVk02bjh2b2dhanl5ZyIsImxpZCI6IjI3MTk2YzU3LTFhMmItNDJmOS04MTllLTUzMjdhZTdhMTVkMCIsInNlc3Npb25SZWYiOiJkZXYtdmVjdG9yLTE3OTExOTMzODEiLCJpYXQiOjE3OTExOTMzODIsImV4cCI6MTc5MTE5Mzk4MiwiY24iOiJlS3JlRExKNmU2TTNnS1J6elkyODhtbU55R0xOMnRGemw2Vm5WZDFjT2hNIn3o7izv9OZ9oDLcKCuGU9UWXm55ElQz6Hl9RsS7r4zJXid5P8VolbLKiDg018RxW_6Rp7H5S0ZCJW1I41wCiRoF.eyJraWQiOiJjaGFsbGVuZ2UtZGV2LTEifQ",
+  "challengeJwks": {
+    "keys": [
+      {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "use": "sig",
+        "alg": "EdDSA",
+        "kid": "challenge-dev-1",
+        "x": "4Zdt3cN1qbO26RsTpEIvKsX7A1TV_N3mvI_daXs_B0U",
+        "octet_purpose": "browser-challenge"
+      }
+    ]
+  },
+  "edgeLogLine": "2026/10/05 09:43:02 {\"octetChain\":{\"sid\":\"s2-probe-1791193382347-95bmmqaj\",\"env\":\"PlmV-P7fkm1TESnoNqPTpOfV_8C3K2tuG8QXEGpOvUM\",\"s2\":\"OIDKcJG9mvb9zxBMg6v8y-OZTsFhhUiNm6yXFRTS4_A\",\"kid\":\"edge-dev\",\"ts\":\"2026-10-05T09:43:02.467982183Z\"}}",
+  "edgeLogJson": "{\"octetChain\":{\"sid\":\"s2-probe-1791193382347-95bmmqaj\",\"env\":\"PlmV-P7fkm1TESnoNqPTpOfV_8C3K2tuG8QXEGpOvUM\",\"s2\":\"OIDKcJG9mvb9zxBMg6v8y-OZTsFhhUiNm6yXFRTS4_A\",\"kid\":\"edge-dev\",\"ts\":\"2026-10-05T09:43:02.467982183Z\"}}",
+  "expect": {
+    "alg": "EdDSA",
+    "typ": "octet-browser-verdict+jwt;v=3",
+    "chain_root": "qOeAEAzpL5urBW9dLYyP3NDb0YcKzJGwplSBR5ZrNgE",
+    "reports": 1,
+    "rcpt": false,
+    "clientNetMatch": true,
+    "clientNet": "absent"
+  }
+}

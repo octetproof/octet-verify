@@ -32,8 +32,10 @@ Secure-Enclave key in `certificate_chain[0]` that signs the proof.
 
 Exercised by `tests/ios_app_attest.rs`: `app-attest PASS` (object → Apple App
 Attest root → recovered key → bound assertion verified under **RequireBound**),
-`device-attestation-sig PASS`, `attestation-root NOT-CHECKED` (iOS carries a raw
-Secure-Enclave key, not an X.509 chain — hardware-root assurance is `app-attest`).
+`app-attest-validity NOT-CHECKED` (the chain's dates are not checked; its leaf is
+valid 2026-08-23 to 2026-08-26), `device-attestation-sig PASS`,
+`attestation-root NOT-CHECKED` (iOS carries a raw Secure-Enclave key, not an X.509
+chain — hardware-root assurance is `app-attest`).
 This is the iOS half of /: before this fixture the object-bearing green
 path was verified from source only.
 

@@ -1,0 +1,289 @@
+{
+  "note": "Golden vectors for --expect-region-contains against an h3_polygon_set region. Generated with the reference H3 C library v4.5.0 (Python binding). Semantics: the region is the filled union of the cells; a point is inside iff some cell C has latLngToCell(point, res(C)) == C at C's own resolution. Malformed sets (empty, or any index that is not a valid H3 v4 cell) FAIL closed. cell_ids are hex strings (64-bit; exceeds JS 2^53). point is [lat, lon] in degrees; point_f64_bits_hex is the exact IEEE-754 bit pattern of each (use it, so a boundary point survives parsing bit-exactly). Never edit an expect value to make a test pass: regenerate from the reference library.",
+  "generator": "h3 4.5.0",
+  "vectors": [
+    {
+      "name": "in_cell_res10",
+      "note": "point inside the single listed res-10 cell",
+      "cell_ids_hex": [
+        "8a283082800ffff"
+      ],
+      "point": [
+        37.7749,
+        -122.4194
+      ],
+      "point_f64_bits_hex": [
+        "4042e32fec56d5d0",
+        "c05e9ad77318fc50"
+      ],
+      "expect": "PASS"
+    },
+    {
+      "name": "out_of_cell_res10",
+      "note": "point far outside the single listed cell",
+      "cell_ids_hex": [
+        "8a283082800ffff"
+      ],
+      "point": [
+        51.5074,
+        -0.1278
+      ],
+      "point_f64_bits_hex": [
+        "4049c0f27bb2fec5",
+        "bfc05bc01a36e2eb"
+      ],
+      "expect": "FAIL"
+    },
+    {
+      "name": "adjacent_cell_not_listed",
+      "note": "point in a neighbour of the listed cell",
+      "cell_ids_hex": [
+        "8a283082800ffff"
+      ],
+      "point": [
+        37.77317293400644,
+        -122.41975599625073
+      ],
+      "point_f64_bits_hex": [
+        "4042e2f754a8dae2",
+        "c05e9add48410c98"
+      ],
+      "expect": "FAIL"
+    },
+    {
+      "name": "mixed_res_coarse_hit",
+      "note": "res-5 cell covers SF in a mixed {res5, res10} set",
+      "cell_ids_hex": [
+        "85283083fffffff",
+        "8a195da49a2ffff"
+      ],
+      "point": [
+        37.7749,
+        -122.4194
+      ],
+      "point_f64_bits_hex": [
+        "4042e32fec56d5d0",
+        "c05e9ad77318fc50"
+      ],
+      "expect": "PASS"
+    },
+    {
+      "name": "mixed_res_fine_hit",
+      "note": "res-10 cell covers London in the same mixed set",
+      "cell_ids_hex": [
+        "85283083fffffff",
+        "8a195da49a2ffff"
+      ],
+      "point": [
+        51.5074,
+        -0.1278
+      ],
+      "point_f64_bits_hex": [
+        "4049c0f27bb2fec5",
+        "bfc05bc01a36e2eb"
+      ],
+      "expect": "PASS"
+    },
+    {
+      "name": "mixed_res_miss",
+      "note": "Paris is in neither cell of the mixed set",
+      "cell_ids_hex": [
+        "85283083fffffff",
+        "8a195da49a2ffff"
+      ],
+      "point": [
+        48.8566,
+        2.3522
+      ],
+      "point_f64_bits_hex": [
+        "40486da5119ce076",
+        "4002d14e3bcd35a8"
+      ],
+      "expect": "FAIL"
+    },
+    {
+      "name": "compacted_parent_covers_unlisted_child",
+      "note": "res-9 parent (compacted form of its 7 children) contains a point in an unlisted res-10 child",
+      "cell_ids_hex": [
+        "89283082803ffff",
+        "8a195da49a2ffff"
+      ],
+      "point": [
+        37.773515097238146,
+        -122.41827103692466
+      ],
+      "point_f64_bits_hex": [
+        "4042e3028aeeccd0",
+        "c05e9ac4f3e21d26"
+      ],
+      "expect": "PASS"
+    },
+    {
+      "name": "compacted_vs_uncompacted_agree",
+      "note": "the uncompacted 7 children give the same answer for that point",
+      "cell_ids_hex": [
+        "8a2830828007fff",
+        "8a283082800ffff",
+        "8a2830828017fff",
+        "8a283082801ffff",
+        "8a2830828027fff",
+        "8a283082802ffff",
+        "8a2830828037fff"
+      ],
+      "point": [
+        37.773515097238146,
+        -122.41827103692466
+      ],
+      "point_f64_bits_hex": [
+        "4042e3028aeeccd0",
+        "c05e9ac4f3e21d26"
+      ],
+      "expect": "PASS"
+    },
+    {
+      "name": "pentagon_centre",
+      "note": "centre of a res-4 pentagon cell",
+      "cell_ids_hex": [
+        "8408001ffffffff"
+      ],
+      "point": [
+        64.70000012793487,
+        10.536199075467673
+      ],
+      "point_f64_bits_hex": [
+        "40502ccccd562b45",
+        "40251288af6a8ee5"
+      ],
+      "expect": "PASS"
+    },
+    {
+      "name": "pentagon_neighbour",
+      "note": "centre of a neighbour of the pentagon (not listed)",
+      "cell_ids_hex": [
+        "8408001ffffffff"
+      ],
+      "point": [
+        64.9695795456528,
+        10.739493170562216
+      ],
+      "point_f64_bits_hex": [
+        "40503e0d975ddcc2",
+        "40257a9ed94e5c32"
+      ],
+      "expect": "FAIL"
+    },
+    {
+      "name": "boundary_vertex_owner",
+      "note": "shared vertex of 3 cells; listing its owning cell contains it",
+      "cell_ids_hex": [
+        "8a283082802ffff"
+      ],
+      "point": [
+        37.77367915126595,
+        -122.41911694009444
+      ],
+      "point_f64_bits_hex": [
+        "4042e307eb1e2464",
+        "c05e9ad2cfdbb9ef"
+      ],
+      "expect": "PASS"
+    },
+    {
+      "name": "boundary_vertex_non_owners",
+      "note": "the same vertex with only the 2 non-owning sharers listed",
+      "cell_ids_hex": [
+        "8a283082800ffff",
+        "8a2830828007fff"
+      ],
+      "point": [
+        37.77367915126595,
+        -122.41911694009444
+      ],
+      "point_f64_bits_hex": [
+        "4042e307eb1e2464",
+        "c05e9ad2cfdbb9ef"
+      ],
+      "expect": "FAIL"
+    },
+    {
+      "name": "duplicates_harmless",
+      "note": "a repeated cell id behaves set-wise",
+      "cell_ids_hex": [
+        "8a283082800ffff",
+        "8a283082800ffff"
+      ],
+      "point": [
+        37.7749,
+        -122.4194
+      ],
+      "point_f64_bits_hex": [
+        "4042e32fec56d5d0",
+        "c05e9ad77318fc50"
+      ],
+      "expect": "PASS"
+    },
+    {
+      "name": "empty_set",
+      "note": "no cells: malformed region",
+      "cell_ids_hex": [],
+      "point": [
+        37.7749,
+        -122.4194
+      ],
+      "point_f64_bits_hex": [
+        "4042e32fec56d5d0",
+        "c05e9ad77318fc50"
+      ],
+      "expect": "FAIL"
+    },
+    {
+      "name": "invalid_zero_index",
+      "note": "0 is not a valid H3 cell",
+      "cell_ids_hex": [
+        "0"
+      ],
+      "point": [
+        37.7749,
+        -122.4194
+      ],
+      "point_f64_bits_hex": [
+        "4042e32fec56d5d0",
+        "c05e9ad77318fc50"
+      ],
+      "expect": "FAIL"
+    },
+    {
+      "name": "edge_index_not_a_cell",
+      "note": "a directed-edge index (mode 2) is not a cell",
+      "cell_ids_hex": [
+        "14a283082800ffff"
+      ],
+      "point": [
+        37.7749,
+        -122.4194
+      ],
+      "point_f64_bits_hex": [
+        "4042e32fec56d5d0",
+        "c05e9ad77318fc50"
+      ],
+      "expect": "FAIL"
+    },
+    {
+      "name": "invalid_poisons_valid_hit",
+      "note": "fail closed: one invalid index FAILs the set even though a valid cell contains the point",
+      "cell_ids_hex": [
+        "8a283082800ffff",
+        "0"
+      ],
+      "point": [
+        37.7749,
+        -122.4194
+      ],
+      "point_f64_bits_hex": [
+        "4042e32fec56d5d0",
+        "c05e9ad77318fc50"
+      ],
+      "expect": "FAIL"
+    }
+  ]
+}

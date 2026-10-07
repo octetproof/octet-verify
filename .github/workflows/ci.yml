@@ -103,3 +103,15 @@ jobs:
 
       - name: Test (--features net,appattest)
         run: cargo test --all-targets --locked --features net,appattest
+
+      - name: Test (--features h3)
+        # The `h3` feature links h3o for h3_polygon_set containment. This runs
+        # tests/h3_containment.rs against the reference-library golden vectors;
+        # the default-feature run above covers the lean fail-closed path.
+        run: cargo test --all-targets --locked --features h3
+
+      - name: Test (--features browser,net)
+        # The browser verdict profile and its golden vector
+        # (tests/browser_verdict.rs). Network is only used by the CLI's
+        # JWKS-by-URL path, which the tests don't exercise.
+        run: cargo test --all-targets --locked --features browser,net

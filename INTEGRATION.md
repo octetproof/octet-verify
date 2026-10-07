@@ -193,7 +193,9 @@ octet-verify <id> ... --app-attest-config app-attest.toml
 
 Under the feature both `attestation-root` and `device-attestation-sig` become
 real `PASS`/`FAIL`; without it they stay `NOT-CHECKED` — never silently treated
-as a pass. `--skip-hardware-attestation` scopes an `appattest` build back to core
+as a pass. An `app-attest` PASS verifies the App Attest chain by signature only,
+and is followed by an `app-attest-validity` NOT-CHECKED line: the chain's
+validity dates are not checked (VERIFICATION-SPEC.md §4.1). `--skip-hardware-attestation` scopes an `appattest` build back to core
 verification (handy for a legacy or synthetic proof that carries no real chain).
 Online revocation (Google's status list) is **not** consulted even under the
 feature — see [`VERIFICATION-SPEC.md`](VERIFICATION-SPEC.md) §5.

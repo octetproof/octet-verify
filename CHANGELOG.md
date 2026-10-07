@@ -4,6 +4,114 @@ All notable changes to `octet-verify` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [1.6.0] - 2026-10-06
+
+### Added
+- **Historical verification: `--at` and `--window`.** `freshness` and
+  `attestation-root` can now be judged at a validation instant or over a
+  validation window instead of the current time. Certificates in an Android
+  key-attestation chain can be valid for only days, so an archived proof judged
+  today failed `attestation-root` and `freshness` although it was authentic when
+  made. With `--window <from>/<to>`, `freshness` PASSes when the signed
+  `proofAssembly` time lies inside the window (60 s skew), and `attestation-root`
+  PASSes only when the chain is valid at both bounds. Times are RFC 3339 or Unix
+  milliseconds. Both flags also apply in backend fetch mode. Library:
+  `VerifyOptions::validation_window` with `ValidationWindow`, and
+  `appattest_layer::{attestation_root_check_for, attestation_root_check_window}`.
+  Spec: VERIFICATION-SPEC.md §4.1. Covered by `tests/validation_window.rs` on a
+  real Pixel 9 proof: VALID over a window around its signing time, INVALID at the
+  current time.
+- **`app-attest-validity` NOT-CHECKED line.** The App Attest chain is verified to
+  Apple's root by signature only: its validity dates are not checked in any mode.
+  Its leaf certificate is valid for about 3 days from attestation, which usually
+  precedes the proof. Every `app-attest` PASS is now followed by an
+  `app-attest-validity` NOT-CHECKED line that says so, so a historical iOS
+  verdict is never read as a date check. No verdict changes: `is_valid()` and
+  `--require-attestation` ignore NOT-CHECKED lines. Library:
+  `appattest_layer::APP_ATTEST_VALIDITY`. Spec: VERIFICATION-SPEC.md §4.1 and §5.
+  Covered by `tests/ios_app_attest.rs` (default, required-attestation and window
+  modes) and `tests/validation_window.rs` (absent on Android).
+- **Browser verdict profile: `octet-verify browser-verdict`** (new `browser`
+  feature; `net` adds JWKS-by-URL). Verifies the octet browser product's signed
+  verdict token (compact JWS, `typ octet-browser-verdict+jwt;v=1|2|3`, EdDSA or
+  ES256 with the alg bound to the key) against the live or archive verdict JWKS,
+  including the archive signing window and revocation. For `v=3` it recomputes
+  `chain_root`. With the partner's challenge token it checks the session link
+  (s0, PASETO v4.public signature, sessionRef, licence, time window); with an
+  edge log line, the edge link. The S1 device signature and anchor receipts are
+  reported as ATTESTED (by octet), never VERIFIED. Library:
+  `browser::verify_browser_verdict`. Spec: VERIFICATION-SPEC.md §9. Golden
+  vectors shared with octet-browser in `test-vectors/browser-verdict-chain/`:
+  a deterministic one, a real dev-stack verdict, and a root manifest. The signed `clientNetMatch` is reported as `client_net_match` (`false` is a
+  result, not a failure). `--edge-log` takes the edge
+  log line raw, log prefix included, as partners copy it from their logs.
+  - **Root manifest** (`--roots`, `--manifest`, `--manifest-seq-store`,
+    `--min-manifest-seq`): verifies octet's offline-root-signed manifest
+    (pinned roots only, strict 3-field header, ES256 `r‖s`, rollback via the
+    highest `seq` seen, expiry: WARN within a 14-day grace, FAILED after), then
+    requires the verdict and challenge keys to be listed with the same key
+    material, and takes `key-validity` from the manifest entry. No production
+    roots are pinned yet, so without `--roots` it reads NOT-CHECKED.
+- **Multi-identity Android app binding.** A licence that ships several apps, or
+  registers both a release and a debug signing cert, can now accept a proof bound
+  to any one of a set of app identities. Each identity matches whole: its package
+  AND its own cert. A set `{(A, cert1), (B, cert2)}` rejects a proof from
+  `(A, cert2)`; it never matches a cross-product of packages and certs.
+  - `--android-app-identity` is repeatable.
+  - `attestation_root_check_multi(proof, now, &[ExpectedAppIdentity], key)`.
+    `attestation_root_check` is unchanged and is the set-of-one case.
+  - `Expectation::or_android(pkg, cert)` adds an identity to the set;
+    `Expectation::android_identities()` returns it. `verify_attested_cached`
+    binds to the whole set.
+  - Golden vectors over a real Pixel 9 StrongBox chain pin the mixed-cert
+    cross-product reject, the match-one accept, and both single-swap rejects.
+- **Enforce the signed spoofing-verdict tier.** A disc answer can be signed
+  VERIFIED or PLAUSIBLE, and both verify, so a consumer that checks only `valid`
+  accepts a PLAUSIBLE disc as if it were VERIFIED.
+  - `--require-verdict verified|plausible` / `VerifyOptions::require_verdict`
+    (`RequiredVerdict::{Verified, Plausible}`) adds a `verdict-required` check.
+    It FAILs when the signed verdict is below the tier, and fails closed when
+    `semantic-binding` did not pass. Off by default.
+  - `Report::spoofing_verdict()` and a `spoofing_verdict` JSON field return the
+    verdict only when it is semantically bound (else `null`).
+  - A `verdict-tier` line labels a disc answer's signed tier (level
+    `CONTINUOUS_AREA`, or a bound disc query region: the proof-model-v2
+    `proveDiscVerdict` shape, which keeps the country-level claim). VERIFIED and
+    PLAUSIBLE are a PASS label, not a WARN: until the SDK's verdict ladder
+    reaches VERIFIED, nearly every disc answer is PLAUSIBLE, so a WARN would be
+    noise. SUSPICIOUS and NOT_PROVABLE are a WARN. To refuse PLAUSIBLE, use
+    `--require-verdict verified`.
+  - Real-device vectors: the iPhone 11 proof-model-v2 discs (PLAUSIBLE) fail
+    `verified` and meet `plausible`; the Pixel 9 discs (VERIFIED) meet `verified`.
+- **H3 point-in-region containment** for `--expect-region-contains` against an
+  `h3_polygon_set` region, behind a new opt-in `h3` feature (pure-Rust `h3o`).
+  The region is the filled union of its cells: a point is inside iff some
+  listed cell contains it at that cell's own resolution, so mixed and
+  compacted sets work. An empty set or any invalid cell index FAILs closed.
+  Without the feature, h3 containment still FAILs closed, as before.
+  - Golden vectors in `test-vectors/h3-containment/` are generated with the
+    reference H3 C library and checked against `h3o`. They cover in/out of
+    cell, mixed and compacted resolutions, a pentagon, a shared boundary
+    vertex, duplicates, and the malformed-set FAILs.
+
+### Changed
+- **`octet-attest-verify` dependency v2.3.2 → v2.4.1**, for its per-identity
+  match-any `verify_key_attestation_multi`. No behaviour change for a single
+  identity or none.
+- **`rustls` 0.23.40 → 0.23.45** in `Cargo.lock` (the `net` feature's HTTPS
+  client), for an advisory on TLS 1.3 handshake messages accepted across
+  encryption-level boundaries. Library consumers resolve their own `rustls`;
+  update it there too.
+
+Additive: existing callers of `attestation_root_check`, `with_android` and
+`Expectation.android` compile and behave as before, and with no new option set a
+proof verifies as before. A disc answer gains an informational `verdict-tier`
+line: PASS for VERIFIED / PLAUSIBLE, WARN only for SUSPICIOUS / NOT_PROVABLE. Three
+struct-literal caveats: `VerifyOptions` gains `require_verdict` (add
+`require_verdict: None`) and `validation_window` (add `validation_window: None`),
+and `Expectation` gains `android_additional` (use `Expectation::new`, or add
+`android_additional: Vec::new()`).
+
 ## [1.5.0] - 2026-09-28
 
 Additive and back-compat: the public API a 1.3/1.4 consumer uses (`verify`,

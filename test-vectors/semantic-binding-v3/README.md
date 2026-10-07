@@ -24,9 +24,16 @@ is that region's v2 `region_id`; **no bound query ⇒ `q_type = 0`, empty `q_id`
 (and field 18 absent). A **disc** is `ellipse(lat, lon, r, r, heading = +0.0)`; a
 **city** query is unbound (no v2 `region_id`).
 
-## File
+## Files
 
-`vectors.json` — 9 vectors. Each has:
+`disc-verdict.json` — the ** disc-verdict** set (4 vectors): a signed
+inside/outside/**indeterminate** verdict for a disc query (`query_region` type 4),
+including a straddling case (INDETERMINATE) and the fractional Vienna disc. Same
+format and same v3 preimage as below; the verifier reads the *signed* verdict and
+checks the bound disc reference — it does not recompute the geometry (the
+haversine/`k`/tie rule is the SDK-producer + engine model).
+
+`vectors.json` — the base 9 vectors. Each (both files) has:
 - `input` — the fields that go into the preimage (`spoofing_verdict`, `level`,
   `integrity_status`, `commitment_hex`, `claimed_region`, `location_verdict`, and
   the `query` region, or `null`);

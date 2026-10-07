@@ -11,7 +11,10 @@
 //! it never goes stale the way wall-clock verification of an expiring leaf would.
 #![cfg(feature = "appattest")]
 
-use octet_verify::appattest_layer::{attestation_root_check, AcceptEnvironment, Expectation};
+use octet_verify::appattest_layer::{
+    attestation_root_check, attestation_root_check_multi, AcceptEnvironment, Expectation,
+    ExpectedAppIdentity,
+};
 use octet_verify::keys::hardware_pubkey_from_cert_chain;
 use octet_verify::navigate::LocationProof;
 use octet_verify::prost::Message;
@@ -90,6 +93,125 @@ fn no_expected_identity_passes_on_hardware_root_alone() {
     assert!(!c.detail.contains("bound to the expected app identity"), "{}", c.detail);
 }
 
+// --- Multi-identity binding: a licence accepts a SET of app identities ---
+//
+// The attested identity of this Pixel proof is (com.octetproof.sample,
+// SIGNING_CERT_SHA256). A licence may register several apps, each with a
+// release AND a debug cert, so its set mixes certs. The match must be
+// per-identity atomic: some listed identity's package AND its own cert, never
+// "some listed package" AND "some listed cert" (a cross-product).
+
+/// A second app identity that shares no field with the attested one.
+const OTHER_PKG: &str = "com.octetproof.sample.studio";
+const OTHER_CERT: [u8; 32] = [0x5a; 32];
+
+fn id(pkg: &str, cert: [u8; 32]) -> ExpectedAppIdentity {
+    ExpectedAppIdentity { package_name: pkg.into(), signing_cert_sha256: cert }
+}
+
+fn check_set(set: &[ExpectedAppIdentity]) -> octet_verify::verify::Check {
+    attestation_root_check_multi(&proof(), PINNED_NOW, set, Some(&device_key_sec1()))
+}
+
+/// Golden vector (canonical reject): the set lists the attested package with
+/// the other cert, and the attested cert with the other package. Every field of
+/// the proof's identity appears somewhere in the set, but no single identity
+/// matches, so it MUST FAIL. A cross-product match would wrongly PASS it.
+#[test]
+fn multi_identity_mixed_cert_cross_product_is_rejected() {
+    let set = [
+        id("com.octetproof.sample", OTHER_CERT),
+        id(OTHER_PKG, SIGNING_CERT_SHA256),
+    ];
+    let c = check_set(&set);
+    assert_eq!(c.status, Status::Fail, "cross-product must not pass: {}", c.detail);
+}
+
+/// Golden vector (accept): the attested identity is one entry of the set, in
+/// either position. PASS, and the detail names the set size.
+#[test]
+fn multi_identity_matching_one_entry_passes() {
+    for set in [
+        [id(OTHER_PKG, OTHER_CERT), id("com.octetproof.sample", SIGNING_CERT_SHA256)],
+        [id("com.octetproof.sample", SIGNING_CERT_SHA256), id(OTHER_PKG, OTHER_CERT)],
+    ] {
+        let c = check_set(&set);
+        assert_eq!(c.status, Status::Pass, "{}", c.detail);
+        assert!(c.detail.contains("bound to one of the 2 expected app identities"), "{}", c.detail);
+    }
+}
+
+/// Golden vectors (single-swap rejects, in set form): right package with the
+/// wrong cert, and wrong package with the right cert, each next to an unrelated
+/// identity. Both FAIL.
+#[test]
+fn multi_identity_single_swaps_are_rejected() {
+    let right_pkg_wrong_cert = [id(OTHER_PKG, OTHER_CERT), id("com.octetproof.sample", OTHER_CERT)];
+    let wrong_pkg_right_cert = [id(OTHER_PKG, OTHER_CERT), id("com.evil.app", SIGNING_CERT_SHA256)];
+    for set in [right_pkg_wrong_cert, wrong_pkg_right_cert] {
+        let c = check_set(&set);
+        assert_eq!(c.status, Status::Fail, "{}", c.detail);
+    }
+}
+
+/// A set of one behaves exactly like the single-identity entry point, and an
+/// empty set like `None`: same status, same detail.
+#[test]
+fn multi_identity_set_of_one_and_empty_match_the_single_entry_point() {
+    let dev = device_key_sec1();
+    for one in [id("com.octetproof.sample", SIGNING_CERT_SHA256), id(OTHER_PKG, OTHER_CERT)] {
+        let single = attestation_root_check(&proof(), PINNED_NOW, Some(&one), Some(&dev));
+        let multi = check_set(std::slice::from_ref(&one));
+        assert_eq!((single.status, single.detail), (multi.status, multi.detail));
+    }
+    let none = attestation_root_check(&proof(), PINNED_NOW, None, Some(&dev));
+    let empty = check_set(&[]);
+    assert_eq!((none.status, none.detail), (empty.status, empty.detail));
+}
+
+/// The identity set on an `Expectation` reaches the shipping
+/// `verify_attested_cached` path: the attested identity listed second still
+/// passes, and the mixed-cert cross-product set still fails.
+#[test]
+fn multi_identity_set_on_expectation_drives_verify_attested_cached() {
+    use octet_verify::appattest_layer::verify_attested_cached;
+    use octet_verify::verify::VerifyOptions;
+
+    let p = proof();
+    let chain = &p.device_attestation.as_ref().unwrap().certificate_chain;
+    let dev = hardware_pubkey_from_cert_chain(chain).expect("leaf key resolves");
+    let opts = VerifyOptions {
+        now_ms: (PINNED_NOW as i64) * 1000,
+        max_age_s: i64::MAX / 2,
+        hardware_pubkey: Some(&dev),
+        hw_key_source: "test",
+        expect_region: None,
+        expect_region_type: None,
+        expect_region_contains: None,
+        session_nonce: None,
+        require_session_binding: false,
+        require_schema_v2: false,
+        require_attestation: false,
+        require_verdict: None,
+        validation_window: None,
+    };
+    let root = |e: &Expectation| {
+        let (r, _) = verify_attested_cached(&p, &opts, e, None);
+        r.checks.iter().find(|c| c.name == "attestation-root").map(|c| c.status)
+    };
+    let base = || Expectation::new("6ZH5F97PWU", "com.octetproof.sample", AcceptEnvironment::Any);
+
+    let accept = base()
+        .or_android(OTHER_PKG, OTHER_CERT)
+        .or_android("com.octetproof.sample", SIGNING_CERT_SHA256);
+    assert_eq!(root(&accept), Some(Status::Pass));
+
+    let cross = base()
+        .or_android("com.octetproof.sample", OTHER_CERT)
+        .or_android(OTHER_PKG, SIGNING_CERT_SHA256);
+    assert_eq!(root(&cross), Some(Status::Fail));
+}
+
 // --- SECURITY (issue): the attested leaf must be the signing key ---
 
 /// The exploit this closes: an attacker borrows this genuine Google-rooted
@@ -147,6 +269,8 @@ fn require_attestation_accepts_attested_rejects_stripped() {
         require_session_binding: false,
         require_schema_v2: false,
         require_attestation: true,
+        require_verdict: None,
+        validation_window: None,
     };
 
     let (report, _) = verify_attested_cached(&p, &opts, &expect, None);

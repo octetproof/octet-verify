@@ -59,6 +59,8 @@ fn opts<'a>(hw: &'a P256VerifyingKey) -> VerifyOptions<'a> {
         require_session_binding: false,
         require_schema_v2: false,
         require_attestation: false,
+        require_verdict: None,
+        validation_window: None,
     }
 }
 

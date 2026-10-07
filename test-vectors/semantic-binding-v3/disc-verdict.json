@@ -1,0 +1,146 @@
+{
+  "note": "octet-semantic-binding-v3 DISC-VERDICT vectors (signed inside/outside/indeterminate verdict for a disc query, bound via v3 query_region type 4). Cross-repo golden set produced byte-identical by an independent generator + both SDK platforms; frozen as the verifier's parity fixture. See README.md.",
+  "domain": "octet-semantic-binding-v3",
+  "vectors": [
+    {
+      "name": "disc_verdict_inside_clear",
+      "input": {
+        "spoofing_verdict": 1,
+        "level": 2,
+        "integrity_status": 2,
+        "commitment_hex": "abababababababababababababababababababababababababababababababab",
+        "claimed_region": {
+          "kind": "country",
+          "iso": "AT"
+        },
+        "location_verdict": 1,
+        "query": {
+          "kind": "ellipse",
+          "lat": 48.2082,
+          "lon": 16.3738,
+          "semi_major_m": 2000.0,
+          "semi_minor_m": 2000.0,
+          "heading_deg": 0.0
+        }
+      },
+      "query_region": {
+        "region_type": 4,
+        "region_id_hex": "e8658ae85b73cc156ba63a092ed6865841b7223c933c471580483647e82d1f73"
+      },
+      "preimage_hex": "6f637465742d73656d616e7469632d62696e64696e672d76330000000100000002000000020000000200000002415400000020abababababababababababababababababababababababababababababababab000000010000000400000020e8658ae85b73cc156ba63a092ed6865841b7223c933c471580483647e82d1f73",
+      "stage_hash_hex": "a37050193008fd3dfda7fda1bea667b93d450aed27c196298a221c0a15e223d2"
+    },
+    {
+      "name": "disc_verdict_outside_clear",
+      "input": {
+        "spoofing_verdict": 1,
+        "level": 2,
+        "integrity_status": 2,
+        "commitment_hex": "abababababababababababababababababababababababababababababababab",
+        "claimed_region": {
+          "kind": "country",
+          "iso": "AT"
+        },
+        "location_verdict": 2,
+        "query": {
+          "kind": "ellipse",
+          "lat": 48.2082,
+          "lon": 16.3738,
+          "semi_major_m": 2000.0,
+          "semi_minor_m": 2000.0,
+          "heading_deg": 0.0
+        }
+      },
+      "query_region": {
+        "region_type": 4,
+        "region_id_hex": "e8658ae85b73cc156ba63a092ed6865841b7223c933c471580483647e82d1f73"
+      },
+      "preimage_hex": "6f637465742d73656d616e7469632d62696e64696e672d76330000000100000002000000020000000200000002415400000020abababababababababababababababababababababababababababababababab000000020000000400000020e8658ae85b73cc156ba63a092ed6865841b7223c933c471580483647e82d1f73",
+      "stage_hash_hex": "302e1f52a6cb058dee553919b246a15def201b7e0570a054e4ee01d88e48628d"
+    },
+    {
+      "name": "disc_verdict_straddle",
+      "input": {
+        "spoofing_verdict": 1,
+        "level": 2,
+        "integrity_status": 2,
+        "commitment_hex": "abababababababababababababababababababababababababababababababab",
+        "claimed_region": {
+          "kind": "country",
+          "iso": "AT"
+        },
+        "location_verdict": 3,
+        "query": {
+          "kind": "ellipse",
+          "lat": 48.2082,
+          "lon": 16.3738,
+          "semi_major_m": 2000.0,
+          "semi_minor_m": 2000.0,
+          "heading_deg": 0.0
+        }
+      },
+      "query_region": {
+        "region_type": 4,
+        "region_id_hex": "e8658ae85b73cc156ba63a092ed6865841b7223c933c471580483647e82d1f73"
+      },
+      "preimage_hex": "6f637465742d73656d616e7469632d62696e64696e672d76330000000100000002000000020000000200000002415400000020abababababababababababababababababababababababababababababababab000000030000000400000020e8658ae85b73cc156ba63a092ed6865841b7223c933c471580483647e82d1f73",
+      "stage_hash_hex": "719753b93e7bce14083d029005fb27407d381f9c72823bbd39a4250dfcd1ba6f"
+    },
+    {
+      "name": "disc_verdict_vienna_fractional_inside",
+      "input": {
+        "spoofing_verdict": 1,
+        "level": 2,
+        "integrity_status": 2,
+        "commitment_hex": "abababababababababababababababababababababababababababababababab",
+        "claimed_region": {
+          "kind": "country",
+          "iso": "AT"
+        },
+        "location_verdict": 1,
+        "query": {
+          "kind": "ellipse",
+          "lat": 48.2082,
+          "lon": 16.3738,
+          "semi_major_m": 1500.5,
+          "semi_minor_m": 1500.5,
+          "heading_deg": 0.0
+        }
+      },
+      "query_region": {
+        "region_type": 4,
+        "region_id_hex": "225ce79ba4c23033f626c7898572cbbb0748c6e30a39bf7174c0c63e51919b6e"
+      },
+      "preimage_hex": "6f637465742d73656d616e7469632d62696e64696e672d76330000000100000002000000020000000200000002415400000020abababababababababababababababababababababababababababababababab000000010000000400000020225ce79ba4c23033f626c7898572cbbb0748c6e30a39bf7174c0c63e51919b6e",
+      "stage_hash_hex": "4b9799f725219e9ddc9d040038649f60b7723c8e07ef761e4318ec706b5046b9"
+    },
+    {
+      "name": "disc_verdict_inside_clear_offshore_earth_claim",
+      "input": {
+        "spoofing_verdict": 1,
+        "level": 1,
+        "integrity_status": 2,
+        "commitment_hex": "abababababababababababababababababababababababababababababababab",
+        "claimed_region": {
+          "kind": "earth",
+          "max_altitude_m": 10000.0
+        },
+        "location_verdict": 1,
+        "query": {
+          "kind": "ellipse",
+          "lat": 48.2082,
+          "lon": 16.3738,
+          "semi_major_m": 2000.0,
+          "semi_minor_m": 2000.0,
+          "heading_deg": 0.0
+        }
+      },
+      "query_region": {
+        "region_type": 4,
+        "region_id_hex": "e8658ae85b73cc156ba63a092ed6865841b7223c933c471580483647e82d1f73"
+      },
+      "preimage_hex": "6f637465742d73656d616e7469632d62696e64696e672d7633000000010000000100000002000000010000000840c388000000000000000020abababababababababababababababababababababababababababababababab000000010000000400000020e8658ae85b73cc156ba63a092ed6865841b7223c933c471580483647e82d1f73",
+      "stage_hash_hex": "de0801eb6531654b2b27155cbfe03f540bc7039c52083b671456656eb362aa71"
+    }
+  ]
+}

@@ -174,7 +174,8 @@ envelope that carries none reports NOT-CHECKED.
    top-level `LocationProof.timestamp_ms`, which carries no signature and is
    freely editable. Reject if older than the window (default 300 s) or more than
    a small skew into the future; a divergent top-level `timestamp_ms` is surfaced
-   as a warning.
+   as a warning. To verify an old proof, judge it at a validation time or window
+   instead of the current time (§4.1).
 3. **Replay (presence only):** assert `nullifier` is non-zero — i.e. a replay
    token is *present*. This is **not** a cross-proof uniqueness guarantee: a
    stateless verifier cannot prove a token was never used elsewhere.
@@ -202,12 +203,56 @@ envelope that carries none reports NOT-CHECKED.
 13. **Hardware attestation** (feature `appattest`), all offline (§1.1):
     `attestation-root` validates the **Android** chain to an embedded Google root
     (iOS, carrying a raw Secure Enclave key, is NOT-CHECKED here); `app-attest`
-    validates **iOS** App Attest to Apple's embedded root; and
+    validates **iOS** App Attest to Apple's embedded root, by signature only
+    (`app-attest-validity` NOT-CHECKED, §4.1); and
     `device-attestation-sig` verifies the field-2 device signature on both. All
     NOT-CHECKED on a default build or under `--skip-hardware-attestation`.
 
 Any failure rejects the proof. Checks that are deliberately skipped (§5) are
 reported as NOT-CHECKED — never silently treated as passes.
+
+### 4.1 Historical verification (validation time)
+
+Two checks depend on time: `freshness` and, under `appattest`, `attestation-root`
+(each certificate in an Android key-attestation chain has a validity period). By
+default both are judged at the current time. Certificates in a key-attestation
+chain can be valid for only days, so an archived Android proof judged today FAILs
+`attestation-root` and `freshness` although nothing about it changed.
+
+The verifier can judge both at a point or an interval established from outside
+evidence instead:
+
+| Input | CLI | Library | Effect |
+|---|---|---|---|
+| Validation instant | `--at <time>` | `VerifyOptions::now_ms` | `freshness` and `attestation-root` are judged at that instant, with the usual `--max-age-seconds` window. |
+| Validation window | `--window <from>/<to>` | `VerifyOptions::validation_window` | `freshness` PASSes when the signed `proofAssembly` time lies inside `[from, to]` (60 s skew at each end), and `--max-age-seconds` does not apply. `attestation-root` PASSes only when the chain is valid at both bounds. |
+
+A time is RFC 3339 (`2026-07-29T11:42:21Z`, optional fractional seconds, `Z` or a
+`±HH:MM` offset) or an integer number of Unix milliseconds. `--at` and `--window`
+are mutually exclusive, and both apply in backend fetch mode (§7).
+
+A window states when the proof can have been signed: no earlier than `from`, no
+later than `to`. Typical evidence is the time a server issued the upload nonce
+the proof embeds (lower bound) and a trusted timestamp over the stored proof
+(upper bound). A certificate validity period is a single interval, so a chain
+valid at both bounds was valid at every instant between them, including the
+moment the proof was signed. A FAIL names the bound it failed at.
+
+The verdict is only as good as the window. A window taken from the proof's own
+signed time proves nothing, because the device chose that time. Use bounds that
+come from independent evidence, and record which evidence they came from next to
+the verdict.
+
+`app-attest` (iOS) is verified by signature only, in every mode. The App Attest
+leaf certificate is valid for about 3 days from attestation, and the attestation
+usually happens at enrolment, long before the proof, so judging its dates at the
+proof's time would reject almost every assertion-only proof. The verifier
+therefore does not check App Attest validity dates at any time. Every
+`app-attest` PASS comes with an `app-attest-validity` NOT-CHECKED line that says
+so. Checking those dates at the attestation's own time needs a trusted record of
+when the attestation happened, which a proof does not carry. Android
+`attestation-root` chains are date-checked: at the current time by default, at
+`--at`, or at both bounds of `--window`.
 
 ---
 
@@ -219,6 +264,9 @@ reported as NOT-CHECKED — never silently treated as passes.
   the key it *carries*. Under the feature this is established — App Attest (iOS)
   or the Google-rooted key-attestation chain (Android), §1.1 — so it is
   conditional, not unconditionally out of scope.
+- **App Attest certificate validity dates.** The App Attest chain is verified to
+  Apple's root by signature, but its validity dates are not checked (§4.1). Every
+  `app-attest` PASS is followed by an `app-attest-validity` NOT-CHECKED line.
 - **`device_attestation.signature`.** The field-2 device signature is verified
   under `--features appattest` on both platforms (the per-proof binding is
   cross-platform); NOT-CHECKED on a default build.
@@ -315,3 +363,181 @@ never `0`, so `octet-verify … && deploy` cannot accept an unverified proof:
 For `range` / `watch`, the code reflects the worst proof observed: any `1` → `1`,
 else any `3` → `3`, else `0`. Both the exit code and the JSON `valid` field are
 safe authenticity gates for automation.
+
+---
+
+## 9. Browser verdict profile (`browser-verdict`, `--features browser`)
+
+A separate profile from the `LocationProof` verifier above. It verifies the octet
+browser product's **signed verdict token** and the session chain inside it,
+against octet's published keys. It is verification only: it does not judge
+whether the browser's signals were true.
+
+```
+octet-verify browser-verdict <verdict-token> [--jwks <url|file> | --archive]
+    [--challenge <token> [--challenge-jwks <url|file>]] [--edge-log <line|@file>]
+    [--roots <file>] [--manifest <url|file>] [--manifest-seq-store <file>]
+    [--min-manifest-seq <n>] [--now <unix-seconds>] [--json]
+```
+
+A URL needs `--features net`; a JWKS file works offline. The library entry point
+is `browser::verify_browser_verdict`.
+
+### 9.1 Inputs
+
+| Input | Required | Source |
+|---|---|---|
+| Verdict token | yes | the compact JWS octet returned beside the verdict |
+| Verdict JWKS | yes | live: `https://geo.octetproof.com/.well-known/browser-verdict-jwks.json`; archive (every key octet has signed with, for a stored token whose key has rotated): `…/browser-verdict-jwks-archive.json` |
+| Challenge token | no | the PASETO v4.public token the partner kept from `POST /v1/challenge` |
+| Challenge JWKS | with the challenge | `…/.well-known/browser-challenge-jwks.json` |
+| Edge log line | no | `{"octetChain":{"sid","env","s2","kid","ts"}}`, logged by the partner's edge. The raw line is accepted as the edge writes it, log prefix included (e.g. `2026/10/02 12:28:09 {"octetChain":…}`): the JSON starts at the first `{`. |
+
+A key whose `octet_purpose` is set must match its use (`browser-verdict` or
+`browser-challenge`), so a challenge key never verifies a verdict. Two keys with
+the same `kid` are refused.
+
+### 9.2 Checks
+
+Each check reports `VERIFIED`, `FAILED`, `NOT-CHECKED`, `WARN` (the root
+manifest only, §9.3), or `ATTESTED` (5 below).
+The verdict passes when no check FAILED and `verdict-jws` VERIFIED. If
+`verdict-jws` fails, every other check is NOT-CHECKED and the claims are not
+reported.
+
+1. **`verdict-jws`.** `typ` is `octet-browser-verdict+jwt;v=1`, `v=2` or `v=3`
+   (the suffix versions the claim set). The key is the one the header `kid`
+   names, and the `alg` must match it: `ES256` with an EC P-256 key (signature
+   is IEEE P1363 raw `r‖s`, 64 bytes, not DER) or `EdDSA` with an OKP Ed25519
+   key. Any other pairing is refused, as is a header `alg` that differs from the
+   JWK's `alg`. The signature covers the ASCII `b64url(header).b64url(claims)`.
+   `iss` is `octet-browser`.
+   - **`key-validity`** (archive keys). When the key carries `octet_not_before`,
+     the verdict `iat` must lie within `octet_not_before … octet_not_after`
+     (±60 s; no `octet_not_after` for the current key). A key with
+     `octet_status: "revoked"` fails any token with `iat ≥ octet_revoked_at`.
+     A live key carries no window: NOT-CHECKED.
+   - **`verdict-expiry`.** VERIFIED while `now ≤ exp + 60 s`. An expired token
+     is NOT-CHECKED, not FAILED: a stored record is expected to be expired, but
+     a live decision should refuse it. `exp < iat` FAILS.
+2. **`chain-root`** (`v=3`). Recompute `chain_root` from the signed `chain`
+   claim and compare. Every digest is decoded to its 32 raw bytes:
+
+   ```
+   chain_root = base64url_nopad(SHA-256(
+       "octet-browser-chain-v1"            UTF-8, no terminator
+     ‖ s0                                  32 bytes
+     ‖ u32be(len(reports))
+     ‖ for each report, in order:
+         s1.bundle                         32 bytes
+       ‖ u64be(s1.t)                       the S1 signing time, ms (≤ 2^53 − 1)
+       ‖ s1.sig                            32 bytes
+       ‖ env                               32 bytes
+       ‖ s2.h, or 32 zero bytes when the report has no s2
+     ‖ rcpt, or 32 zero bytes when absent   once, after the reports
+   ))
+   ```
+
+   `chain.v` must be `1`. A `v=3` token without `chain` and `chain_root` FAILS.
+   `v=1` and `v=2` tokens carry no chain: NOT-CHECKED, along with checks 3–5.
+3. **`session-link`** (with the challenge token).
+   - `base64url(SHA-256(UTF-8 challenge token)) == chain.s0`;
+   - the challenge verifies as PASETO `v4.public`: Ed25519 over
+     `PAE("v4.public.", m, footer, "")`, the footer is `{"kid"}` naming a key in
+     the challenge JWKS, and there is no implicit assertion;
+   - its claims have `typ == "octet-browser-challenge"`, `v == 1`, and a
+     `sessionRef` equal to the verdict's;
+   - the verdict `iat` lies within `[challenge iat, challenge exp + 60 s]`.
+
+   The challenge's `lid` (the licence) is reported. A challenge without its JWKS
+   is NOT-CHECKED.
+4. **`edge-link`** (with the edge log line). Some report `i` has
+   `env == reports[i].env`, `s2 == reports[i].s2.h` and
+   `kid == reports[i].s2.kid`.
+5. **Attested links.** `s1-device-signature` (octet verified the device's S1
+   signature over each `s1.bundle`) and `anchor-receipts` (the receipts behind
+   `rcpt`, which name the user's IP) are reported as **ATTESTED**, meaning
+   "attested by octet". A third party cannot re-check them, so they are never
+   VERIFIED.
+
+The digests themselves are defined as: `s0 = SHA-256(challenge token)`,
+`s1.bundle = SHA-256(signed bundle JSON)`, `s1.sig = SHA-256(raw S1 signature)`,
+`env = SHA-256(request body)`, `s2.h = SHA-256(edge signature token)`, and
+`rcpt = SHA-256(concatenation of SHA-256(receipt token), sorted bytewise)`.
+
+### 9.3 Root manifest
+
+Every key list above is served by octet's geo server, so on its own it is only as
+trustworthy as that server. octet's **offline root** (a P-256 key on a hardware
+token, never on a server) signs one **manifest** listing every verdict key and
+every challenge key. When a manifest is checked, a key the root didn't list is
+refused.
+
+- **Where:** `https://geo.octetproof.com/.well-known/octet-browser-manifest.json.jws`,
+  a compact JWS whose payload is the manifest bytes exactly.
+- **Roots are pinned, never fetched** from the server being checked: built into
+  the binary (`browser::PINNED_ROOTS_JSON`, none yet; they are added at octet's
+  first root ceremony) or passed with `--roots <file>` (`{"roots":[...]}`, EC
+  P-256 JWKs, `octet_purpose` `octet-root`). Without a pinned root the manifest
+  checks are NOT-CHECKED and nothing is fetched.
+
+**`root-manifest`:**
+
+1. The header is exactly `{"alg":"ES256","typ":"octet-root+jws;v=1","kid"}`;
+   any other field is refused. `kid` must name a pinned root. The signature is
+   ES256 raw `r‖s` over `b64url(header).b64url(payload)` (not DER).
+2. The payload has `typ "octet-browser-manifest"`, `v` 1, a positive integer
+   `seq`, integer `iat` / `exp` with `exp − iat` ≤ 400 days, and a non-empty
+   `roots` (the roots that may sign the next manifest).
+3. **Rollback:** a `seq` lower than the highest already seen FAILS. The
+   verifier is stateless, so the caller keeps that number
+   (`min_manifest_seq` in, `manifest_seq` out; `--manifest-seq-store <file>` in
+   the CLI). The server does not track it.
+4. **Expiry:** VERIFIED until `exp` (the detail notes the last 30 days); **WARN**
+   after `exp` within a 14-day grace (the window in which octet's server still
+   runs); **FAILED** after that. A long-expired manifest is a stale key list, and
+   expiry is what bounds a freeze attack (serving an old list after a key is
+   revoked).
+
+**`manifest-verdict-key`:** the verdict token's `kid` must be in `verdictKeys`
+with the same key material (`kty`, `crv`, `x`, `y`), else FAILED. The entry's
+`octet_not_before` / `octet_not_after` / `octet_status` then drive `key-validity`
+(§9.2), which therefore runs instead of reading NOT-CHECKED.
+
+**`manifest-challenge-key`:** the same for the challenge's footer `kid` against
+`challengeKeys`, once the session link verified.
+
+A manifest that FAILS is not used for the key checks (they read NOT-CHECKED);
+one in its WARN grace still is.
+
+### 9.4 Out of scope
+
+- Whether the browser's signals, and so the verdict (`alarm`, `confidence`,
+  `country`), are true. The token proves octet said it, not that it is right.
+- The `deviceKey`: an opaque, partner-scoped identifier.
+- `clientNetMatch` (`v=3`, optional boolean): whether the report came from the
+  client network the partner's backend saw. octet makes the comparison; no token
+  carries the network, so there is nothing to recompute. It is reported as
+  signed, and `false` is a valid result, not a verification failure. Absent when
+  the partner sent no client IP.
+- `clientNet` (older `v=1` / `v=2` tokens only): an opaque informational claim.
+  It is never decoded or printed. A challenge's optional `cn` claim (a keyed
+  per-licence tag) is likewise opaque and ignored; `s0` still covers the whole
+  challenge token.
+- That the `sessionRef` is one the partner issued, and replay of an old token:
+  the partner checks both against its own records.
+
+### 9.5 Output and exit codes
+
+`--json` emits `valid`, `version` (the `typ` suffix), `lid` (when the session
+link verified), `manifest_seq` (when the root manifest verified),
+`client_net_match` (the signed `clientNetMatch`, or `null`), `claims`
+(only when `verdict-jws` VERIFIED) and `checks`
+(`name` / `status` / `detail`). Exit codes: `0` no check failed, `1` a check
+failed, `2` usage, IO or JWKS error.
+
+Golden vectors in `test-vectors/browser-verdict-chain/`: `chain-vector.json`
+(deterministic, shared with octet-browser's server and edge), `dev-vector.json`
+(a real verdict from octet-browser's dev stack, through S0, S1, S2 and the edge
+log; verify it at its `nowForChecks`), and `manifest-vector.json` (a root manifest signed by the dev root `root-dev-1`,
+which production never trusts, with timestamps for each expiry window).

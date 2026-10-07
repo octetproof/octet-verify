@@ -88,6 +88,8 @@ fn verify_bound(proof: &LocationProof, nonce: &[u8], expect_at: bool) -> Report 
         require_session_binding: true,
         require_schema_v2: false,
         require_attestation: false,
+        require_verdict: None,
+        validation_window: None,
     };
     verify(proof, &opts)
 }

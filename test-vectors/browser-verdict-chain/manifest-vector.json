@@ -1,0 +1,28 @@
+{
+  "description": "Root-signed manifest golden vector ( §7): a manifest signed with the committed DEV root root-dev-1 (ES256, DER signature as yubico-piv-tool writes it, turned into JOSE by tools/root-manifest.mjs assemble). The payload is the manifest bytes exactly. Production trusts only the roots in keys/octet-root.json, never this one.",
+  "root": {
+    "kty": "EC",
+    "crv": "P-256",
+    "kid": "root-dev-1",
+    "x": "ZVa4JLiNRDfThPVgpAeCxzEbribWoyHHa1Le_cM9T-E",
+    "y": "flH46tX-Q9JyBRL_aJ8QPmG-AlNaCYzu-snGxWnUgAk",
+    "octet_purpose": "octet-root"
+  },
+  "jws": "eyJhbGciOiJFUzI1NiIsInR5cCI6Im9jdGV0LXJvb3QrandzO3Y9MSIsImtpZCI6InJvb3QtZGV2LTEifQ.ewogICJ0eXAiOiAib2N0ZXQtYnJvd3Nlci1tYW5pZmVzdCIsCiAgInYiOiAxLAogICJzZXEiOiAxLAogICJpYXQiOiAxNzkwOTQ2MDAwLAogICJleHAiOiAxODIyNDgyMDAwLAogICJ2ZXJkaWN0S2V5cyI6IFsKICAgIHsKICAgICAgImt0eSI6ICJPS1AiLAogICAgICAiY3J2IjogIkVkMjU1MTkiLAogICAgICAidXNlIjogInNpZyIsCiAgICAgICJhbGciOiAiRWREU0EiLAogICAgICAia2lkIjogIm9jdGV0LWJyb3dzZXItdmVyZGljdC1kZXYtMjAyNi0wOSIsCiAgICAgICJ4IjogInJnLVQzMEUxdzJFY3ZNUmZhZlBUWVRYWDN4YUhLc1V4SUk5bTN0WW5QbzgiLAogICAgICAib2N0ZXRfcHVycG9zZSI6ICJicm93c2VyLXZlcmRpY3QiLAogICAgICAib2N0ZXRfbm90X2JlZm9yZSI6IDE3OTAwMDAwMDAKICAgIH0KICBdLAogICJjaGFsbGVuZ2VLZXlzIjogWwogICAgewogICAgICAia3R5IjogIk9LUCIsCiAgICAgICJjcnYiOiAiRWQyNTUxOSIsCiAgICAgICJ1c2UiOiAic2lnIiwKICAgICAgImFsZyI6ICJFZERTQSIsCiAgICAgICJraWQiOiAiY2hhbGxlbmdlLWRldi0xIiwKICAgICAgIngiOiAiNFpkdDNjTjFxYk8yNlJzVHBFSXZLc1g3QTFUVl9OM212SV9kYVhzX0IwVSIsCiAgICAgICJvY3RldF9wdXJwb3NlIjogImJyb3dzZXItY2hhbGxlbmdlIgogICAgfQogIF0sCiAgImFuY2hvcktleXMiOiBbCiAgICB7CiAgICAgICJraWQiOiAibG9uMS1kZXYtMjAyNi0wOSIsCiAgICAgICJhbmNob3IiOiAibG9uMSIsCiAgICAgICJwdWJsaWNLZXkiOiAiQndjSEJ3Y0hCd2NIQndjSEJ3Y0hCd2NIQndjSEJ3Y0hCd2NIQndjSEJ3YyIsCiAgICAgICJsYXQiOiA1MS41MDc0LAogICAgICAibG9uIjogLTAuMTI3OAogICAgfQogIF0sCiAgImNhbGlicmF0aW9uIjogWwogICAgewogICAgICAibmFtZSI6ICJydHQtdmVjdG9yIiwKICAgICAgInNoYTI1NiI6ICJjYjFjMDJjZDg1Y2U0MWJhYWEwOGE3NjBjNzM4ZWI5NzY1ZjgwZGRlYzk5NDcyM2U4NWZlYTUwYzZjMDg0NjQ5IgogICAgfQogIF0sCiAgInJvb3RzIjogWwogICAgInJvb3QtZGV2LTEiCiAgXQp9Cg.12q2TImT-XjCy1RPIL4_nLV26_SZkza5prm92oTM2WZ6R7_Oz0ewFuHwfz7UCZHSlEqifSW_XLmOUqdm8kX3hA",
+  "manifestJson": "{\n  \"typ\": \"octet-browser-manifest\",\n  \"v\": 1,\n  \"seq\": 1,\n  \"iat\": 1790946000,\n  \"exp\": 1822482000,\n  \"verdictKeys\": [\n    {\n      \"kty\": \"OKP\",\n      \"crv\": \"Ed25519\",\n      \"use\": \"sig\",\n      \"alg\": \"EdDSA\",\n      \"kid\": \"octet-browser-verdict-dev-2026-09\",\n      \"x\": \"rg-T30E1w2EcvMRfafPTYTXX3xaHKsUxII9m3tYnPo8\",\n      \"octet_purpose\": \"browser-verdict\",\n      \"octet_not_before\": 1790000000\n    }\n  ],\n  \"challengeKeys\": [\n    {\n      \"kty\": \"OKP\",\n      \"crv\": \"Ed25519\",\n      \"use\": \"sig\",\n      \"alg\": \"EdDSA\",\n      \"kid\": \"challenge-dev-1\",\n      \"x\": \"4Zdt3cN1qbO26RsTpEIvKsX7A1TV_N3mvI_daXs_B0U\",\n      \"octet_purpose\": \"browser-challenge\"\n    }\n  ],\n  \"anchorKeys\": [\n    {\n      \"kid\": \"lon1-dev-2026-09\",\n      \"anchor\": \"lon1\",\n      \"publicKey\": \"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc\",\n      \"lat\": 51.5074,\n      \"lon\": -0.1278\n    }\n  ],\n  \"calibration\": [\n    {\n      \"name\": \"rtt-vector\",\n      \"sha256\": \"cb1c02cd85ce41baaa08a760c738eb9765f80ddec994723e85fea50c6c084649\"\n    }\n  ],\n  \"roots\": [\n    \"root-dev-1\"\n  ]\n}\n",
+  "calibrationFile": "{\"baselineMs\":0}\n",
+  "expect": {
+    "header": {
+      "alg": "ES256",
+      "typ": "octet-root+jws;v=1",
+      "kid": "root-dev-1"
+    },
+    "seq": 1,
+    "iat": 1790946000,
+    "exp": 1822482000,
+    "nowOk": 1790950000,
+    "nowExpiring": 1820000000,
+    "nowExpired": 1823000000,
+    "nowRefused": 1823700000
+  }
+}

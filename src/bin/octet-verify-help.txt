@@ -9,6 +9,11 @@ USAGE:
     octet-verify range            --backend <url> --token <bearer> \
                                   --since <ts> --until <ts> [OPTIONS]
 
+    octet-verify browser-verdict <verdict-token> [OPTIONS]
+                                  Verify an octet browser verdict token and its
+                                  chain (`browser` feature; see
+                                  `octet-verify browser-verdict --help`).
+
 ARGUMENTS:
     <proof.bin>    Binary octet.navigate.LocationProof (or a
                    ContinuousProofEnvelope with --envelope). Reads stdin if
@@ -30,6 +35,18 @@ OPTIONS:
                                (proof bytes + Ed25519 transport signature)
                                instead of a bare LocationProof.
     --max-age-seconds <n>      Freshness window. Default: 300.
+    --at <time>                Judge freshness and attestation-root at <time>
+                               instead of now. <time> is RFC 3339
+                               (2026-07-29T11:42:21Z) or Unix milliseconds.
+    --window <from>/<to>       Historical validation window: the signed proof
+                               time must lie inside [from, to] (60 s skew) and the
+                               Android attestation chain must be valid at both
+                               bounds. --max-age-seconds does not apply. Bounds
+                               should come from independent evidence (e.g. the
+                               upload-nonce issue time and a trusted timestamp).
+                               App Attest certificate dates are never checked
+                               (app-attest-validity NOT-CHECKED).
+                               Mutually exclusive with --at.
     --nullifier-store <file>   Newline-delimited hex file of seen nullifiers;
                                best-effort, single-process local replay check
                                (appends). NOT concurrency-safe and NOT the
@@ -51,11 +68,13 @@ OPTIONS:
                                Assert the claimed region CONTAINS this point
                                (decimal degrees). Positively asserts a geometric
                                proof by location: earth (always), city (disc),
-                               ellipse, and bbox are evaluated. FAILS for a named
+                               ellipse, and bbox are evaluated, and h3 on a build
+                               with --features h3 (inside iff some listed cell
+                               contains the point at that cell's resolution; an
+                               empty or invalid cell set FAILS). FAILS for a named
                                country/subdivision (no geometry — use
-                               --expect-region) and for h3 (needs an H3 library not
-                               in this build; use --expect-region-type h3), and on
-                               no region.
+                               --expect-region), for h3 without the `h3` feature,
+                               and on no region.
     --expect-query-region <spec>
                                Assert the proof's bound QUERIED region (semantic-
                                binding v3) equals this region, so its signed
@@ -92,6 +111,13 @@ OPTIONS:
                                --app-attest-config — App Attest is the only iOS
                                hardware root, so without that config an iOS proof
                                can never satisfy this and will FAIL.
+    --require-verdict verified|plausible
+                               Require the signed spoofing verdict to be at least
+                               this tier: FAIL when it is lower, and fail closed
+                               when semantic-binding did not pass (an unbound
+                               verdict could have been edited). A disc answer can
+                               be signed VERIFIED or PLAUSIBLE and both verify, so
+                               use `verified` to refuse PLAUSIBLE. Off by default.
     --app-attest-config <file> Verify the proof's Apple App Attest evidence
                                offline against the expected app identity in this
                                TOML config ([app_attest] team_id / bundle_id /
@@ -115,8 +141,11 @@ OPTIONS:
                                app: its package name and the SHA-256 (64 hex chars)
                                of the signing certificate's DER
                                (attestationApplicationId). Without it the chain
-                               attests only "some key from some app". Requires the
-                               `appattest` feature.
+                               attests only "some key from some app". Repeatable:
+                               the chain must then match ONE listed identity in
+                               full (its package AND its own cert), never a mix
+                               of one identity's package and another's cert.
+                               Requires the `appattest` feature.
     --skip-hardware-attestation
                                Scope an `appattest` build to core verification
                                only: skip the offline hardware-attestation layer
@@ -174,15 +203,17 @@ BACKEND FETCH MODE (subcommands; requires a build with --features net):
     --hardware-pubkey, --expect-region, --expect-region-type,
     --expect-region-contains, --expect-query-region, --session-nonce,
     --require-session-binding, --require-schema-v2, --require-attestation,
-    --max-age-seconds,
+    --require-verdict,
+    --max-age-seconds, --at, --window,
     --json, --app-attest-config, --app-attest-enrolment-bundle,
     --android-app-identity, --skip-hardware-attestation,
     --integrity-decode-url / --integrity-decode-token / --integrity-package /
     --integrity-max-age-seconds all apply as above — a
     fetched Android proof carries its real attestation chain, so on an
     `appattest` build attestation-root runs in fetch mode too. Historical proofs
-    are older than the default freshness window — pass a wide --max-age-seconds
-    when auditing past ranges.
+    are older than the default freshness window, and their attestation
+    certificates may have expired since. Verify them with --at or --window at the
+    time they were made.
 
     With --json, each proof emits one report object per line (JSONL).
 

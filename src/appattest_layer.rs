@@ -7,13 +7,13 @@
 //! attestation crypto here, so the auditable logic lives in exactly one place.
 
 use crate::navigate::{DeviceAttestation, LocationProof};
-use crate::verify::{verify, Check, Report, Status, VerifyOptions};
+use crate::verify::{verify, Check, Report, Status, ValidationWindow, VerifyOptions};
 use base64::Engine;
 use octet_attest_verify::appattest::{
     verify_assertion_with_binding, verify_attestation, verify_device_signature, AppId,
     AssertionBinding, AttestedKey,
 };
-use octet_attest_verify::keyattest::{verify_key_attestation, AttestMode, SecurityLevel};
+use octet_attest_verify::keyattest::{verify_key_attestation_multi, AttestMode, SecurityLevel};
 // Re-export the app-identity types a consumer needs to build an `Expectation`,
 // so downstream code needn't depend on `octet-attest-verify` directly.
 pub use octet_attest_verify::appattest::AcceptEnvironment;
@@ -29,10 +29,18 @@ use sha2::{Digest, Sha256};
 /// must name this package and signing-cert digest (see [`attestation_root_check`]);
 /// when `None`, Android is checked to the hardware root only. The proof's evidence
 /// shape selects which platform's identity is consulted.
+///
+/// `android_additional` widens the Android binding to a **set**: a licence that
+/// ships several apps (or registers both a release and a debug signing cert)
+/// accepts a proof bound to `android` OR to any one of these. Each identity is
+/// matched whole — package AND its own cert — never a cross-product of packages
+/// and certs (see [`attestation_root_check_multi`]). Empty (the default) is the
+/// single-identity binding, unchanged.
 pub struct Expectation {
     pub app_id: AppId,
     pub accept_env: AcceptEnvironment,
     pub android: Option<ExpectedAppIdentity>,
+    pub android_additional: Vec<ExpectedAppIdentity>,
 }
 
 impl Expectation {
@@ -42,6 +50,7 @@ impl Expectation {
             app_id: AppId::from_team_and_bundle(team_id, bundle_id),
             accept_env,
             android: None,
+            android_additional: Vec::new(),
         }
     }
 
@@ -54,6 +63,52 @@ impl Expectation {
             signing_cert_sha256,
         });
         self
+    }
+
+    /// Also accept Android proofs bound to this app identity (match-any over the
+    /// set). Sets the primary [`Expectation::android`] identity if none is set
+    /// yet, so a chain of `or_android` calls alone builds the whole set.
+    pub fn or_android(mut self, package_name: impl Into<String>, signing_cert_sha256: [u8; 32]) -> Self {
+        let id = ExpectedAppIdentity {
+            package_name: package_name.into(),
+            signing_cert_sha256,
+        };
+        if self.android.is_none() {
+            self.android = Some(id);
+        } else {
+            self.android_additional.push(id);
+        }
+        self
+    }
+
+    /// Every accepted Android app identity: `android` followed by
+    /// `android_additional`. Empty ⇒ hardware-root-only.
+    pub fn android_identities(&self) -> Vec<ExpectedAppIdentity> {
+        self.android
+            .iter()
+            .chain(&self.android_additional)
+            .cloned()
+            .collect()
+    }
+}
+
+/// Name of the NOT-CHECKED line that accompanies every `app-attest` PASS.
+pub const APP_ATTEST_VALIDITY: &str = "app-attest-validity";
+
+/// The App Attest chain is verified to Apple's root by signature only. Its
+/// validity dates are not checked at any time: the leaf certificate is valid for
+/// about 3 days and is issued when the key is attested, usually long before the
+/// proof, so judging it at the proof's time would reject almost every
+/// assertion-only proof. Checking it at the attestation's own time needs a
+/// trusted record of when the attestation happened, which a proof does not carry.
+fn appattest_validity_not_checked() -> Check {
+    Check {
+        name: APP_ATTEST_VALIDITY,
+        status: Status::NotChecked,
+        detail: "App Attest certificate validity dates not checked: the chain's signatures to \
+                 Apple's root verified, but the leaf certificate is valid for about 3 days from \
+                 attestation, which usually precedes the proof"
+            .into(),
     }
 }
 
@@ -164,15 +219,22 @@ pub fn verify_attested_cached(
         signing_key_sec1.as_deref(),
         opts.require_attestation,
     );
+    let app_attest_passed = app_attest.status == Status::Pass;
     report.checks.push(app_attest);
+    // A PASS above verified signatures only: the App Attest chain's validity dates
+    // are never checked. Say so on every attested iOS proof, in every mode, so a
+    // reader never takes the PASS as a date check (§4.1).
+    if app_attest_passed {
+        report.checks.push(appattest_validity_not_checked());
+    }
     // Android key-attestation chain → Google root (iOS raw SE key → NOT-CHECKED),
-    // bound to the expected app identity when `expect.android` is set, and to the
+    // bound to one of the expected app identities when any is set, and to the
     // signing key always.
-    let now_unix_secs = (opts.now_ms / 1000).max(0) as u64;
-    report.checks.push(attestation_root_check(
+    report.checks.push(attestation_root_check_for(
         proof,
-        now_unix_secs,
-        expect.android.as_ref(),
+        opts.now_ms,
+        opts.validation_window,
+        &expect.android_identities(),
         signing_key_sec1.as_deref(),
     ));
     // Per-proof field-2 device-key signature (both platforms).
@@ -462,6 +524,66 @@ fn android_keygen_challenge() -> [u8; 32] {
     Sha256::digest(b"navigate-stage-chain-v1").into()
 }
 
+/// The `attestation-root` check at the time [`VerifyOptions`] selects: at `now_ms`,
+/// or over `validation_window` when one is set (see
+/// [`attestation_root_check_window`]). Callers that run the attestation layer
+/// themselves use this so both modes stay in one place.
+pub fn attestation_root_check_for(
+    proof: &LocationProof,
+    now_ms: i64,
+    validation_window: Option<ValidationWindow>,
+    expected_apps: &[ExpectedAppIdentity],
+    device_pubkey_sec1: Option<&[u8]>,
+) -> Check {
+    match validation_window {
+        Some(w) => attestation_root_check_window(proof, w, expected_apps, device_pubkey_sec1),
+        None => {
+            let now_unix_secs = (now_ms / 1000).max(0) as u64;
+            attestation_root_check_multi(proof, now_unix_secs, expected_apps, device_pubkey_sec1)
+        }
+    }
+}
+
+/// [`attestation_root_check_multi`] over a [`ValidationWindow`]: the chain must be
+/// valid at both bounds of the window. A certificate validity period is a single
+/// interval, so a chain valid at both bounds was valid at every instant between
+/// them, including when the proof was signed. The lower bound rounds down and the
+/// upper bound rounds up to whole seconds, so rounding never widens the window.
+///
+/// PASS needs both bounds to pass. A FAIL at either bound is a FAIL that names the
+/// bound. Any other result (for example `NOT-CHECKED` for an iOS proof, which
+/// carries no certificate chain) does not depend on time and is returned as is.
+pub fn attestation_root_check_window(
+    proof: &LocationProof,
+    window: ValidationWindow,
+    expected_apps: &[ExpectedAppIdentity],
+    device_pubkey_sec1: Option<&[u8]>,
+) -> Check {
+    let lower_s = window.not_before_ms.div_euclid(1000).max(0) as u64;
+    let upper_s = (window.not_after_ms.saturating_add(999)).div_euclid(1000).max(0) as u64;
+    let at_lower = attestation_root_check_multi(proof, lower_s, expected_apps, device_pubkey_sec1);
+    let at_upper = attestation_root_check_multi(proof, upper_s, expected_apps, device_pubkey_sec1);
+    let span = format!("[{}, {}]", window.not_before_ms, window.not_after_ms);
+    match (at_lower.status, at_upper.status) {
+        (Status::Pass, Status::Pass) => Check {
+            name: at_upper.name,
+            status: Status::Pass,
+            detail: format!("{} (valid at both bounds of the validation window {span})", at_upper.detail),
+        },
+        (Status::Fail, _) => Check {
+            name: at_lower.name,
+            status: Status::Fail,
+            detail: format!("at the start of the validation window {span}: {}", at_lower.detail),
+        },
+        (_, Status::Fail) => Check {
+            name: at_upper.name,
+            status: Status::Fail,
+            detail: format!("at the end of the validation window {span}: {}", at_upper.detail),
+        },
+        _ => at_upper,
+    }
+}
+
 /// Validate the Android hardware key-attestation chain to a Google root
 /// (`DeviceAttestation.certificate_chain`), turning `attestation-root` from
 /// `NOT-CHECKED` into a real verdict. `now_unix_secs` drives the certificate
@@ -477,6 +599,22 @@ pub fn attestation_root_check(
     proof: &LocationProof,
     now_unix_secs: u64,
     expected_app: Option<&ExpectedAppIdentity>,
+    device_pubkey_sec1: Option<&[u8]>,
+) -> Check {
+    // Set-of-one (or empty) view over the single identity.
+    let expected_apps = expected_app.map(std::slice::from_ref).unwrap_or(&[]);
+    attestation_root_check_multi(proof, now_unix_secs, expected_apps, device_pubkey_sec1)
+}
+
+/// Like [`attestation_root_check`], but binds the Android chain to ONE OF a set
+/// of app identities. The attested `attestationApplicationId` must match a single
+/// listed identity in full — its package AND its own signing-cert digest — so a
+/// set `{(A, cert1), (B, cert2)}` rejects a proof from `(A, cert2)`. An empty set
+/// is the hardware-root-only check (same as `expected_app = None`).
+pub fn attestation_root_check_multi(
+    proof: &LocationProof,
+    now_unix_secs: u64,
+    expected_apps: &[ExpectedAppIdentity],
     device_pubkey_sec1: Option<&[u8]>,
 ) -> Check {
     let c = |status, detail: &str| Check {
@@ -509,11 +647,11 @@ pub fn attestation_root_check(
     // `AttestMode::Proof` (2.0.0+): the proof-path posture — the crate's stricter
     // `Bootstrap` mode (verified-boot + revocation) is for licence minting, not
     // proof verification. Behaviour here is unchanged from the pre-2.0 call.
-    match verify_key_attestation(
+    match verify_key_attestation_multi(
         chain,
         &android_keygen_challenge(),
         now_unix_secs,
-        expected_app,
+        expected_apps,
         AttestMode::Proof,
     ) {
         Ok(att) => {
@@ -544,10 +682,10 @@ pub fn attestation_root_check(
                 SecurityLevel::TrustedEnvironment => "TEE",
                 SecurityLevel::Software => "software", // rejected in-layer; unreachable
             };
-            let app = if expected_app.is_some() {
-                "; bound to the expected app identity"
-            } else {
-                ""
+            let app = match expected_apps.len() {
+                0 => String::new(),
+                1 => "; bound to the expected app identity".into(),
+                n => format!("; bound to one of the {n} expected app identities"),
             };
             c(
                 Status::Pass,
@@ -818,7 +956,7 @@ mod tests {
             expect_region: None, expect_region_type: None, expect_region_contains: None,
             session_nonce: None,
             require_session_binding: false,
-            require_schema_v2: false, require_attestation: false,
+            require_schema_v2: false, require_attestation: false, require_verdict: None, validation_window: None,
         };
 
         let report = verify_attested(&proof, &opts, &expectation());
@@ -847,7 +985,7 @@ mod tests {
             expect_region: None, expect_region_type: None, expect_region_contains: None,
             session_nonce: None,
             require_session_binding: false,
-            require_schema_v2: false, require_attestation: false,
+            require_schema_v2: false, require_attestation: false, require_verdict: None, validation_window: None,
         };
 
         // Cached variant returns (Report, Option<AttestedKey>); a bare proof
@@ -977,6 +1115,24 @@ mod tests {
         assert_eq!(a.signing_cert_sha256, [7u8; 32]);
         // new() alone leaves Android binding off.
         assert!(expectation().android.is_none());
+        assert!(expectation().android_identities().is_empty());
+    }
+
+    #[test]
+    fn or_android_builds_the_identity_set_in_order() {
+        let e = expectation()
+            .or_android("com.octetproof.sample.internal", [1u8; 32])
+            .or_android("com.octetproof.sample.studio", [2u8; 32]);
+        // The first or_android fills the primary slot, so single-identity
+        // consumers reading `android` still see it.
+        assert_eq!(e.android.as_ref().unwrap().package_name, "com.octetproof.sample.internal");
+        let ids = e.android_identities();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[1].package_name, "com.octetproof.sample.studio");
+        assert_eq!(ids[1].signing_cert_sha256, [2u8; 32]);
+        // with_android + or_android compose the same way.
+        let e2 = expectation().with_android("a", [1u8; 32]).or_android("b", [2u8; 32]);
+        assert_eq!(e2.android_identities().len(), 2);
     }
 
     #[test]

@@ -11,21 +11,23 @@
 //!
 //! iOS carries a raw Secure-Enclave key (no X.509 chain), so `attestation-root`
 //! is NOT-CHECKED by design and the hardware-root assurance is `app-attest`
-//! (Apple App Attest). There is no attestation-cert validity window, so only
-//! proof freshness is time-sensitive — a fixed `now` + a generous window keeps
-//! this deterministic (it can't go stale the way an expiring leaf would).
+//! (Apple App Attest). The App Attest chain is verified by signature only: its
+//! leaf certificate is valid for about 3 days, but the verifier does not check
+//! those dates and reports that as the `app-attest-validity` NOT-CHECKED line. So
+//! only proof freshness is time-sensitive here, and a fixed `now` + a generous
+//! window keeps this deterministic.
 #![cfg(feature = "appattest")]
 
-use octet_verify::appattest_layer::{verify_attested, AcceptEnvironment, Expectation};
+use octet_verify::appattest_layer::{verify_attested, AcceptEnvironment, Expectation, APP_ATTEST_VALIDITY};
 use octet_verify::keys::hardware_pubkey_from_cert_chain;
 use octet_verify::navigate::LocationProof;
 use octet_verify::prost::Message;
-use octet_verify::verify::{Status, VerifyOptions};
+use octet_verify::verify::{Status, ValidationWindow, VerifyOptions};
 
 const PROOF: &[u8] = include_bytes!("../test-vectors/attestation/ios-appattest.bin");
 
-/// Pinned well after the proof's signed time; iOS has no cert validity window, so
-/// a generous freshness window is all that is needed for determinism.
+/// Pinned well after the proof's signed time. App Attest certificate dates are not
+/// checked, so a generous freshness window is all that is needed for determinism.
 const PINNED_NOW_MS: i64 = 1_800_000_000_000;
 
 fn proof() -> LocationProof {
@@ -63,6 +65,8 @@ fn opts(hw: &octet_verify::crypto::P256VerifyingKey, require_attestation: bool) 
         require_session_binding: false,
         require_schema_v2: false,
         require_attestation,
+        require_verdict: None,
+        validation_window: None,
     }
 }
 
@@ -126,4 +130,56 @@ fn wrong_signing_key_breaks_the_bound_assertion() {
         "a bound assertion must not verify against a different signing key"
     );
     assert!(!report.is_attested());
+}
+
+/// An `app-attest` PASS verifies the chain's signatures, never its validity dates
+/// (the leaf in this vector is valid 2026-08-23 11:13 to 2026-08-26 11:13 UTC, and
+/// `now` is pinned years later). The report says so with an `app-attest-validity`
+/// NOT-CHECKED line in every mode, without changing the verdict.
+#[test]
+fn app_attest_pass_reports_validity_dates_as_not_checked() {
+    let hw = se_signing_key();
+    let p = proof();
+    let signed_ms = p
+        .stage_attestations
+        .iter()
+        .map(|s| s.timestamp_ms)
+        .max()
+        .expect("proof has stages");
+    let window = ValidationWindow::new(signed_ms - 300_000, signed_ms + 3_600_000).expect("ordered window");
+    let modes: [(&str, VerifyOptions<'_>); 3] = [
+        ("default", opts(&hw, false)),
+        ("require-attestation", opts(&hw, true)),
+        ("window", VerifyOptions { validation_window: Some(window), ..opts(&hw, true) }),
+    ];
+    for (mode, o) in modes {
+        let report = verify_attested(&p, &o, &expectation());
+        assert_eq!(status(&report, "app-attest"), Some(Status::Pass), "{mode}");
+        let line = report
+            .checks
+            .iter()
+            .find(|c| c.name == APP_ATTEST_VALIDITY)
+            .unwrap_or_else(|| panic!("{mode}: no {APP_ATTEST_VALIDITY} line"));
+        assert_eq!(line.status, Status::NotChecked, "{mode}");
+        assert!(line.detail.contains("validity dates not checked"), "{mode}: {}", line.detail);
+        assert!(report.is_valid(), "{mode}: the NOT-CHECKED line must not change the verdict");
+        assert!(report.is_attested(), "{mode}");
+        assert!(report.is_authentic(), "{mode}");
+        if o.require_attestation {
+            assert_eq!(status(&report, "attestation-required"), Some(Status::Pass), "{mode}");
+        }
+    }
+}
+
+/// The line accompanies a PASS only: when `app-attest` does not pass, there is no
+/// verified chain whose dates could be in question.
+#[test]
+fn no_validity_line_without_an_app_attest_pass() {
+    let wrong = p256::ecdsa::SigningKey::from_slice(&[9u8; 32])
+        .unwrap()
+        .verifying_key()
+        .to_owned();
+    let report = verify_attested(&proof(), &opts(&wrong, true), &expectation());
+    assert_ne!(status(&report, "app-attest"), Some(Status::Pass));
+    assert_eq!(status(&report, APP_ATTEST_VALIDITY), None);
 }

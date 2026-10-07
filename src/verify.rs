@@ -16,7 +16,7 @@
 //! That gap is reported as a NOT-CHECKED line so a reader is never misled.
 
 use crate::crypto::{self, Ed25519VerifyingKey, P256VerifyingKey, SigEncoding};
-use crate::navigate::{LocationProof, StageAttestation};
+use crate::navigate::{LocationProof, LocationProofVerdict, ProofLevel, StageAttestation};
 
 /// Outcome of a single check.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -81,6 +81,58 @@ pub struct QueryRegion {
     pub region_id: Vec<u8>,
 }
 
+/// The minimum signed `spoofing_verdict` tier a caller requires (see
+/// [`VerifyOptions::require_verdict`]). Only the two acceptance tiers exist:
+/// requiring SUSPICIOUS or NOT_PROVABLE would accept nothing a relying party
+/// wants, and UNSPECIFIED is never a verdict.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequiredVerdict {
+    /// Only a signed VERIFIED verdict passes.
+    Verified,
+    /// A signed VERIFIED or PLAUSIBLE verdict passes.
+    Plausible,
+}
+
+impl RequiredVerdict {
+    /// Parse the CLI spelling: `verified` or `plausible` (case-insensitive).
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "verified" => Some(RequiredVerdict::Verified),
+            "plausible" => Some(RequiredVerdict::Plausible),
+            _ => None,
+        }
+    }
+
+    /// True iff `v` is at or above this tier. UNSPECIFIED, SUSPICIOUS and
+    /// NOT_PROVABLE never satisfy either tier.
+    pub fn satisfied_by(self, v: LocationProofVerdict) -> bool {
+        match self {
+            RequiredVerdict::Verified => v == LocationProofVerdict::Verified,
+            RequiredVerdict::Plausible => {
+                matches!(v, LocationProofVerdict::Verified | LocationProofVerdict::Plausible)
+            }
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            RequiredVerdict::Verified => "VERIFIED",
+            RequiredVerdict::Plausible => "PLAUSIBLE or better",
+        }
+    }
+}
+
+/// The wire name of a spoofing verdict, as the proto spells it.
+pub fn spoofing_verdict_name(v: LocationProofVerdict) -> &'static str {
+    match v {
+        LocationProofVerdict::VerdictUnspecified => "VERDICT_UNSPECIFIED",
+        LocationProofVerdict::Verified => "VERIFIED",
+        LocationProofVerdict::Plausible => "PLAUSIBLE",
+        LocationProofVerdict::Suspicious => "SUSPICIOUS",
+        LocationProofVerdict::NotProvable => "NOT_PROVABLE",
+    }
+}
+
 /// The full result of verifying one proof.
 pub struct Report {
     pub checks: Vec<Check>,
@@ -99,11 +151,20 @@ pub struct Report {
     ///. `None` for v2/v1 proofs and for a v3 proof with no bound query (a
     /// background proof or a city query). Read via [`Report::query_region`].
     query_region: Option<QueryRegion>,
+    /// The signed spoofing verdict, set only when `semantic-binding` passed and
+    /// the verdict is not UNSPECIFIED. Read via [`Report::spoofing_verdict`].
+    spoofing_verdict: Option<LocationProofVerdict>,
 }
 
 impl Report {
     fn new() -> Self {
-        Report { checks: Vec::new(), region_expectation: false, location_verdict: None, query_region: None }
+        Report {
+            checks: Vec::new(),
+            region_expectation: false,
+            location_verdict: None,
+            query_region: None,
+            spoofing_verdict: None,
+        }
     }
 
     fn add(&mut self, name: &'static str, status: Status, detail: impl Into<String>) {
@@ -245,6 +306,18 @@ impl Report {
     pub fn query_region(&self) -> Option<&QueryRegion> {
         self.query_region.as_ref()
     }
+
+    /// The proof's **signed** spoofing verdict tier (VERIFIED / PLAUSIBLE /
+    /// SUSPICIOUS / NOT_PROVABLE), or `None` when it is not trustworthy: the
+    /// `semantic-binding` check did not pass (unbound, tampered, or a v1
+    /// city/earth proof), or the verdict is UNSPECIFIED. Unlike the proof's raw
+    /// `spoofing_verdict()` accessor, a value here was verified as signed.
+    ///
+    /// Gate on this, not on `is_valid()` alone: a disc answer can be VERIFIED or
+    /// PLAUSIBLE, and both verify. [`VerifyOptions::require_verdict`] enforces it.
+    pub fn spoofing_verdict(&self) -> Option<LocationProofVerdict> {
+        self.spoofing_verdict
+    }
 }
 
 /// Inputs to [`verify`]. The hardware key and its provenance are resolved by
@@ -275,10 +348,10 @@ pub struct VerifyOptions<'a> {
     /// `--expect-region` matches by name and can't evaluate a geometric region.
     /// Adds a `region-contains` check: `Pass` iff the claimed region contains the
     /// point, `Fail` otherwise (including a named country/subdivision region,
-    /// which carries no embedded geometry — use `--expect-region` for those — and
-    /// an `h3` region, whose point-containment needs an H3 library not linked in
-    /// the lean build). Supported geometrically: `earth`, `city` (disc), `ellipse`,
-    /// `bbox`. `None` ⇒ the check is not added.
+    /// which carries no embedded geometry — use `--expect-region` for those).
+    /// Supported geometrically: `earth`, `city` (disc), `ellipse`, `bbox`, and
+    /// `h3` under the `h3` feature (an h3 region FAILs closed without it).
+    /// `None` ⇒ the check is not added.
     pub expect_region_contains: Option<(f64, f64)>,
     /// Per-login session nonce the relying party issued, checked against the
     /// proof's `sessionBinding` stage. `None` ⇒ the binding is NOT-CHECKED
@@ -316,6 +389,47 @@ pub struct VerifyOptions<'a> {
     /// so it always FAILs there. It does not yet require the *bound* assertion
     /// form — that gate lands once the bound-binding rev is in (see).
     pub require_attestation: bool,
+    /// Require the **signed** spoofing verdict to be at least this tier. When
+    /// set, a `verdict-required` check FAILs unless `semantic-binding` passed and
+    /// the bound verdict meets the tier. It fails closed on an unbound proof,
+    /// because an unbound verdict could have been edited. `None` (the default)
+    /// adds no check. Use [`RequiredVerdict::Verified`] to refuse a PLAUSIBLE
+    /// disc answer, which otherwise verifies like a VERIFIED one.
+    pub require_verdict: Option<RequiredVerdict>,
+    /// Historical validation window. `None` (the default) judges the time-dependent
+    /// checks at `now_ms`. When set, `freshness` and the attestation-chain check use
+    /// the window instead of `now_ms`. See [`ValidationWindow`].
+    pub validation_window: Option<ValidationWindow>,
+}
+
+/// The interval in which a proof is known to have been signed, established from
+/// evidence outside the proof: for example the time a server issued the proof's
+/// upload nonce (lower bound) and a trusted timestamp over the stored proof (upper
+/// bound). Both bounds are Unix milliseconds.
+///
+/// It lets an old proof be verified as of when it was made. Certificates in a
+/// hardware attestation chain can be valid for only days, so judging an archived
+/// proof at the current time fails it for reasons unrelated to its authenticity.
+///
+/// With a window set, the signed proof time must fall inside the window (with the
+/// usual clock-skew tolerance), and every certificate in the attestation chain must
+/// be valid at both bounds. A certificate's validity period is a single interval,
+/// so a certificate valid at both bounds was valid throughout the window, including
+/// at the moment the proof was signed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ValidationWindow {
+    /// Earliest time the proof can have been signed, Unix milliseconds.
+    pub not_before_ms: i64,
+    /// Latest time the proof can have been signed, Unix milliseconds.
+    pub not_after_ms: i64,
+}
+
+impl ValidationWindow {
+    /// A window from `not_before_ms` to `not_after_ms`. Returns `None` when the
+    /// bounds are reversed.
+    pub fn new(not_before_ms: i64, not_after_ms: i64) -> Option<Self> {
+        (not_before_ms <= not_after_ms).then_some(Self { not_before_ms, not_after_ms })
+    }
 }
 
 /// Verify a decoded [`LocationProof`] and return a structured [`Report`].
@@ -335,7 +449,28 @@ pub fn verify(proof: &LocationProof, opts: &VerifyOptions) -> Report {
     let ref_ts = signed_ts.unwrap_or(proof.timestamp_ms);
     let age_s = opts.now_ms.saturating_sub(ref_ts) / 1000;
     const FUTURE_SKEW_S: i64 = 60;
-    if age_s < -FUTURE_SKEW_S {
+    if let Some(w) = opts.validation_window {
+        // Historical mode: the signed time must lie inside the window established
+        // from outside evidence, within the same skew as live mode. `max_age_s` and
+        // `now_ms` do not apply: the window, not the wall clock, says when the proof
+        // can have been made.
+        let skew_ms = FUTURE_SKEW_S * 1000;
+        let span = format!("[{}, {}]", w.not_before_ms, w.not_after_ms);
+        if w.not_before_ms > w.not_after_ms {
+            r.add("freshness", Status::Fail, format!("validation window {span} is reversed"));
+        } else if ref_ts < w.not_before_ms.saturating_sub(skew_ms) {
+            r.add("freshness", Status::Fail, format!(
+                "signed timestamp {ref_ts} is {} s before the validation window {span}",
+                (w.not_before_ms - ref_ts) / 1000));
+        } else if ref_ts > w.not_after_ms.saturating_add(skew_ms) {
+            r.add("freshness", Status::Fail, format!(
+                "signed timestamp {ref_ts} is {} s after the validation window {span}",
+                (ref_ts - w.not_after_ms) / 1000));
+        } else {
+            r.add("freshness", Status::Pass, format!(
+                "signed timestamp {ref_ts} is inside the validation window {span} ({FUTURE_SKEW_S} s skew)"));
+        }
+    } else if age_s < -FUTURE_SKEW_S {
         r.add("freshness", Status::Fail,
             format!("signed timestamp is {} s in the future (beyond {FUTURE_SKEW_S} s skew)", -age_s));
     } else if age_s < 0 {
@@ -463,7 +598,7 @@ pub fn verify(proof: &LocationProof, opts: &VerifyOptions) -> Report {
     // Assert the claimed region CONTAINS a given point. This is what makes a
     // geometric proof positively assertable — `--expect-region` matches by name
     // and can only reject an identifier-less region. Unevaluable regions (named
-    // country/subdivision with no embedded geometry; h3 without an H3 library)
+    // country/subdivision with no embedded geometry; h3 without the `h3` feature)
     // FAIL, per's rule that an expectation which cannot be evaluated is not
     // satisfied.
     if let Some((lat, lon)) = opts.expect_region_contains {
@@ -482,6 +617,7 @@ pub fn verify(proof: &LocationProof, opts: &VerifyOptions) -> Report {
     r.add("device-attestation-sig", Status::NotChecked,
         "DeviceAttestation.signature not verified in the default build (build --features appattest to verify field 2)");
     r.add_semantic_binding(proof, opts.require_schema_v2);
+    r.add_spoofing_verdict(proof, opts.require_verdict);
     // Per-login session binding — checked against the nonce the relying party
     // supplies. NOT-CHECKED (the default) when no nonce is given; when
     // `require_session_binding` is set, an unsupplied/absent binding FAILs. See
@@ -677,6 +813,56 @@ impl Report {
             }
             Some(_) => self.add(NAME, Status::Fail,
                 "semantic fields do not match the signed semanticFields stage (verdict / region / level / integrity / commitment / location_verdict tampered)"),
+        }
+    }
+
+    /// Record the signed spoofing verdict (only when `semantic-binding` passed),
+    /// label a disc answer's tier, and enforce [`VerifyOptions::require_verdict`].
+    /// Runs after [`Self::add_semantic_binding`], so the binding result and the
+    /// bound query region are already known.
+    ///
+    /// A "disc answer" is a proof at level CONTINUOUS_AREA, or one whose bound
+    /// v3 query region is an ellipse (the proof-model-v2 `proveDiscVerdict`
+    /// shape, which keeps the country-level claim). Either can be signed at the
+    /// PLAUSIBLE tier, so a consumer checking only `valid` would read it as
+    /// VERIFIED. The `verdict-tier` line labels the tier: PASS for VERIFIED and
+    /// PLAUSIBLE (a label, not a judgement: until the SDK's verdict ladder
+    /// reaches VERIFIED, nearly every disc answer is PLAUSIBLE, so a WARN there
+    /// would be noise), WARN for SUSPICIOUS / NOT_PROVABLE. To refuse PLAUSIBLE,
+    /// use [`VerifyOptions::require_verdict`].
+    fn add_spoofing_verdict(&mut self, proof: &LocationProof, require: Option<RequiredVerdict>) {
+        let raw = proof.spoofing_verdict();
+        self.spoofing_verdict = (self.is_semantically_bound()
+            && raw != LocationProofVerdict::VerdictUnspecified)
+            .then_some(raw);
+
+        let disc = proof.level() == ProofLevel::ContinuousArea
+            || self.query_region.as_ref().is_some_and(|q| q.region_type == 4); // 4 = ellipse (disc)
+        if let (true, Some(v)) = (disc, self.spoofing_verdict) {
+            match v {
+                LocationProofVerdict::Verified => self.add("verdict-tier", Status::Pass,
+                    "disc answer signed VERIFIED"),
+                LocationProofVerdict::Plausible => self.add("verdict-tier", Status::Pass,
+                    "disc answer signed PLAUSIBLE, not VERIFIED (use --require-verdict verified \
+                     to refuse it)"),
+                other => self.add("verdict-tier", Status::Warn, format!(
+                    "disc answer signed {}: the device did not vouch for it", spoofing_verdict_name(other))),
+            }
+        }
+
+        let Some(req) = require else { return };
+        match self.spoofing_verdict {
+            Some(v) if req.satisfied_by(v) => self.add("verdict-required", Status::Pass,
+                format!("signed spoofing_verdict {} meets the required tier ({})",
+                        spoofing_verdict_name(v), req.label())),
+            Some(v) => self.add("verdict-required", Status::Fail,
+                format!("signed spoofing_verdict {} is below the required tier ({})",
+                        spoofing_verdict_name(v), req.label())),
+            None if self.is_semantically_bound() => self.add("verdict-required", Status::Fail,
+                format!("spoofing_verdict is VERDICT_UNSPECIFIED; required tier is {}", req.label())),
+            None => self.add("verdict-required", Status::Fail,
+                format!("required tier is {} but the spoofing_verdict is not semantically bound \
+                         (semantic-binding did not pass), so it cannot be trusted", req.label())),
         }
     }
 
@@ -1088,7 +1274,7 @@ pub fn is_known_region_type(s: &str) -> bool {
 
 /// Does the proof's claimed region contain `(lat, lon)` (degrees)? Returns the
 /// `region-contains` check status + detail. Geometric regions are evaluated with
-/// pure spherical/planar math — no external data, no H3 library:
+/// pure spherical/planar math, with no external data:
 /// - `earth` always contains (2D; a lat/lon point can't test the altitude cap);
 /// - `city` is a disc (centre + radius): haversine distance ≤ radius;
 /// - `ellipse` uses a local east/north projection about its centre;
@@ -1096,7 +1282,8 @@ pub fn is_known_region_type(s: &str) -> bool {
 ///
 /// Regions with no embedded geometry cannot be evaluated and FAIL (per's
 /// "unevaluable ⇒ not satisfied"): `country`/`subdivision` carry only an ISO code
-/// (use `--expect-region`), and `h3` needs an H3 library the lean build omits.
+/// (use `--expect-region`). `h3` is evaluated per cell with `h3o` under the `h3`
+/// feature (see [`h3_contains`]) and FAILs closed without it.
 fn region_contains(proof: &LocationProof, lat: f64, lon: f64) -> (Status, String) {
     use crate::navigate::proof_region::Region::*;
     let at = format!("({lat:.5}, {lon:.5})");
@@ -1135,11 +1322,43 @@ fn region_contains(proof: &LocationProof, lat: f64, lon: f64) -> (Status, String
             Status::Fail,
             format!("claimed subdivision {:?} carries no geometry; use --expect-region for named regions", s.iso_code),
         ),
-        Some(H3PolygonSet(_)) => (
-            Status::Fail,
-            "h3 region point-containment is unsupported in this build (no H3 library); use --expect-region-type h3".into(),
-        ),
+        Some(H3PolygonSet(h)) => match h3_contains(h, lat, lon) {
+            Ok(inside) => yn(inside, &format!("h3 cell set ({} cells)", h.cell_ids.len())),
+            Err(why) => (Status::Fail, format!("cannot evaluate h3 containment of {at}: {why}")),
+        },
     }
+}
+
+/// Point-in-H3-region: the region is the filled union of `cell_ids`, so the
+/// point is inside iff some cell `C` satisfies `latLngToCell(point, res(C)) == C`
+/// at `C`'s own resolution. Mixed and compacted resolutions are therefore fine:
+/// each cell index carries its own resolution, and none is assumed uniform.
+///
+/// Fails closed (`Err`) on an empty set, on any index that is not a valid H3 v4
+/// cell, and on a non-finite point. Duplicates are harmless. A boundary point
+/// belongs to exactly one H3 cell, so it is inside iff that cell is listed.
+#[cfg(feature = "h3")]
+fn h3_contains(h: &crate::navigate::H3PolygonSet, lat: f64, lon: f64) -> Result<bool, String> {
+    use h3o::{CellIndex, LatLng};
+    if h.cell_ids.is_empty() {
+        return Err("the h3 cell set is empty (malformed region)".into());
+    }
+    let cells = h
+        .cell_ids
+        .iter()
+        .map(|&id| CellIndex::try_from(id).map_err(|_| format!("{id:#x} is not a valid H3 cell index")))
+        .collect::<Result<Vec<_>, _>>()?;
+    let point = LatLng::new(lat, lon).map_err(|e| format!("invalid point: {e}"))?;
+    Ok(cells.iter().any(|&c| point.to_cell(c.resolution()) == c))
+}
+
+/// Lean build: no H3 library is linked, so containment cannot be evaluated and
+/// the assertion fails closed — an h3 proof is never falsely asserted.
+#[cfg(not(feature = "h3"))]
+fn h3_contains(_: &crate::navigate::H3PolygonSet, _: f64, _: f64) -> Result<bool, String> {
+    Err("h3 point-containment needs the `h3` feature (build --features h3); \
+         use --expect-region-type h3 to accept the region type alone"
+        .into())
 }
 
 /// Great-circle distance in metres (spherical earth).
@@ -1486,7 +1705,7 @@ mod tests {
                 expect_region: None, expect_region_type: None, expect_region_contains: None,
                 session_nonce: None,
                 require_session_binding: false,
-                require_schema_v2: false, require_attestation: false,
+                require_schema_v2: false, require_attestation: false, require_verdict: None, validation_window: None,
             })
         };
 
@@ -1517,7 +1736,7 @@ mod tests {
         let r3 = verify(&good, &VerifyOptions {
             now_ms: ts, max_age_s: 300, hardware_pubkey: Some(&wrong),
             hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, session_nonce: None,
-            require_session_binding: false, require_schema_v2: false, require_attestation: false,
+            require_session_binding: false, require_schema_v2: false, require_attestation: false, require_verdict: None, validation_window: None,
         });
         assert!(!r3.is_valid());
         assert_eq!(status_of(&r3, "stage-signatures"), Status::Fail);
@@ -1542,7 +1761,7 @@ mod tests {
         let r = verify(&proof, &VerifyOptions {
             now_ms: ts, max_age_s: 300, hardware_pubkey: None,
             hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, session_nonce: None,
-            require_session_binding: false, require_schema_v2: false, require_attestation: false,
+            require_session_binding: false, require_schema_v2: false, require_attestation: false, require_verdict: None, validation_window: None,
         });
         // nullifier + zkProof are still bound, but the unbound commitment must
         // not be papered over.
@@ -1564,11 +1783,49 @@ mod tests {
         let r = verify(&proof, &VerifyOptions {
             now_ms: now, max_age_s: 300, hardware_pubkey: None,
             hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, session_nonce: None,
-            require_session_binding: false, require_schema_v2: false, require_attestation: false,
+            require_session_binding: false, require_schema_v2: false, require_attestation: false, require_verdict: None, validation_window: None,
         });
         assert_eq!(status_of(&r, "freshness"), Status::Fail, "signed time is stale");
         // The edit of the unbound field is surfaced, not ignored.
         assert_eq!(status_of(&r, "timestamp-binding"), Status::Warn);
+    }
+
+    /// Historical mode: with a validation window, freshness asks whether the signed
+    /// time lies inside the window. Neither `now_ms` nor `max_age_s` applies, so a
+    /// proof read years later still passes when its window covers the signing time.
+    #[test]
+    fn validation_window_replaces_wall_clock_freshness() {
+        let sk = SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let ts = 1_700_000_000_000i64;
+        let proof = build_proof(&sk, ts);
+        let years_later = ts + 3 * 365 * 86_400_000;
+        let freshness = |window: Option<ValidationWindow>| {
+            let r = verify(&proof, &VerifyOptions {
+                now_ms: years_later, max_age_s: 300, hardware_pubkey: None,
+                hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, session_nonce: None,
+                require_session_binding: false, require_schema_v2: false, require_attestation: false, require_verdict: None,
+                validation_window: window,
+            });
+            status_of(&r, "freshness")
+        };
+        let w = |from: i64, to: i64| Some(ValidationWindow::new(ts + from, ts + to).unwrap());
+
+        // No window: years later is stale.
+        assert_eq!(freshness(None), Status::Fail);
+        // Signed time inside the window.
+        assert_eq!(freshness(w(-600_000, 6 * 3_600_000)), Status::Pass);
+        // Within the 60 s skew of either bound.
+        assert_eq!(freshness(w(30_000, 600_000)), Status::Pass);
+        assert_eq!(freshness(w(-600_000, -30_000)), Status::Pass);
+        // Beyond the skew before or after the window.
+        assert_eq!(freshness(w(120_000, 600_000)), Status::Fail);
+        assert_eq!(freshness(w(-600_000, -120_000)), Status::Fail);
+        // `new` refuses reversed bounds, and a hand-built reversed window fails closed.
+        assert!(ValidationWindow::new(ts, ts - 1).is_none());
+        assert_eq!(
+            freshness(Some(ValidationWindow { not_before_ms: ts + 1, not_after_ms: ts })),
+            Status::Fail
+        );
     }
 
     /// A signed timestamp far in the future is impossible for a genuine proof
@@ -1584,7 +1841,7 @@ mod tests {
         let r = verify(&proof, &VerifyOptions {
             now_ms: now, max_age_s: 300, hardware_pubkey: None,
             hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, session_nonce: None,
-            require_session_binding: false, require_schema_v2: false, require_attestation: false,
+            require_session_binding: false, require_schema_v2: false, require_attestation: false, require_verdict: None, validation_window: None,
         });
         assert_eq!(status_of(&r, "freshness"), Status::Fail);
     }
@@ -1654,6 +1911,102 @@ mod tests {
         assert_eq!(semantic_status(&commitment), Status::Fail);
     }
 
+    // --- signed spoofing-verdict tier: surfacing + --require-verdict ---
+
+    fn verdict_report(proof: &LocationProof, require: Option<RequiredVerdict>) -> Report {
+        let mut r = Report::new();
+        r.add_semantic_binding(proof, false);
+        r.add_spoofing_verdict(proof, require);
+        r
+    }
+
+    fn has(r: &Report, name: &str) -> Option<Status> {
+        r.checks.iter().find(|c| c.name == name).map(|c| c.status)
+    }
+
+    #[test]
+    fn required_verdict_tiers_and_parse() {
+        use LocationProofVerdict::*;
+        let v = RequiredVerdict::Verified;
+        let p = RequiredVerdict::Plausible;
+        assert!(v.satisfied_by(Verified));
+        assert!(!v.satisfied_by(Plausible));
+        assert!(p.satisfied_by(Verified) && p.satisfied_by(Plausible));
+        for bad in [VerdictUnspecified, Suspicious, NotProvable] {
+            assert!(!v.satisfied_by(bad) && !p.satisfied_by(bad), "{bad:?}");
+        }
+        assert_eq!(RequiredVerdict::parse("VERIFIED"), Some(v));
+        assert_eq!(RequiredVerdict::parse("plausible"), Some(p));
+        assert_eq!(RequiredVerdict::parse("suspicious"), None);
+    }
+
+    /// A bound verdict is surfaced and enforced: VERIFIED meets `verified`;
+    /// PLAUSIBLE fails `verified` and meets `plausible`; SUSPICIOUS meets neither.
+    #[test]
+    fn require_verdict_enforces_the_bound_tier() {
+        let verified = proof_with_semantic_stage(1, 2, "GB", vec![0xC0; 16]);
+        let r = verdict_report(&verified, Some(RequiredVerdict::Verified));
+        assert_eq!(r.spoofing_verdict(), Some(LocationProofVerdict::Verified));
+        assert_eq!(has(&r, "verdict-required"), Some(Status::Pass));
+
+        let plausible = proof_with_semantic_stage(2, 2, "GB", vec![0xC0; 16]);
+        let r = verdict_report(&plausible, Some(RequiredVerdict::Verified));
+        assert_eq!(has(&r, "verdict-required"), Some(Status::Fail));
+        assert!(!r.is_valid());
+        let r = verdict_report(&plausible, Some(RequiredVerdict::Plausible));
+        assert_eq!(has(&r, "verdict-required"), Some(Status::Pass));
+
+        let suspicious = proof_with_semantic_stage(3, 2, "GB", vec![0xC0; 16]);
+        let r = verdict_report(&suspicious, Some(RequiredVerdict::Plausible));
+        assert_eq!(has(&r, "verdict-required"), Some(Status::Fail));
+    }
+
+    /// Fail closed: a verdict that is not semantically bound (no semanticFields
+    /// stage, or a tampered one) is not trusted, so a requirement FAILs even
+    /// when the raw field reads VERIFIED, and `spoofing_verdict()` is `None`.
+    #[test]
+    fn require_verdict_fails_closed_on_an_unbound_or_tampered_verdict() {
+        let unbound = LocationProof { spoofing_verdict: 1, ..Default::default() };
+        let r = verdict_report(&unbound, Some(RequiredVerdict::Plausible));
+        assert_eq!(r.spoofing_verdict(), None);
+        assert_eq!(has(&r, "verdict-required"), Some(Status::Fail));
+
+        let mut tampered = proof_with_semantic_stage(2, 2, "GB", vec![0xC0; 16]);
+        tampered.spoofing_verdict = 1; // PLAUSIBLE → VERIFIED edit
+        let r = verdict_report(&tampered, Some(RequiredVerdict::Verified));
+        assert_eq!(r.spoofing_verdict(), None);
+        assert_eq!(has(&r, "verdict-required"), Some(Status::Fail));
+
+        let unspecified = proof_with_semantic_stage(0, 2, "GB", vec![0xC0; 16]);
+        let r = verdict_report(&unspecified, Some(RequiredVerdict::Plausible));
+        assert_eq!(r.spoofing_verdict(), None);
+        assert_eq!(has(&r, "verdict-required"), Some(Status::Fail));
+    }
+
+    /// No requirement ⇒ no `verdict-required` check (back-compat). A disc
+    /// answer's tier is labelled: VERIFIED and PLAUSIBLE are a PASS label (not a
+    /// WARN), SUSPICIOUS / NOT_PROVABLE a WARN; a country proof (not a disc
+    /// answer) gets no label.
+    #[test]
+    fn disc_answer_tier_is_labelled_and_default_adds_no_requirement() {
+        let disc = |v| proof_with_semantic_stage(v, ProofLevel::ContinuousArea as i32, "GB", vec![0xC0; 16]);
+        let r = verdict_report(&disc(2), None);
+        assert_eq!(has(&r, "verdict-required"), None);
+        assert_eq!(has(&r, "verdict-tier"), Some(Status::Pass));
+        assert!(r.checks.iter().any(|c| c.name == "verdict-tier" && c.detail.contains("PLAUSIBLE, not VERIFIED")));
+        assert_eq!(r.count(Status::Warn), 0, "a PLAUSIBLE disc answer adds no WARN");
+
+        assert_eq!(has(&verdict_report(&disc(1), None), "verdict-tier"), Some(Status::Pass));
+        for bad in [3, 4] {
+            let r = verdict_report(&disc(bad), None);
+            assert_eq!(has(&r, "verdict-tier"), Some(Status::Warn), "verdict {bad}");
+            assert!(r.is_valid(), "a WARN does not reject");
+        }
+
+        let country = proof_with_semantic_stage(2, 2, "GB", vec![0xC0; 16]);
+        assert_eq!(has(&verdict_report(&country, None), "verdict-tier"), None);
+    }
+
     ///: a bare `verify()` with `require_attestation` FAILs closed on ANY
     /// build — core records no passing attestation, so `is_attested()` is false.
     /// This is the fail-open the audit flagged: a public options field must not
@@ -1672,6 +2025,8 @@ mod tests {
             require_session_binding: false,
             require_schema_v2: false,
             require_attestation: true,
+            require_verdict: None,
+            validation_window: None,
         };
         let r = verify(&proof, &opts);
         assert!(
@@ -1762,6 +2117,8 @@ mod tests {
             require_session_binding: false,
             require_schema_v2: false,
             require_attestation: false,
+            require_verdict: None,
+            validation_window: None,
         };
         let report = verify(&proof, &opts);
         assert_eq!(
@@ -2109,10 +2466,18 @@ mod tests {
             }
         }
 
-        let raw = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/test-vectors/semantic-binding-v3/vectors.json"));
-        let doc: serde_json::Value = serde_json::from_str(raw).expect("vectors.json parses");
-        let vectors = doc["vectors"].as_array().expect("vectors array");
-        assert_eq!(vectors.len(), 9, "expected 9 v3 golden vectors");
+        // Both the base v3 set and the disc-verdict set share one format and
+        // one preimage; run the same byte-parity assertions over both files.
+        let files: [(&str, &str); 2] = [
+            ("vectors.json", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/test-vectors/semantic-binding-v3/vectors.json"))),
+            ("disc-verdict.json", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/test-vectors/semantic-binding-v3/disc-verdict.json"))),
+        ];
+        let mut total = 0usize;
+        for (fname, raw) in files {
+        let doc: serde_json::Value = serde_json::from_str(raw).unwrap_or_else(|e| panic!("{fname} parses: {e}"));
+        let vectors = doc["vectors"].as_array().unwrap_or_else(|| panic!("{fname} vectors array"));
+        assert!(!vectors.is_empty(), "{fname} has no vectors");
+        total += vectors.len();
 
         for v in vectors {
             let name = v["name"].as_str().unwrap();
@@ -2190,6 +2555,60 @@ mod tests {
                 }
             }
         }
+        }
+        assert_eq!(total, 14, "expected 9 base v3 + 5 disc-verdict golden vectors");
+    }
+
+    /// "Disc over water": the phone can't name a country, so the CLAIMED
+    /// region is earth — but the proof is still bound to the DISC (query_region
+    /// type 4), not an earth query. A type-4 query with an earth claim must verify.
+    #[test]
+    fn v3_disc_query_with_earth_claim_verifies() {
+        use crate::navigate::{
+            proof_region::Region, DeviceIntegrityVerdict, EarthRegion, EllipseRegion, LatLon,
+            ProofRegion, RegionRef,
+        };
+
+        // A real disc reference (type 4) via the canonical digest.
+        let dref = query_region_ref(&ProofRegion {
+            region: Some(Region::Ellipse(EllipseRegion {
+                center: Some(LatLon { latitude: 51.5, longitude: 0.0 }),
+                semi_major_m: 2000.0, semi_minor_m: 2000.0, heading_deg: 0.0,
+            })),
+        }).expect("disc has a reference");
+        assert_eq!(dref.region_type, 4);
+
+        let mut proof = LocationProof {
+            spoofing_verdict: 1,
+            level: 1,
+            position_commitment: vec![0xC0; 16],
+            // Claim is EARTH (no country nameable offshore) …
+            claimed_region: Some(ProofRegion { region: Some(Region::Earth(EarthRegion { max_altitude_meters: 10000.0 })) }),
+            location_verdict: 2, // OUTSIDE the disc
+            // … but the query is still the DISC (type 4).
+            query_region: Some(RegionRef { region_type: dref.region_type, region_id: dref.region_id.clone() }),
+            device_attestation: Some(DeviceAttestation {
+                integrity_verdict: Some(DeviceIntegrityVerdict { status: 3, ..Default::default() }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        proof.stage_attestations.push(StageAttestation {
+            stage: SEMANTIC_FIELDS_STAGE.to_string(),
+            timestamp_ms: 1,
+            data_hash: sha256(&semantic_preimage_v3(&proof)).to_vec(),
+            signature: vec![],
+            previous_hash: None,
+        });
+
+        let mut r = Report::new();
+        r.add_semantic_binding(&proof, false);
+        assert_eq!(status_of(&r, "semantic-binding"), Status::Pass, "earth claim + disc query binds under v3");
+        assert_eq!(status_of(&r, "query-region"), Status::Pass, "the disc query is well-formed and answered");
+        assert_eq!(r.location_verdict(), Some(SignedLocationVerdict::Outside));
+        let q = r.query_region().expect("disc Q exposed");
+        assert_eq!(q.region_type, 4, "bound query stays the disc, not earth");
+        assert_eq!(q.region_id, dref.region_id);
     }
 
     /// v1 proofs stay accepted (cutover tolerance) and expose no signed verdict —
@@ -2361,6 +2780,8 @@ mod tests {
             require_session_binding: false,
             require_schema_v2: false,
             require_attestation: false,
+            require_verdict: None,
+            validation_window: None,
         };
         let report = verify(&proof, &opts);
         let st = |n: &str| report.checks.iter().find(|c| c.name == n).map(|c| c.status);
@@ -2534,7 +2955,7 @@ mod tests {
     ///: `--expect-region-contains` positively asserts a *geometric* region by
     /// point containment — the capability `--expect-region` (name match) can't
     /// provide. Geometric types are evaluated with pure math; regions with no
-    /// embedded geometry (named country/subdivision, and h3 without an H3 lib)
+    /// embedded geometry (named country/subdivision, and h3 without the `h3` feature)
     /// FAIL rather than pass, per's unevaluable-⇒-not-satisfied rule.
     #[test]
     fn region_contains_evaluates_geometric_regions() {
@@ -2587,8 +3008,12 @@ mod tests {
         assert_eq!(st(Region::Country(CountryRegion { iso_code: "US".into() }), sf_lat, sf_lon), Status::Fail);
         assert_eq!(st(Region::Subdivision(SubdivisionRegion { iso_code: "US-CA".into() }), sf_lat, sf_lon), Status::Fail);
 
-        // h3 point-containment unsupported in the lean build → FAIL.
+        // h3: FAIL on the lean build (no H3 library), and FAIL with `h3` too,
+        // because this res-5 cell does not contain SF (SF is in 0x85283083fffffff).
+        // The positive cases are the reference vectors in tests/h3_containment.rs.
         assert_eq!(st(Region::H3PolygonSet(H3PolygonSet { cell_ids: vec![0x8528347bfffffff] }), sf_lat, sf_lon), Status::Fail);
+        #[cfg(feature = "h3")]
+        assert_eq!(st(Region::H3PolygonSet(H3PolygonSet { cell_ids: vec![0x85283083fffffff] }), sf_lat, sf_lon), Status::Pass);
 
         // No region at all → FAIL.
         let no_region = LocationProof { claimed_region: None, ..Default::default() };
@@ -2625,6 +3050,8 @@ mod tests {
                 require_session_binding: false,
                 require_schema_v2: false,
                 require_attestation: false,
+                require_verdict: None,
+                validation_window: None,
             }
         }
         fn type_status(p: &LocationProof, want_ty: &str) -> Option<Status> {
@@ -2697,6 +3124,8 @@ mod tests {
             require_session_binding: false,
             require_schema_v2: false,
             require_attestation: false,
+            require_verdict: None,
+            validation_window: None,
         };
 
         // Point inside → region-contains PASS and the region is asserted.
@@ -2751,7 +3180,7 @@ mod tests {
             verify(&proof, &VerifyOptions {
                 now_ms: 1, max_age_s: 300, hardware_pubkey: None,
                 hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, session_nonce: sn,
-                require_session_binding: false, require_schema_v2: false, require_attestation: false,
+                require_session_binding: false, require_schema_v2: false, require_attestation: false, require_verdict: None, validation_window: None,
             })
         };
         assert_eq!(status_of(&run(None), "session-binding"), Status::NotChecked);
@@ -2776,7 +3205,7 @@ mod tests {
         let r = verify(&proof, &VerifyOptions {
             now_ms: now, max_age_s: 300, hardware_pubkey: None,
             hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, session_nonce: None,
-            require_session_binding: false, require_schema_v2: false, require_attestation: false,
+            require_session_binding: false, require_schema_v2: false, require_attestation: false, require_verdict: None, validation_window: None,
         });
         // Uses proofAssembly's timestamp (fresh), not the trailing stage's.
         assert_eq!(status_of(&r, "freshness"), Status::Pass);

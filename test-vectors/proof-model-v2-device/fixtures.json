@@ -1,0 +1,93 @@
+{
+  "note": "Real-device proof-model-v2 proofs: unbound AREA proofs (country/subdivision claim, no query) and bound DISC-VERDICT proofs (v3 query_region type 4, signed inside/outside/indeterminate), captured on an iPhone 11 (App Attest, prod) and a Pixel 9 (StrongBox, dev), all valid in octet-verify 1.5.0. proof file = raw LocationProof bytes; harness pins now_ms to the signed proofAssembly time. See README.md.",
+  "vectors": [
+    {
+      "platform": "ios-iphone11",
+      "file": "ios-iphone11/area_country.bin",
+      "kind": "area",
+      "location_verdict": null,
+      "query_region": null
+    },
+    {
+      "platform": "ios-iphone11",
+      "file": "ios-iphone11/area_subdivision.bin",
+      "kind": "area",
+      "location_verdict": null,
+      "query_region": null
+    },
+    {
+      "platform": "ios-iphone11",
+      "file": "ios-iphone11/disc_inside_100km.bin",
+      "kind": "disc",
+      "location_verdict": "Inside",
+      "query_region": {
+        "region_type": 4,
+        "region_id_hex": "7ea8bcfb2f9e0a797a7272c165edda4bf1b9fad8473fed80557185bfa1b2917b"
+      }
+    },
+    {
+      "platform": "ios-iphone11",
+      "file": "ios-iphone11/disc_outside_vienna_2km.bin",
+      "kind": "disc",
+      "location_verdict": "Outside",
+      "query_region": {
+        "region_type": 4,
+        "region_id_hex": "e8658ae85b73cc156ba63a092ed6865841b7223c933c471580483647e82d1f73"
+      }
+    },
+    {
+      "platform": "ios-iphone11",
+      "file": "ios-iphone11/disc_straddle_1m.bin",
+      "kind": "disc",
+      "location_verdict": "Indeterminate",
+      "query_region": {
+        "region_type": 4,
+        "region_id_hex": "4e595121b1ff9f7a09facb2a607798c4189477da4fe612833118990d4aa5ff02"
+      }
+    },
+    {
+      "platform": "android-pixel9",
+      "file": "android-pixel9/area_country.bin",
+      "kind": "area",
+      "location_verdict": null,
+      "query_region": null
+    },
+    {
+      "platform": "android-pixel9",
+      "file": "android-pixel9/area_subdivision.bin",
+      "kind": "area",
+      "location_verdict": null,
+      "query_region": null
+    },
+    {
+      "platform": "android-pixel9",
+      "file": "android-pixel9/disc_inside_100km.bin",
+      "kind": "disc",
+      "location_verdict": "Inside",
+      "query_region": {
+        "region_type": 4,
+        "region_id_hex": "9b459c6f91c6c879207aab117754b6d457168eb6a02142b149a05e432731f5af"
+      }
+    },
+    {
+      "platform": "android-pixel9",
+      "file": "android-pixel9/disc_outside_vienna_2km.bin",
+      "kind": "disc",
+      "location_verdict": "Outside",
+      "query_region": {
+        "region_type": 4,
+        "region_id_hex": "e8658ae85b73cc156ba63a092ed6865841b7223c933c471580483647e82d1f73"
+      }
+    },
+    {
+      "platform": "android-pixel9",
+      "file": "android-pixel9/disc_straddle_1m.bin",
+      "kind": "disc",
+      "location_verdict": "Indeterminate",
+      "query_region": {
+        "region_type": 4,
+        "region_id_hex": "7f8c994a82775ee2249cd8bc860046055e0b47864f0244912f216f6917740cd0"
+      }
+    }
+  ]
+}

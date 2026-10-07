@@ -1,0 +1,61 @@
+{
+  "description": "chain_root golden vector. A verifier: (1) verifies verdictToken against verdictJwk; (2) recomputes chain_root from the chain claim; (3) verifies challengeToken against challengeJwk and checks sha256(challengeToken) == chain.s0, its sessionRef and lid match, and the verdict iat lies within [challenge iat, challenge exp + 60 s]; (4) optionally checks edgeChainLog against chain.reports[0].env and .s2.h.",
+  "challengeJwk": {
+    "kty": "OKP",
+    "crv": "Ed25519",
+    "use": "sig",
+    "alg": "EdDSA",
+    "kid": "challenge-dev-1",
+    "x": "4Zdt3cN1qbO26RsTpEIvKsX7A1TV_N3mvI_daXs_B0U",
+    "octet_purpose": "browser-challenge"
+  },
+  "challengeToken": "v4.public.eyJ2IjoxLCJ0eXAiOiJvY3RldC1icm93c2VyLWNoYWxsZW5nZSIsIm5vbmNlIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EdyIsImxpZCI6IjI3MTk2YzU3LTFhMmItNDJmOS04MTllLTUzMjdhZTdhMTVkMCIsInNlc3Npb25SZWYiOiJyZWYtY2hhaW4tdmVjdG9yIiwiaWF0IjoxNzkwOTM1MjAwLCJleHAiOjE3OTA5MzU4MDB9PFHT4ZOiglNqNtWm8Qpz2TlDo8yRwmipR0jP44bI77BwMESGkXpitxl_EMfD5f_jkuJsv4PNrEUPW5UxCHT0BA.eyJraWQiOiJjaGFsbGVuZ2UtZGV2LTEifQ",
+  "verdictJwk": {
+    "crv": "Ed25519",
+    "x": "bnoc3Smwt4_ROvTFWY_v9O8qlxZuPKby5Pv8zYBQW_E",
+    "kty": "OKP",
+    "use": "sig",
+    "alg": "EdDSA",
+    "kid": "verdict-vector-1",
+    "octet_purpose": "browser-verdict"
+  },
+  "verdictToken": "eyJhbGciOiJFZERTQSIsInR5cCI6Im9jdGV0LWJyb3dzZXItdmVyZGljdCtqd3Q7dj0zIiwia2lkIjoidmVyZGljdC12ZWN0b3ItMSJ9.eyJpc3MiOiJvY3RldC1icm93c2VyIiwiaWF0IjoxNzkwOTM1MjAyLCJleHAiOjE3OTA5MzU1MDIsInNlc3Npb25SZWYiOiJyZWYtY2hhaW4tdmVjdG9yIiwiY291bnRyeSI6IkRFIiwiY29uZmlkZW5jZSI6MC45LCJhbGFybSI6Im5vbmUiLCJkZXZpY2VLZXkiOiJka2Rldl92ZWN0b3IiLCJjaGFpbiI6eyJ2IjoxLCJzMCI6IlB1c0dnQ0lkb3ZlVm9ucEVYY0RJNFVNR1BoV1lNZjVkLXBSSFNSWHIwR1EiLCJyZXBvcnRzIjpbeyJzMSI6eyJidW5kbGUiOiI2VF8wa0xuRWI2ZThOZFlITGN6NkRuVWpLenFXek5NS2k0RkVpVEFkeHN3IiwidCI6MTc5MDkzNTIwMTIwMCwic2lnIjoiYlA3ck9xSmRQMEVkcmw3c0Y5YzJuS2NWUG5MYzlVdlBURDJ1d1BXeUg4YyJ9LCJlbnYiOiJ4Q3hZTUczRGF1bUREQmhldWsycVNnY2JLekhLUXEzRTJyeHJuR0ZBQU9rIiwiczIiOnsia2lkIjoiZWRnZS12ZWN0b3ItMSIsImgiOiJkaHlNNXZiUy1YQXkyaGJrd1dfMUx0UHR2eHlNNlNIb0hJQ2FMcHAxbFdRIn19XSwicmNwdCI6IldpUHBBLWh0emZFbnRHY01lTTBNLVgxX1pRTnJucmpoaGdVbDlhdENJdzAifSwiY2hhaW5fcm9vdCI6IlJ3YTlPT0N6UVdJX2I2WTNJYnRQdTdjMm9QaGVoNDFsNU9XZUw4S3VnOW8iLCJtb2RlbFZlcnNpb24iOiIxLjQuMCJ9.sqpJPkOvjnKdpaq-PZPTN_HjON-UU-vpKWc66W2W40fxtHJNIa0JGsYOWhU1Jt32-od7Jdbe6yW9LR0Gd7MOBQ",
+  "chain": {
+    "v": 1,
+    "s0": "PusGgCIdoveVonpEXcDI4UMGPhWYMf5d-pRHSRXr0GQ",
+    "reports": [
+      {
+        "s1": {
+          "bundle": "6T_0kLnEb6e8NdYHLcz6DnUjKzqWzNMKi4FEiTAdxsw",
+          "t": 1790935201200,
+          "sig": "bP7rOqJdP0Edrl7sF9c2nKcVPnLc9UvPTD2uwPWyH8c"
+        },
+        "env": "xCxYMG3DaumDDBheuk2qSgcbKzHKQq3E2rxrnGFAAOk",
+        "s2": {
+          "kid": "edge-vector-1",
+          "h": "dhyM5vbS-XAy2hbkwW_1LtPtvxyM6SHoHICaLpp1lWQ"
+        }
+      }
+    ],
+    "rcpt": "WiPpA-htzfEntGcMeM0M-X1_ZQNrnrjhhgUl9atCIw0"
+  },
+  "chain_root": "Rwa9OOCzQWI_b6Y3IbtPu7c2oPheh41l5OWeL8Kug9o",
+  "edgeChainLog": {
+    "sid": "sess-vector-0000000000000000",
+    "env": "xCxYMG3DaumDDBheuk2qSgcbKzHKQq3E2rxrnGFAAOk",
+    "s2": "dhyM5vbS-XAy2hbkwW_1LtPtvxyM6SHoHICaLpp1lWQ",
+    "kid": "edge-vector-1"
+  },
+  "inputs": {
+    "s1": {
+      "bundleJson": "{\"sessionId\":\"sess-vector-0000000000000000\",\"sessionRef\":\"ref-chain-vector\"}",
+      "t": 1790935201200,
+      "sig": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBw"
+    },
+    "body": "{\"v\":1,\"kid\":\"seal-2026-10\",\"sessionId\":\"sess-vector-0000000000000000\",\"epk\":\"AA\",\"iv\":\"BB\",\"ct\":\"CC\"}",
+    "s2Token": "v4.public.eyJ2IjoxLCJzaWQiOiJzZXNzLXZlY3Rvci0wMDAwMDAwMDAwMDAwMDAwIiwiaXAiOiIxOTguNTEuMTAwLjciLCJib2R5IjoieEN4WU1HM0RhdW1EREJoZXVrMnFTZ2NiS3pIS1FxM0UycnhybkdGQUFPayIsIm9icyI6IkFHRno2N1NNb29LVkkwMVQ4alZYRWduRWdFSllqbUFfTEQ4RTZObW5faEkiLCJoZHIiOiJKR0RQemtzSTBlVzUtR08zZExGR3BYOTNIYkktWUhMLWplWGZ0RVl5QWRvIiwiaG4iOlsiYWNjZXB0LWxhbmd1YWdlIiwic2VjLWNoLXVhIiwic2VjLWNoLXVhLW1vYmlsZSIsInNlYy1jaC11YS1wbGF0Zm9ybSIsInVzZXItYWdlbnQiXSwiaWF0IjoiMjAyNi0wOS0yOVQxMjowMDowMFoiLCJleHAiOiIyMDI2LTA5LTI5VDEyOjAxOjAwWiJ9s5n_PBO7ZfJJVZf-uaTZ_fumZCSbpQprK3cs7EELuwcuBDv7Db8kOvmkK4Rqg_lmF4w_WJG32ho51SB2CndzDQ.eyJraWQiOiJlZGdlLXZlY3Rvci0xIn0",
+    "receipts": [
+      "v4.public.eyJuIjoiNWYwYzJiOGUtM2QxYS00YzdlLTliMmYtMDEyMzQ1Njc4OWFiIiwiYW5jaG9yIjoic2luMSIsImtlcm5lbF9ydHRfbXMiOjIzMC4xMjUsImlwIjoiMTk4LjUxLjEwMC4yMyIsImlhdCI6IjIwMjYtMDktMjhUMTI6MDA6MDBaIiwiZXhwIjoiMjAyNi0wOS0yOFQxMjowMTowMFoifb26LewWWrZiPFG8bYN5_U9foDJOAe3S91kgGQyuKd7Oxt0z8D5NZwFo7FMIjrrNPfPDvSVmtPppKMb0VYOcvQo.eyJraWQiOiJlZGdlLWdvbGRlbi1zaW4xIn0"
+    ]
+  }
+}

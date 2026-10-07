@@ -14,7 +14,7 @@ use octet_verify::attest::ContinuousProofEnvelope;
 use octet_verify::crypto::P256VerifyingKey;
 use octet_verify::navigate::LocationProof;
 use octet_verify::prost::Message;
-use octet_verify::verify::{verify, verify_transport, Report, Status, VerifyOptions};
+use octet_verify::verify::{verify, verify_transport, Report, Status, ValidationWindow, VerifyOptions};
 use octet_verify::{keys, verify as verify_mod};
 
 const DEFAULT_MAX_AGE_S: i64 = 300;
@@ -26,6 +26,12 @@ struct Args {
     ed25519_pubkey: Option<String>,
     envelope: bool,
     max_age_s: Option<i64>,
+    /// `--at <time>`: judge the time-dependent checks at this instant (Unix ms)
+    /// instead of the wall clock.
+    at_ms: Option<i64>,
+    /// `--window <from>/<to>`: historical validation window (see
+    /// [`ValidationWindow`]). Mutually exclusive with `--at`.
+    validation_window: Option<ValidationWindow>,
     nullifier_store: Option<String>,
     expect_region: Option<String>,
     expect_region_type: Option<String>,
@@ -40,6 +46,8 @@ struct Args {
     require_session_binding: bool,
     require_schema_v2: bool,
     require_attestation: bool,
+    /// `--require-verdict verified|plausible`: minimum signed spoofing-verdict tier.
+    require_verdict: Option<verify_mod::RequiredVerdict>,
     app_attest_config: Option<String>,
     /// Out-of-band App Attest **enrolment bundle**: recovers the attested key
     /// so an assertion-only iOS proof (one carrying no attestation object — the
@@ -49,8 +57,9 @@ struct Args {
     /// Expected Android app identity `(package_name, signing_cert_sha256)` for the
     /// key-attestation `attestationApplicationId` binding ( rec: bind the
     /// Android chain to a specific app, not just "some app"). Parsed from
-    /// `--android-app-identity <package>,<cert_sha256_hex>`.
-    android_app_identity: Option<(String, [u8; 32])>,
+    /// `--android-app-identity <package>,<cert_sha256_hex>`, repeatable: the chain
+    /// must match ONE of the listed identities in full (package AND its cert).
+    android_app_identities: Vec<(String, [u8; 32])>,
     skip_hardware_attestation: bool,
     /// Online Play Integrity (, feature `playintegrity`): the first-party
     /// decode endpoint base URL, the verifier's own decode-scoped service token,
@@ -71,6 +80,7 @@ fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().collect();
     match argv.get(1).map(String::as_str) {
         Some("fetch") | Some("watch") | Some("range") => return backend_dispatch(&argv[1..]),
+        Some("browser-verdict") => return browser_dispatch(&argv[2..]),
         _ => {}
     }
     local_main()
@@ -121,10 +131,7 @@ fn run(args: &Args) -> anyhow::Result<Report> {
     // Resolve the hardware key: explicit flag wins, else the proof's chain.
     let (hw_key, hw_source) = resolve_hardware_key(&proof, args.hardware_pubkey.as_deref())?;
 
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
+    let now_ms = validation_now_ms(args.at_ms, args.validation_window);
 
     let opts = VerifyOptions {
         now_ms,
@@ -140,6 +147,8 @@ fn run(args: &Args) -> anyhow::Result<Report> {
         // Cleared for the core call: the CLI appends the attestation checks below
         // and re-applies --require-attestation once, afterward.
         require_attestation: false,
+        require_verdict: args.require_verdict,
+        validation_window: args.validation_window,
     };
 
     let mut report = verify(&proof, &opts);
@@ -226,23 +235,24 @@ fn run(args: &Args) -> anyhow::Result<Report> {
         {
             // iOS proofs (no cert chain) report attestation-root NOT-CHECKED and
             // rely on the app-attest check above instead.
-            let now_unix_secs = (now_ms / 1000).max(0) as u64;
             let pubkey_sec1 = hw_key.as_ref().map(|vk| vk.to_sec1_bytes());
             //: bind the Android chain to the expected app identity when
             // supplied (--android-app-identity), so it attests THIS app, not just
-            // "some key from some app". `None` keeps the hardware-root-only check.
-            let expected_app = args.android_app_identity.as_ref().map(|(pkg, cert)| {
+            // "some key from some app". Repeating the flag accepts any ONE of the
+            // listed identities in full; none keeps the hardware-root-only check.
+            let expected_apps: Vec<_> = args.android_app_identities.iter().map(|(pkg, cert)| {
                 octet_verify::appattest_layer::ExpectedAppIdentity {
                     package_name: pkg.clone(),
                     signing_cert_sha256: *cert,
                 }
-            });
+            }).collect();
             report
                 .checks
-                .push(octet_verify::appattest_layer::attestation_root_check(
+                .push(octet_verify::appattest_layer::attestation_root_check_for(
                     &proof,
-                    now_unix_secs,
-                    expected_app.as_ref(),
+                    now_ms,
+                    args.validation_window,
+                    &expected_apps,
                     pubkey_sec1.as_deref(), // always bind the attested leaf to the signing key
                 ));
 
@@ -589,6 +599,15 @@ fn headline(report: &Report) -> &'static str {
     }
 }
 
+/// JSON value for the signed spoofing verdict: the quoted proto name, or `null`
+/// when it is not semantically bound or is UNSPECIFIED.
+fn spoofing_verdict_json(report: &Report) -> String {
+    match report.spoofing_verdict() {
+        Some(v) => format!("\"{}\"", verify_mod::spoofing_verdict_name(v)),
+        None => "null".into(),
+    }
+}
+
 /// JSON value for the signed inside/outside verdict: a quoted string, or
 /// `null` when there is no signed verdict. INDETERMINATE stays distinct.
 fn location_verdict_json(report: &Report) -> &'static str {
@@ -669,6 +688,9 @@ fn print_json(report: &Report) {
     // The device's SIGNED inside/outside verdict, or null when there is no
     // signed verdict (v1 / unbound / UNSPECIFIED). INDETERMINATE is preserved.
     out.push_str(&format!("  \"location_verdict\": {},\n", location_verdict_json(report)));
+    // The SIGNED spoofing-verdict tier, or null when semantic binding did not
+    // pass (an unbound verdict is not trustworthy) or the verdict is UNSPECIFIED.
+    out.push_str(&format!("  \"spoofing_verdict\": {},\n", spoofing_verdict_json(report)));
     // The bound queried region the verdict answers about (, v3), or null. A
     // consumer matches `region_id` against its own query_region_ref(R) to read
     // within(R) directly. region_id is hex.
@@ -801,6 +823,10 @@ fn parse_args() -> Result<Args, String> {
             "--require-session-binding" => args.require_session_binding = true,
             "--require-schema-v2" => args.require_schema_v2 = true,
             "--require-attestation" => args.require_attestation = true,
+            "--require-verdict" => {
+                let v = need_value(&mut iter, &a)?;
+                args.require_verdict = Some(parse_required_verdict(&v)?);
+            }
             "--app-attest-config" => args.app_attest_config = Some(need_value(&mut iter, &a)?),
             "--integrity-decode-url" => args.integrity_decode_url = Some(need_value(&mut iter, &a)?),
             "--integrity-decode-token" => args.integrity_decode_token = Some(need_value(&mut iter, &a)?),
@@ -815,13 +841,15 @@ fn parse_args() -> Result<Args, String> {
             }
             "--android-app-identity" => {
                 let v = need_value(&mut iter, &a)?;
-                args.android_app_identity = Some(parse_android_identity(&v)?);
+                args.android_app_identities.push(parse_android_identity(&v)?);
             }
             "--skip-hardware-attestation" => args.skip_hardware_attestation = true,
             "--max-age-seconds" => {
                 let v = need_value(&mut iter, &a)?;
                 args.max_age_s = Some(v.parse().map_err(|e| format!("bad --max-age-seconds: {e}"))?);
             }
+            "--at" => args.at_ms = Some(parse_instant_ms(&need_value(&mut iter, &a)?)?),
+            "--window" => args.validation_window = Some(parse_window(&need_value(&mut iter, &a)?)?),
             s if s.starts_with("--") => return Err(format!("unknown flag: {s}")),
             _ => {
                 if args.path.is_some() {
@@ -836,11 +864,109 @@ fn parse_args() -> Result<Args, String> {
     if args.app_attest_enrolment_bundle.is_some() && args.app_attest_config.is_none() {
         return Err("--app-attest-enrolment-bundle requires --app-attest-config".to_string());
     }
+    if args.at_ms.is_some() && args.validation_window.is_some() {
+        return Err("--at and --window are mutually exclusive".to_string());
+    }
     Ok(args)
 }
 
 fn need_value(iter: &mut impl Iterator<Item = String>, flag: &str) -> Result<String, String> {
     iter.next().ok_or_else(|| format!("{flag} requires a value"))
+}
+
+/// The instant the time-dependent checks run at: the window's upper bound, else
+/// `--at`, else the wall clock.
+fn validation_now_ms(at_ms: Option<i64>, window: Option<ValidationWindow>) -> i64 {
+    window.map(|w| w.not_after_ms).or(at_ms).unwrap_or_else(|| {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    })
+}
+
+/// Parse a `--at` / `--window` instant: RFC 3339 (`2026-07-29T12:12:37Z`, optional
+/// fractional seconds, `Z` or a `±HH:MM` offset), or an integer number of Unix
+/// milliseconds. Returns Unix milliseconds.
+fn parse_instant_ms(s: &str) -> Result<i64, String> {
+    let s = s.trim();
+    if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) {
+        return s.parse().map_err(|e| format!("bad instant {s:?}: {e}"));
+    }
+    let bad = || format!("bad instant {s:?}: expected RFC 3339 (2026-07-29T12:12:37Z) or Unix milliseconds");
+    let b = s.as_bytes();
+    if b.len() < 20 || b[4] != b'-' || b[7] != b'-' || !matches!(b[10], b'T' | b't') || b[13] != b':' || b[16] != b':' {
+        return Err(bad());
+    }
+    let num = |r: std::ops::Range<usize>| -> Result<i64, String> {
+        let t = s.get(r).ok_or_else(bad)?;
+        if t.bytes().all(|c| c.is_ascii_digit()) { t.parse().map_err(|_| bad()) } else { Err(bad()) }
+    };
+    let (year, month, day) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (hour, minute, second) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    // Fractional seconds: keep millisecond precision, ignore further digits.
+    let mut i = 19;
+    let mut millis = 0i64;
+    if b.get(i) == Some(&b'.') {
+        i += 1;
+        let start = i;
+        while b.get(i).is_some_and(|c| c.is_ascii_digit()) {
+            i += 1;
+        }
+        if i == start {
+            return Err(bad());
+        }
+        let frac = &s[start..i.min(start + 3)];
+        millis = frac.parse::<i64>().map_err(|_| bad())? * 10i64.pow(3 - frac.len() as u32);
+    }
+    let offset_s = match s.get(i..) {
+        Some("Z") | Some("z") => 0,
+        Some(o) if o.len() == 6 && matches!(o.as_bytes()[0], b'+' | b'-') && o.as_bytes()[3] == b':' => {
+            let sign = if o.as_bytes()[0] == b'-' { -1 } else { 1 };
+            sign * (num(i + 1..i + 3)? * 3600 + num(i + 4..i + 6)? * 60)
+        }
+        _ => return Err(bad()),
+    };
+    if !(1..=12).contains(&month) || day < 1 || day > days_in_month(year, month)
+        || hour > 23 || minute > 59 || second > 60
+    {
+        return Err(bad());
+    }
+    let days = days_from_civil(year, month, day);
+    let secs = days * 86_400 + hour * 3600 + minute * 60 + second.min(59) - offset_s;
+    Ok(secs * 1000 + millis)
+}
+
+/// `--window <from>/<to>`: two instants separated by `/` (ISO 8601 interval
+/// notation), each as accepted by [`parse_instant_ms`].
+fn parse_window(s: &str) -> Result<ValidationWindow, String> {
+    let (from, to) = s
+        .split_once('/')
+        .ok_or_else(|| format!("bad --window {s:?}: expected <from>/<to>"))?;
+    let (from, to) = (parse_instant_ms(from)?, parse_instant_ms(to)?);
+    ValidationWindow::new(from, to).ok_or_else(|| format!("bad --window {s:?}: start is after end"))
+}
+
+fn days_in_month(year: i64, month: i64) -> i64 {
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    match month {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
+}
+
+/// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's
+/// `days_from_civil`).
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 /// Decode a hex string (optional `0x`, even length) into raw bytes — the CLI
@@ -891,6 +1017,12 @@ fn parse_latlon(s: &str) -> Result<(f64, f64), String> {
         return Err(format!("--expect-region-contains: longitude {lon} out of range [-180, 180]"));
     }
     Ok((lat, lon))
+}
+
+/// Parse `--require-verdict verified|plausible`.
+fn parse_required_verdict(s: &str) -> Result<verify_mod::RequiredVerdict, String> {
+    verify_mod::RequiredVerdict::parse(s)
+        .ok_or_else(|| format!("--require-verdict: expected \"verified\" or \"plausible\", got {s:?}"))
 }
 
 /// Parse `--android-app-identity "<package>,<cert_sha256_hex>"` into the expected
@@ -967,18 +1099,19 @@ mod backend {
     use std::process::ExitCode;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::Duration;
 
     use anyhow::{anyhow, bail, Result};
     use octet_verify::backend::{Backend, Envelope};
     use octet_verify::crypto::{canonical_sig, sha256, SigEncoding};
     use octet_verify::navigate::LocationProof;
     use octet_verify::prost::Message;
-    use octet_verify::verify::{verify, Check, Report, Status, VerifyOptions};
+    use octet_verify::verify::{verify, Check, Report, Status, ValidationWindow, VerifyOptions};
 
     use super::{
         headline, json_escape, location_verdict_json, parse_android_identity, parse_hex_nonce,
-        parse_latlon, sanitize_terminal, to_hex, DEFAULT_MAX_AGE_S,
+        parse_latlon, parse_required_verdict, sanitize_terminal, spoofing_verdict_json, to_hex,
+        DEFAULT_MAX_AGE_S,
     };
 
     const DEFAULT_WATCH_INTERVAL_S: u64 = 5;
@@ -1002,14 +1135,17 @@ mod backend {
         require_session_binding: bool,
         require_schema_v2: bool,
         require_attestation: bool,
+        require_verdict: Option<octet_verify::verify::RequiredVerdict>,
         max_age_s: Option<i64>,
+        at_ms: Option<i64>,
+        validation_window: Option<ValidationWindow>,
         json: bool,
         interval_s: u64,
         since: Option<String>,
         until: Option<String>,
         app_attest_config: Option<String>,
         app_attest_enrolment_bundle: Option<String>,
-        android_app_identity: Option<(String, [u8; 32])>,
+        android_app_identities: Vec<(String, [u8; 32])>,
         skip_hardware_attestation: bool,
         integrity_decode_url: Option<String>,
         integrity_decode_token: Option<String>,
@@ -1171,10 +1307,7 @@ mod backend {
         let (hw_key, hw_source) =
             super::resolve_hardware_key(&proof, args.hardware_pubkey.as_deref())?;
 
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
+        let now_ms = super::validation_now_ms(args.at_ms, args.validation_window);
 
         let opts = VerifyOptions {
             now_ms,
@@ -1190,6 +1323,8 @@ mod backend {
             // Cleared for the core call; re-applied once after the attestation
             // checks below.
             require_attestation: false,
+            require_verdict: args.require_verdict,
+            validation_window: args.validation_window,
         };
         let mut report = verify(&proof, &opts);
         // Same wire-format guard as the local path: fetched bytes are untrusted.
@@ -1211,22 +1346,22 @@ mod backend {
             }
             #[cfg(feature = "appattest")]
             {
-                let now_unix_secs = (now_ms / 1000).max(0) as u64;
                 let pubkey_sec1 = hw_key.as_ref().map(|vk| vk.to_sec1_bytes());
-                //: bind the Android chain to the expected app identity when
-                // supplied (--android-app-identity), same as the local-file path.
-                let expected_app = args.android_app_identity.as_ref().map(|(pkg, cert)| {
+                //: bind the Android chain to one of the expected app identities
+                // when supplied (--android-app-identity), same as the local-file path.
+                let expected_apps: Vec<_> = args.android_app_identities.iter().map(|(pkg, cert)| {
                     octet_verify::appattest_layer::ExpectedAppIdentity {
                         package_name: pkg.clone(),
                         signing_cert_sha256: *cert,
                     }
-                });
+                }).collect();
                 report
                     .checks
-                    .push(octet_verify::appattest_layer::attestation_root_check(
+                    .push(octet_verify::appattest_layer::attestation_root_check_for(
                         &proof,
-                        now_unix_secs,
-                        expected_app.as_ref(),
+                        now_ms,
+                        args.validation_window,
+                        &expected_apps,
                         pubkey_sec1.as_deref(), // always bind the attested leaf to the signing key
                     ));
                 report
@@ -1416,6 +1551,7 @@ mod backend {
         out.push_str(&format!("\"region_asserted\":{},", report.region_asserted()));
         out.push_str(&format!("\"semantically_bound\":{},", report.is_semantically_bound()));
         out.push_str(&format!("\"location_verdict\":{},", location_verdict_json(report)));
+        out.push_str(&format!("\"spoofing_verdict\":{},", spoofing_verdict_json(report)));
         out.push_str("\"checks\":[");
         for (i, c) in report.checks.iter().enumerate() {
             if i > 0 {
@@ -1479,7 +1615,10 @@ mod backend {
         let mut require_session_binding = false;
         let mut require_schema_v2 = false;
         let mut require_attestation = false;
+        let mut require_verdict = None;
         let mut max_age_s = None;
+        let mut at_ms = None;
+        let mut validation_window = None;
         let mut json = false;
         let mut interval_s = DEFAULT_WATCH_INTERVAL_S;
         let mut since = None;
@@ -1490,7 +1629,7 @@ mod backend {
         let mut integrity_package = None;
         let mut integrity_max_age_s = None;
         let mut app_attest_enrolment_bundle = None;
-        let mut android_app_identity = None;
+        let mut android_app_identities = Vec::new();
         let mut skip_hardware_attestation = false;
         let mut proof_id: Option<String> = None;
 
@@ -1521,7 +1660,18 @@ mod backend {
                 "--require-session-binding" => require_session_binding = true,
                 "--require-schema-v2" => require_schema_v2 = true,
                 "--require-attestation" => require_attestation = true,
+                "--require-verdict" => {
+                    require_verdict =
+                        Some(parse_required_verdict(&need(&mut it, a)?).map_err(|e| anyhow!("{e}"))?);
+                }
                 "--json" => json = true,
+                "--at" => {
+                    at_ms = Some(super::parse_instant_ms(&need(&mut it, a)?).map_err(|e| anyhow!(e))?);
+                }
+                "--window" => {
+                    validation_window =
+                        Some(super::parse_window(&need(&mut it, a)?).map_err(|e| anyhow!(e))?);
+                }
                 "--max-age-seconds" => {
                     max_age_s = Some(need(&mut it, a)?.parse().map_err(|e| {
                         anyhow!("bad --max-age-seconds: {e}")
@@ -1552,8 +1702,8 @@ mod backend {
                     app_attest_enrolment_bundle = Some(need(&mut it, a)?)
                 }
                 "--android-app-identity" => {
-                    android_app_identity =
-                        Some(parse_android_identity(&need(&mut it, a)?).map_err(|e| anyhow!("{e}"))?);
+                    android_app_identities
+                        .push(parse_android_identity(&need(&mut it, a)?).map_err(|e| anyhow!("{e}"))?);
                 }
                 "--skip-hardware-attestation" => skip_hardware_attestation = true,
                 s if s.starts_with("--") => bail!("unknown flag: {s}"),
@@ -1595,6 +1745,9 @@ mod backend {
             other => bail!("unknown subcommand: {other}"),
         };
 
+        if at_ms.is_some() && validation_window.is_some() {
+            anyhow::bail!("--at and --window are mutually exclusive");
+        }
         Ok(Args {
             sub,
             backend,
@@ -1608,14 +1761,17 @@ mod backend {
             require_session_binding,
             require_schema_v2,
             require_attestation,
+            require_verdict,
             max_age_s,
+            at_ms,
+            validation_window,
             json,
             interval_s,
             since,
             until,
             app_attest_config,
             app_attest_enrolment_bundle,
-            android_app_identity,
+            android_app_identities,
             skip_hardware_attestation,
             integrity_decode_url,
             integrity_decode_token,
@@ -1633,6 +1789,38 @@ mod backend {
 
 #[cfg(test)]
 mod tests {
+    /// `--at` / `--window` instants: RFC 3339 with `Z` or an offset, optional
+    /// fractional seconds, or Unix milliseconds.
+    #[test]
+    fn parse_instant_accepts_rfc3339_and_unix_ms() {
+        use super::parse_instant_ms as p;
+        assert_eq!(p("1970-01-01T00:00:00Z"), Ok(0));
+        assert_eq!(p("2026-07-29T11:42:21Z"), Ok(1_785_325_341_000));
+        assert_eq!(p("2026-07-29T11:42:21.355Z"), Ok(1_785_325_341_355));
+        assert_eq!(p("2026-07-29T11:42:21.3554Z"), Ok(1_785_325_341_355)); // beyond ms: truncated
+        assert_eq!(p("2026-07-29T13:42:21+02:00"), Ok(1_785_325_341_000));
+        assert_eq!(p("2026-07-29T06:12:21-05:30"), Ok(1_785_325_341_000));
+        assert_eq!(p("2024-02-29T00:00:00Z"), Ok(1_709_164_800_000)); // leap day
+        assert_eq!(p("1785325341355"), Ok(1_785_325_341_355));
+        for bad in [
+            "", "2026-07-29", "2026-07-29T11:42:21", "2026-02-30T00:00:00Z", "2025-02-29T00:00:00Z",
+            "2026-13-01T00:00:00Z", "2026-07-29T24:00:00Z", "2026-07-29T11:42:21.Z", "2026-07-29T11:42:21+0200",
+            "-1", "1.5",
+        ] {
+            assert!(p(bad).is_err(), "{bad:?} should be rejected");
+        }
+    }
+
+    #[test]
+    fn parse_window_needs_two_ordered_instants() {
+        use super::parse_window as w;
+        let ok = w("2026-07-29T11:37:21Z/2026-07-29T17:42:21Z").unwrap();
+        assert_eq!((ok.not_before_ms, ok.not_after_ms), (1_785_325_041_000, 1_785_346_941_000));
+        assert!(w("1000/1000").is_ok()); // a zero-length window is an instant
+        assert!(w("2026-07-29T17:42:21Z/2026-07-29T11:37:21Z").is_err()); // reversed
+        assert!(w("2026-07-29T11:37:21Z").is_err()); // one bound
+    }
+
     use super::{json_escape, parse_query_region_spec, sanitize_terminal, wire_check};
     use octet_verify::verify::{query_region_ref, Status};
 
@@ -1784,5 +1972,259 @@ mod tests {
         assert!(key.is_some());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+// ===========================================================================
+// Browser verdict profile (subcommand: browser-verdict, feature `browser`)
+//
+// Verifies the octet browser product's signed verdict token and its session
+// chain. A separate profile from the LocationProof verifier above: its own
+// inputs, checks and statuses. See VERIFICATION-SPEC.md, "Browser verdict
+// profile".
+// ===========================================================================
+
+#[cfg(not(feature = "browser"))]
+fn browser_dispatch(_argv: &[String]) -> ExitCode {
+    eprintln!(
+        "error: the `browser-verdict` subcommand requires a build with the `browser` feature.\n\n    \
+         cargo build --features browser        (JWKS from a file)\n    \
+         cargo build --features browser,net    (JWKS from a URL, the default)"
+    );
+    ExitCode::from(2)
+}
+
+#[cfg(feature = "browser")]
+fn browser_dispatch(argv: &[String]) -> ExitCode {
+    match browser_cli::run(argv) {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("error: {e}\n\nrun `octet-verify browser-verdict --help` for usage");
+            ExitCode::from(2)
+        }
+    }
+}
+
+#[cfg(feature = "browser")]
+mod browser_cli {
+    use octet_verify::browser::{
+        parse_jwks, parse_roots, verify_browser_verdict, BrowserReport, BrowserVerdictInputs, CHALLENGE_JWKS_URL,
+        MANIFEST_URL, PINNED_ROOTS_JSON, VERDICT_JWKS_ARCHIVE_URL, VERDICT_JWKS_URL,
+    };
+    use std::process::ExitCode;
+
+    const HELP: &str = "\
+octet-verify browser-verdict — verify an octet browser verdict token and its chain
+
+USAGE:
+    octet-verify browser-verdict <verdict-token> [options]
+
+Token arguments take the token itself, @<file>, or - for stdin.
+
+OPTIONS:
+    --jwks <url|file>          Verdict JWKS. Default: the live JWKS
+                               (https://geo.octetproof.com/.well-known/browser-verdict-jwks.json).
+    --archive                  Use the verdict key archive instead, for a stored token
+                               whose key has rotated; also checks the key's signing
+                               window and revocation.
+    --challenge <token>        The challenge token kept from POST /v1/challenge:
+                               checks the session link (s0, signature, sessionRef,
+                               lid, time window).
+    --challenge-jwks <url|file>
+                               Challenge JWKS. Default: the live challenge JWKS.
+    --edge-log <line|@file>    An edge log line {\"octetChain\":{...}}: checks the
+                               edge link. The raw line, log prefix included, is
+                               fine: paste it straight from the edge's log.
+    --roots <file>             octet's pinned offline roots ({\"roots\":[...]}, as in
+                               octet-browser keys/octet-root.json). Default: the
+                               roots built into this binary (none yet: they are
+                               added at octet's first root ceremony). Never taken
+                               from the server being checked.
+    --manifest <url|file>      The root manifest JWS. Default with pinned roots:
+                               https://geo.octetproof.com/.well-known/octet-browser-manifest.json.jws.
+                               Checks the verdict (and challenge) key is listed in
+                               it, and takes the key's validity window from it.
+    --manifest-seq-store <file>
+                               Remember the highest manifest seq seen; a lower one
+                               is a rollback and FAILS.
+    --min-manifest-seq <n>     Refuse a manifest with seq below n.
+    --now <unix-seconds>       Verification time for the expiry reports (default: now).
+    --json                     Machine-readable output.
+
+A URL needs a build with the `net` feature; a JWKS file always works offline.
+
+Exit codes: 0 verified (no check failed), 1 a check failed, 2 usage/IO error.
+";
+
+    fn read_arg(v: &str) -> Result<String, String> {
+        if v == "-" {
+            let mut s = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut s).map_err(|e| format!("stdin: {e}"))?;
+            Ok(s.trim().to_string())
+        } else if let Some(path) = v.strip_prefix('@') {
+            std::fs::read_to_string(path).map(|s| s.trim().to_string()).map_err(|e| format!("{path}: {e}"))
+        } else {
+            Ok(v.to_string())
+        }
+    }
+
+    fn load_text(src: &str) -> Result<String, String> {
+        if src.starts_with("https://") || src.starts_with("http://") {
+            fetch(src)
+        } else {
+            std::fs::read_to_string(src).map_err(|e| format!("{src}: {e}"))
+        }
+    }
+
+    fn load_jwks(src: &str) -> Result<Vec<octet_verify::browser::Jwk>, String> {
+        parse_jwks(&load_text(src)?).map_err(|e| format!("{src}: {e}"))
+    }
+
+    #[cfg(feature = "net")]
+    fn fetch(url: &str) -> Result<String, String> {
+        ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+            .get(url)
+            .call()
+            .map_err(|e| format!("{url}: {e}"))?
+            .into_string()
+            .map_err(|e| format!("{url}: {e}"))
+    }
+
+    #[cfg(not(feature = "net"))]
+    fn fetch(url: &str) -> Result<String, String> {
+        Err(format!("{url}: fetching a JWKS needs a build with the `net` feature; download it and pass the file"))
+    }
+
+    pub fn run(argv: &[String]) -> Result<ExitCode, String> {
+        let mut token = None;
+        let (mut jwks, mut archive, mut challenge, mut challenge_jwks) = (None, false, None, None);
+        let (mut edge, mut now, mut json) = (None, None, false);
+        let (mut roots_file, mut manifest_src, mut seq_store, mut min_seq) = (None, None, None, None::<u64>);
+        let mut it = argv.iter();
+        while let Some(a) = it.next() {
+            let mut val = || it.next().cloned().ok_or_else(|| format!("{a} needs a value"));
+            match a.as_str() {
+                "-h" | "--help" => {
+                    print!("{HELP}");
+                    return Ok(ExitCode::SUCCESS);
+                }
+                "--jwks" => jwks = Some(val()?),
+                "--archive" => archive = true,
+                "--challenge" => challenge = Some(read_arg(&val()?)?),
+                "--challenge-jwks" => challenge_jwks = Some(val()?),
+                "--edge-log" => edge = Some(read_arg(&val()?)?),
+                "--now" => now = Some(val()?.parse::<i64>().map_err(|e| format!("bad --now: {e}"))?),
+                "--json" => json = true,
+                "--roots" => roots_file = Some(val()?),
+                "--manifest" => manifest_src = Some(val()?),
+                "--manifest-seq-store" => seq_store = Some(val()?),
+                "--min-manifest-seq" => min_seq = Some(val()?.parse().map_err(|e| format!("bad --min-manifest-seq: {e}"))?),
+                s if s.starts_with("--") => return Err(format!("unknown flag: {s}")),
+                s if token.is_none() => token = Some(read_arg(s)?),
+                s => return Err(format!("unexpected argument: {s}")),
+            }
+        }
+        let token = token.ok_or("missing <verdict-token>")?;
+        if archive && jwks.is_some() {
+            return Err("pass --jwks or --archive, not both".into());
+        }
+        let vsrc = jwks.unwrap_or_else(|| (if archive { VERDICT_JWKS_ARCHIVE_URL } else { VERDICT_JWKS_URL }).to_string());
+        let vkeys = load_jwks(&vsrc)?;
+        let ckeys = match &challenge {
+            Some(_) => Some(load_jwks(challenge_jwks.as_deref().unwrap_or(CHALLENGE_JWKS_URL))?),
+            None => None,
+        };
+        let roots_json = match &roots_file {
+            Some(f) => std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?,
+            None => PINNED_ROOTS_JSON.to_string(),
+        };
+        let roots = parse_roots(&roots_json).map_err(|e| format!("roots: {e}"))?;
+        // The manifest: explicit (a failure is an error), else the published one
+        // when there is a root to check it with (unreachable ⇒ NOT-CHECKED).
+        let manifest = match (&manifest_src, roots.is_empty()) {
+            (Some(src), _) => Some(load_text(src)?),
+            (None, true) => None,
+            (None, false) => match load_text(MANIFEST_URL) {
+                Ok(m) => Some(m),
+                Err(e) => {
+                    eprintln!("note: root manifest unavailable ({e}); root-manifest is NOT-CHECKED");
+                    None
+                }
+            },
+        };
+        let stored_seq = match &seq_store {
+            Some(f) => match std::fs::read_to_string(f) {
+                Ok(t) => Some(t.trim().parse::<u64>().map_err(|e| format!("{f}: not a seq: {e}"))?),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(format!("{f}: {e}")),
+            },
+            None => None,
+        };
+        let min_manifest_seq = stored_seq.max(min_seq);
+        let now = now.unwrap_or_else(|| {
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+        });
+        let report = verify_browser_verdict(&BrowserVerdictInputs {
+            verdict_token: &token,
+            verdict_keys: &vkeys,
+            challenge_token: challenge.as_deref(),
+            challenge_keys: ckeys.as_deref(),
+            edge_log: edge.as_deref(),
+            now_unix: now,
+            manifest: manifest.as_deref(),
+            roots: &roots,
+            min_manifest_seq,
+        });
+        if let (Some(f), Some(seq)) = (&seq_store, report.manifest_seq) {
+            if stored_seq.is_none_or(|s| seq > s) {
+                std::fs::write(f, format!("{seq}\n")).map_err(|e| format!("{f}: {e}"))?;
+            }
+        }
+        if json {
+            println!("{}", to_json(&report));
+        } else {
+            print_human(&report);
+        }
+        Ok(if report.is_valid() { ExitCode::SUCCESS } else { ExitCode::from(1) })
+    }
+
+    fn print_human(r: &BrowserReport) {
+        println!("browser verdict: {}", if r.is_valid() { "VERIFIED" } else { "FAILED" });
+        if let Some(c) = &r.claims {
+            let f = |k: &str| c.get(k).map(|v| super::sanitize_terminal(&v.to_string())).unwrap_or_else(|| "-".into());
+            println!(
+                "  v={} sessionRef={} alarm={} confidence={} country={} modelVersion={}",
+                r.version.unwrap_or(0), f("sessionRef"), f("alarm"), f("confidence"), f("country"), f("modelVersion")
+            );
+        }
+        if let Some(m) = r.client_net_match() {
+            println!("  clientNetMatch (signed): {m}{}", if m { "" } else { "  (report came from a different network than the partner saw)" });
+        }
+        if let Some(lid) = &r.lid {
+            println!("  licence (from the challenge): {}", super::sanitize_terminal(lid));
+        }
+        for c in &r.checks {
+            println!("    [{:>11}] {:<22} {}", c.status.tag(), c.name, super::sanitize_terminal(&c.detail));
+        }
+    }
+
+    fn to_json(r: &BrowserReport) -> String {
+        let checks: Vec<_> = r
+            .checks
+            .iter()
+            .map(|c| serde_json::json!({ "name": c.name, "status": c.status.tag(), "detail": c.detail }))
+            .collect();
+        serde_json::to_string_pretty(&serde_json::json!({
+            "valid": r.is_valid(),
+            "version": r.version,
+            "lid": r.lid,
+            "manifest_seq": r.manifest_seq,
+            "client_net_match": r.client_net_match(),
+            "claims": r.claims,
+            "checks": checks,
+        }))
+        .expect("serialisable")
     }
 }

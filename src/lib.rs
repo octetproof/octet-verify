@@ -37,6 +37,8 @@ pub mod keys;
 pub mod replay;
 pub mod session;
 pub mod verify;
+#[cfg(feature = "browser")]
+pub mod browser;
 pub mod wire;
 
 /// Offline Apple App Attest verification, via the shared `octet-attest-verify`

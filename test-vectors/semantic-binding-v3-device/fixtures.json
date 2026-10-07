@@ -1,0 +1,11 @@
+{
+  "note": "Real-device semantic-binding-v3 proofs, captured on physical phones (iPhone 11 App Attest / prod, Pixel 9 StrongBox / dev) and frozen as the verifier's on-device parity fixtures. Each is a signed LocationProof for a Country/earth query, carrying a v3 sessionless queried-region binding. proof file = raw LocationProof bytes. Expected values are what octet-verify 1.5.0 reports; a committed golden never goes stale (the harness pins now_ms to the signed proofAssembly time).",
+  "vectors": [
+    { "platform": "ios-iphone11",  "file": "ios-iphone11/country_at.bin",     "query": "country:AT", "location_verdict": "Outside", "query_region_type": 2, "query_region_id_hex": "4154",             "attestation_root": "not-checked" },
+    { "platform": "ios-iphone11",  "file": "ios-iphone11/country_gb.bin",     "query": "country:GB", "location_verdict": "Inside",  "query_region_type": 2, "query_region_id_hex": "4742",             "attestation_root": "not-checked" },
+    { "platform": "ios-iphone11",  "file": "ios-iphone11/earth_default.bin",  "query": "earth",      "location_verdict": "Inside",  "query_region_type": 1, "query_region_id_hex": "40c3880000000000", "attestation_root": "not-checked" },
+    { "platform": "android-pixel9", "file": "android-pixel9/country_at.bin",    "query": "country:AT", "location_verdict": "Outside", "query_region_type": 2, "query_region_id_hex": "4154",             "attestation_root": "pass" },
+    { "platform": "android-pixel9", "file": "android-pixel9/country_gb.bin",    "query": "country:GB", "location_verdict": "Inside",  "query_region_type": 2, "query_region_id_hex": "4742",             "attestation_root": "pass" },
+    { "platform": "android-pixel9", "file": "android-pixel9/earth_default.bin", "query": "earth",      "location_verdict": "Inside",  "query_region_type": 1, "query_region_id_hex": "40c3880000000000", "attestation_root": "pass" }
+  ]
+}

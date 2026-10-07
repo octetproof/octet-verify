@@ -65,6 +65,8 @@ fn opts<'a>(hw: &'a P256VerifyingKey, now_ms: i64, require_attestation: bool) ->
         require_session_binding: false,
         require_schema_v2: false,
         require_attestation,
+        require_verdict: None,
+        validation_window: None,
     }
 }
 
