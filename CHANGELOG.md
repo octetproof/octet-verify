@@ -4,6 +4,66 @@ All notable changes to `octet-verify` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [1.7.0] - 2026-10-12
+
+### Added
+- **Object-only App Attest enrolment.** An enrolment bundle may now carry the
+  attestation object, its nonce and `key_id` without an assertion: JSON `v:2`
+  (where `app_attest_assertion` is optional), or a proto bundle without it. The
+  object is verified as before (Apple root, nonce, app identity, environment,
+  `key_id`), and the key's counter baseline is the object's own, 0. Every proof
+  verified with the key still needs its own assertion, so nothing is lost. This
+  is the form a licence backend holds when it forwards a bootstrap object without
+  the SDK's local enrolment assertion. `--app-attest-enrolment-bundle` and
+  `appattest_enroll` accept it; `v:1` still requires the assertion.
+  `BUNDLE_SCHEMA_VERSION` is now 2 (the newest accepted). Covered end to end on
+  the real iPhone 11 object: enrolment, then an assertion-only proof to PASS, in
+  the library and the CLI; an edited nonce, an edited `key_id` and another app
+  identity are refused.
+- **Date-check the App Attest chain over a caller-given window:**
+  `--app-attest-window <lower|leaf>/<upper>`. The App Attest chain is still
+  verified by signature only on its own, because its leaf is valid for about 3
+  days from attestation. A caller that holds a trusted time the attestation object
+  existed by (such as when it was anchored) passes it as `<upper>`; `<lower>` is a
+  time or `leaf`, the leaf certificate's own notBefore. After an `app-attest`
+  PASS, `app-attest-validity` then PASSes when the leaf, the intermediate and the
+  Apple root are all valid at both bounds, and FAILs otherwise, making the proof
+  INVALID. It dates the object the verified key came from: the proof's own, or the
+  enrolment bundle's. Library: `AppAttestWindow`, `appattest_validity_check` and
+  `set_app_attest_validity`. Spec: VERIFICATION-SPEC.md §4.1. Needs
+  `octet-attest-verify` 2.5.0 (`attestation_chain_validity`). Covered on the real
+  iPhone 11 object (leaf valid 2026-08-23 to 2026-08-26): inside, the inclusive
+  edge, after expiry, before issue, reversed, malformed, and through an
+  enrolment bundle.
+
+### Changed
+- **The browser verdict profile now pins octet's production roots.** octet's
+  first root ceremony (2026-10-12) created two offline roots,
+  `octet-root-a-2026-10` and `octet-root-b-2026-10`: ES256 keys, each generated
+  on its own YubiKey and attested by Yubico. They are built in as
+  `browser::PINNED_ROOTS_JSON`. `browser-verdict` therefore checks the root
+  manifest by default: it fetches the published manifest (with `net`; pass
+  `--manifest <file>` otherwise), and `root-manifest`, `manifest-verdict-key` and
+  `manifest-challenge-key` now report VERIFIED or FAILED instead of NOT-CHECKED.
+  A verdict key or challenge key the manifest does not list now FAILS. If the
+  manifest can't be fetched, `root-manifest` stays NOT-CHECKED, as before.
+  `--roots <file>` still overrides the pins. The production seq 1 manifest
+  is a new test vector (`test-vectors/browser-verdict-chain/prod-manifest-seq1.json.jws`).
+- **`octet-attest-verify` dependency v2.4.1 → v2.5.0**, for
+  `attestation_chain_validity`. No other behaviour change.
+
+### Fixed
+- **The CLI now prints the `app-attest-validity` NOT-CHECKED line** after an
+  `app-attest` PASS, as 1.6.0 described. In 1.6.0 only library callers of
+  `verify_attested` / `verify_attested_cached` got it; the CLI's
+  `--app-attest-config` path left it out. No verdict changes. Library:
+  `appattest_layer::appattest_validity_not_checked()` is now public, for callers
+  that run `appattest_check` themselves.
+- **The published source's `Cargo.lock` builds with `--locked` again.** From
+  1.5.0, the published source carried a `Cargo.lock` whose `octet-attest-verify`
+  git source had lost part of its revision, so `cargo build --locked` failed on
+  it. The crates.io package was not affected.
+
 ## [1.6.0] - 2026-10-06
 
 ### Added

@@ -18,7 +18,10 @@
 //! window keeps this deterministic.
 #![cfg(feature = "appattest")]
 
-use octet_verify::appattest_layer::{verify_attested, AcceptEnvironment, Expectation, APP_ATTEST_VALIDITY};
+use octet_verify::appattest_layer::{
+    appattest_validity_check, set_app_attest_validity, verify_attested, AcceptEnvironment, AppAttestWindow,
+    Expectation, APP_ATTEST_VALIDITY,
+};
 use octet_verify::keys::hardware_pubkey_from_cert_chain;
 use octet_verify::navigate::LocationProof;
 use octet_verify::prost::Message;
@@ -182,4 +185,143 @@ fn no_validity_line_without_an_app_attest_pass() {
     let report = verify_attested(&proof(), &opts(&wrong, true), &expectation());
     assert_ne!(status(&report, "app-attest"), Some(Status::Pass));
     assert_eq!(status(&report, APP_ATTEST_VALIDITY), None);
+}
+
+/// The CLI runs `appattest_check` itself (not `verify_attested`), so it must add
+/// the `app-attest-validity` line too: right after the `app-attest` PASS, with the
+/// verdict unchanged.
+#[test]
+fn cli_reports_validity_dates_as_not_checked_after_app_attest_pass() {
+    let cfg = std::env::temp_dir().join(format!("oxv-validity-{}.toml", std::process::id()));
+    std::fs::write(
+        &cfg,
+        "[app_attest]\nteam_id = \"6ZH5F97PWU\"\nbundle_id = \"com.octetproof.sample\"\nenvironment = \"any\"\n",
+    )
+    .unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_octet-verify"))
+        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/test-vectors/attestation/ios-appattest.bin"))
+        .args(["--app-attest-config", cfg.to_str().unwrap()])
+        .args(["--max-age-seconds", "9999999999999"])
+        .arg("--json")
+        .output()
+        .expect("run the CLI");
+    let _ = std::fs::remove_file(&cfg);
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("CLI JSON: {e}; stderr:\n{}", String::from_utf8_lossy(&out.stderr)));
+    assert_eq!(json["verdict"], "VALID");
+    let checks = json["checks"].as_array().expect("checks array");
+    let i = checks.iter().position(|c| c["name"] == "app-attest").expect("app-attest line");
+    assert_eq!(checks[i]["status"], "PASS");
+    assert_eq!(checks[i + 1]["name"], APP_ATTEST_VALIDITY);
+    assert_eq!(checks[i + 1]["status"], "NOT-CHECKED");
+}
+
+// --- dating the App Attest chain over a caller-given window ---
+//
+// This vector's leaf is valid 2026-08-23 11:13:52 to 2026-08-26 11:13:52 UTC; the
+// intermediate and root are valid far longer, so the leaf bounds the chain.
+const LEAF_NOT_BEFORE_MS: i64 = 1_787_483_632_000;
+const LEAF_NOT_AFTER_MS: i64 = 1_787_742_832_000;
+
+fn object() -> Vec<u8> {
+    proof().device_attestation.unwrap().app_attest_attestation.unwrap()
+}
+
+fn window(lower_ms: Option<i64>, upper_ms: i64) -> AppAttestWindow {
+    AppAttestWindow { lower_ms, upper_ms }
+}
+
+#[test]
+fn validity_window_passes_inside_the_leaf_and_fails_outside() {
+    let obj = object();
+    let day = 86_400_000;
+    // Lower defaults to the leaf's notBefore; an anchor a day later is inside.
+    let c = appattest_validity_check(&obj, &window(None, LEAF_NOT_BEFORE_MS + day));
+    assert_eq!(c.name, APP_ATTEST_VALIDITY);
+    assert_eq!(c.status, Status::Pass, "{}", c.detail);
+    assert!(c.detail.contains("the leaf's notBefore") && c.detail.contains("caller's"), "{}", c.detail);
+    // Exactly the leaf's notAfter is still inside (inclusive).
+    assert_eq!(appattest_validity_check(&obj, &window(None, LEAF_NOT_AFTER_MS)).status, Status::Pass);
+    // Anchored after the leaf expired: FAIL at the end.
+    let late = appattest_validity_check(&obj, &window(None, LEAF_NOT_AFTER_MS + 1));
+    assert_eq!(late.status, Status::Fail);
+    assert!(late.detail.contains("at the end"), "{}", late.detail);
+    // A given lower bound before the leaf existed: FAIL at the start.
+    let early = appattest_validity_check(&obj, &window(Some(LEAF_NOT_BEFORE_MS - 1000), LEAF_NOT_BEFORE_MS + day));
+    assert_eq!(early.status, Status::Fail);
+    assert!(early.detail.contains("at the start"), "{}", early.detail);
+    // Reversed, and an object that is not one.
+    let rev = appattest_validity_check(&obj, &window(Some(LEAF_NOT_BEFORE_MS + day), LEAF_NOT_BEFORE_MS));
+    assert_eq!(rev.status, Status::Fail);
+    assert!(rev.detail.contains("ends before it starts"), "{}", rev.detail);
+    assert_eq!(appattest_validity_check(b"junk", &window(None, LEAF_NOT_BEFORE_MS)).status, Status::Fail);
+}
+
+#[test]
+fn set_app_attest_validity_replaces_the_line_only_after_a_pass() {
+    let hw = se_signing_key();
+    let mut report = verify_attested(&proof(), &opts(&hw, false), &expectation());
+    let n = report.checks.len();
+    let dated = appattest_validity_check(&object(), &window(None, LEAF_NOT_BEFORE_MS + 3_600_000));
+    assert!(set_app_attest_validity(&mut report, dated));
+    assert_eq!(report.checks.len(), n, "replaced, not added");
+    assert_eq!(status(&report, APP_ATTEST_VALIDITY), Some(Status::Pass));
+    assert!(report.is_valid());
+    // A FAIL makes the report invalid.
+    let late = appattest_validity_check(&object(), &window(None, LEAF_NOT_AFTER_MS + 1));
+    assert!(set_app_attest_validity(&mut report, late));
+    assert!(!report.is_valid(), "an attestation anchored after its leaf expired must not verify");
+    // No app-attest PASS (wrong app) → no line to replace.
+    let other = Expectation::new("6ZH5F97PWU", "com.example.other", AcceptEnvironment::Any);
+    let mut failed = verify_attested(&proof(), &opts(&hw, false), &other);
+    let dated = appattest_validity_check(&object(), &window(None, LEAF_NOT_BEFORE_MS));
+    assert!(!set_app_attest_validity(&mut failed, dated));
+    assert_eq!(status(&failed, APP_ATTEST_VALIDITY), None);
+}
+
+fn cli(extra: &[&str]) -> (serde_json::Value, String, bool) {
+    let cfg = std::env::temp_dir().join(format!("oxv-aaw-{}-{}.toml", std::process::id(), extra.join("_").len()));
+    std::fs::write(
+        &cfg,
+        "[app_attest]\nteam_id = \"6ZH5F97PWU\"\nbundle_id = \"com.octetproof.sample\"\nenvironment = \"any\"\n",
+    )
+    .unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_octet-verify"))
+        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/test-vectors/attestation/ios-appattest.bin"))
+        .args(["--app-attest-config", cfg.to_str().unwrap()])
+        .args(["--max-age-seconds", "9999999999999", "--json"])
+        .args(extra)
+        .output()
+        .expect("run the CLI");
+    let _ = std::fs::remove_file(&cfg);
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    (serde_json::from_slice(&out.stdout).unwrap_or(serde_json::Value::Null), stderr, out.status.success())
+}
+
+fn cli_line(json: &serde_json::Value, name: &str) -> serde_json::Value {
+    json["checks"].as_array().unwrap().iter().find(|c| c["name"] == name).cloned().unwrap_or_default()
+}
+
+#[test]
+fn cli_app_attest_window_dates_the_chain() {
+    let (ok, _, _) = cli(&["--app-attest-window", "leaf/2026-08-25T00:00:00Z"]);
+    assert_eq!(cli_line(&ok, APP_ATTEST_VALIDITY)["status"], "PASS", "{ok}");
+    assert_eq!(ok["verdict"], "VALID");
+    let (late, _, _) = cli(&["--app-attest-window", "2026-08-23T12:00:00Z/2026-09-01T00:00:00Z"]);
+    assert_eq!(cli_line(&late, APP_ATTEST_VALIDITY)["status"], "FAIL", "{late}");
+    assert_eq!(late["verdict"], "INVALID");
+}
+
+#[test]
+fn cli_app_attest_window_usage_errors() {
+    let (_, err, ok) = cli(&["--app-attest-window", "2026-09-01T00:00:00Z/2026-08-25T00:00:00Z"]);
+    assert!(!ok && err.contains("start is after end"), "{err}");
+    let (_, err, ok) = cli(&["--app-attest-window", "leaf"]);
+    assert!(!ok && err.contains("expected <lower|leaf>/<upper>"), "{err}");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_octet-verify"))
+        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/test-vectors/attestation/ios-appattest.bin"))
+        .args(["--app-attest-window", "leaf/2026-08-25T00:00:00Z"])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out.stderr).contains("requires --app-attest-config"));
 }

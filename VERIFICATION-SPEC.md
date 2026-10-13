@@ -204,7 +204,7 @@ envelope that carries none reports NOT-CHECKED.
     `attestation-root` validates the **Android** chain to an embedded Google root
     (iOS, carrying a raw Secure Enclave key, is NOT-CHECKED here); `app-attest`
     validates **iOS** App Attest to Apple's embedded root, by signature only
-    (`app-attest-validity` NOT-CHECKED, §4.1); and
+    (`app-attest-validity` NOT-CHECKED, or dated over a caller-given window, §4.1); and
     `device-attestation-sig` verifies the field-2 device signature on both. All
     NOT-CHECKED on a default build or under `--skip-hardware-attestation`.
 
@@ -247,10 +247,22 @@ the verdict.
 leaf certificate is valid for about 3 days from attestation, and the attestation
 usually happens at enrolment, long before the proof, so judging its dates at the
 proof's time would reject almost every assertion-only proof. The verifier
-therefore does not check App Attest validity dates at any time. Every
+therefore does not check App Attest validity dates on its own. Every
 `app-attest` PASS comes with an `app-attest-validity` NOT-CHECKED line that says
 so. Checking those dates at the attestation's own time needs a trusted record of
-when the attestation happened, which a proof does not carry. Android
+when the attestation happened, which a proof does not carry.
+
+A caller that has such a record can supply it with
+`--app-attest-window <lower|leaf>/<upper>` (library: `appattest_validity_check`
+with an `AppAttestWindow`, then `set_app_attest_validity`). The upper bound is a
+time the caller trusts the attestation object existed by, for example when the
+object was anchored; the lower bound defaults to the leaf's own `notBefore`. The
+window applies to the object the verified key came from: the proof's own object,
+or the enrolment bundle's. `app-attest-validity` then PASSes when the leaf, the
+intermediate and the Apple root are all valid at both bounds and FAILs otherwise
+(naming the bound), which makes the proof INVALID. As with `--window`, the
+verdict is only as good as the times: the verifier takes them as given, and the
+detail line says so. Android
 `attestation-root` chains are date-checked: at the current time by default, at
 `--at`, or at both bounds of `--window`.
 
@@ -265,8 +277,9 @@ when the attestation happened, which a proof does not carry. Android
   or the Google-rooted key-attestation chain (Android), §1.1 — so it is
   conditional, not unconditionally out of scope.
 - **App Attest certificate validity dates.** The App Attest chain is verified to
-  Apple's root by signature, but its validity dates are not checked (§4.1). Every
-  `app-attest` PASS is followed by an `app-attest-validity` NOT-CHECKED line.
+  Apple's root by signature, but its validity dates are not checked unless the
+  caller supplies a trusted window (§4.1). Without one, every `app-attest` PASS is
+  followed by an `app-attest-validity` NOT-CHECKED line.
 - **`device_attestation.signature`.** The field-2 device signature is verified
   under `--features appattest` on both platforms (the per-proof binding is
   cross-platform); NOT-CHECKED on a default build.
@@ -476,10 +489,18 @@ refused.
 - **Where:** `https://geo.octetproof.com/.well-known/octet-browser-manifest.json.jws`,
   a compact JWS whose payload is the manifest bytes exactly.
 - **Roots are pinned, never fetched** from the server being checked: built into
-  the binary (`browser::PINNED_ROOTS_JSON`, none yet; they are added at octet's
-  first root ceremony) or passed with `--roots <file>` (`{"roots":[...]}`, EC
-  P-256 JWKs, `octet_purpose` `octet-root`). Without a pinned root the manifest
-  checks are NOT-CHECKED and nothing is fetched.
+  the binary (`browser::PINNED_ROOTS_JSON`) or passed with `--roots <file>`
+  (`{"roots":[...]}`, EC P-256 JWKs, `octet_purpose` `octet-root`). Without a
+  pinned root the manifest checks are NOT-CHECKED and nothing is fetched.
+- **Built-in roots** (first root ceremony, 2026-10-12), either of which may sign
+  a manifest. Each is an ES256 key generated on its own YubiKey (PIV slot 9c,
+  PIN and touch policy `always`); the key's Yubico attestation chains to Yubico
+  Attestation Root 1 and attests exactly this public key.
+
+  | kid | x | y |
+  |---|---|---|
+  | `octet-root-a-2026-10` | `-TTm69g0eOIcWb-I9gVwsZCsSNTSPJIjmuJQetUVO7o` | `SfDnpa7Jtnw8FDYvcPnZUJZN8D2wQSztUMlucUHyM6A` |
+  | `octet-root-b-2026-10` | `Nl3Zsqh92UZPPCVGqpQYPP-pZoKI7_YNhGG4qaS4qM8` | `6MdPuYVrKIeDV4_gSDfqL5EnABIwXSyjo8-gd3i9TtM` |
 
 **`root-manifest`:**
 

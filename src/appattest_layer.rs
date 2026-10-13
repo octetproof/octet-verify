@@ -10,8 +10,8 @@ use crate::navigate::{DeviceAttestation, LocationProof};
 use crate::verify::{verify, Check, Report, Status, ValidationWindow, VerifyOptions};
 use base64::Engine;
 use octet_attest_verify::appattest::{
-    verify_assertion_with_binding, verify_attestation, verify_device_signature, AppId,
-    AssertionBinding, AttestedKey,
+    attestation_chain_validity, verify_assertion_with_binding, verify_attestation,
+    verify_device_signature, AppId, AssertionBinding, AttestedKey,
 };
 use octet_attest_verify::keyattest::{verify_key_attestation_multi, AttestMode, SecurityLevel};
 // Re-export the app-identity types a consumer needs to build an `Expectation`,
@@ -101,7 +101,10 @@ pub const APP_ATTEST_VALIDITY: &str = "app-attest-validity";
 /// proof, so judging it at the proof's time would reject almost every
 /// assertion-only proof. Checking it at the attestation's own time needs a
 /// trusted record of when the attestation happened, which a proof does not carry.
-fn appattest_validity_not_checked() -> Check {
+///
+/// [`verify_attested_cached`] adds it after an `app-attest` PASS. A caller that
+/// runs [`appattest_check`] itself should do the same.
+pub fn appattest_validity_not_checked() -> Check {
     Check {
         name: APP_ATTEST_VALIDITY,
         status: Status::NotChecked,
@@ -109,6 +112,73 @@ fn appattest_validity_not_checked() -> Check {
                  Apple's root verified, but the leaf certificate is valid for about 3 days from \
                  attestation, which usually precedes the proof"
             .into(),
+    }
+}
+
+/// A caller-given window for dating the App Attest chain: Unix milliseconds.
+///
+/// `upper_ms` is a time the caller trusts the attestation object existed by, such
+/// as when it was anchored. `lower_ms` defaults to the leaf certificate's own
+/// `notBefore` (about when the key was attested), so without it only the upper
+/// bound tests anything. The verifier takes both times as given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppAttestWindow {
+    pub lower_ms: Option<i64>,
+    pub upper_ms: i64,
+}
+
+/// Date-check an App Attest attestation object's chain over `window`: the
+/// `app-attest-validity` line, PASS when the leaf, the intermediate and the Apple
+/// root are all valid at both bounds, FAIL otherwise. It replaces the NOT-CHECKED
+/// line (see [`set_app_attest_validity`]).
+///
+/// Pass the object the verified key came from: the proof's own object, or the
+/// enrolment bundle's. The dates are read without re-verifying the object, so
+/// call it only after `app-attest` PASSed on a key from that object. Bounds round
+/// outward to whole seconds (lower down, upper up), as for
+/// [`attestation_root_check_window`].
+pub fn appattest_validity_check(attestation_object: &[u8], window: &AppAttestWindow) -> Check {
+    let fail = |detail: String| Check { name: APP_ATTEST_VALIDITY, status: Status::Fail, detail };
+    let chain = match attestation_chain_validity(attestation_object) {
+        Ok(c) => c,
+        Err(e) => return fail(format!("could not read the App Attest chain's dates: {e}")),
+    };
+    let lower_s = match window.lower_ms {
+        Some(ms) => ms.div_euclid(1000).max(0) as u64,
+        None => chain.leaf_not_before,
+    };
+    let upper_s = window.upper_ms.saturating_add(999).div_euclid(1000).max(0) as u64;
+    let lower_src = if window.lower_ms.is_some() { "given" } else { "the leaf's notBefore" };
+    let span = format!(
+        "[{} ({lower_src}), {}] (Unix s; the window's times are the caller's)",
+        lower_s, upper_s
+    );
+    if lower_s > upper_s {
+        return fail(format!("App Attest window {span} ends before it starts"));
+    }
+    let valid = format!("chain valid [{}, {}]", chain.not_before, chain.not_after);
+    match (chain.contains(lower_s), chain.contains(upper_s)) {
+        (true, true) => Check {
+            name: APP_ATTEST_VALIDITY,
+            status: Status::Pass,
+            detail: format!("App Attest certificate chain valid at both bounds of {span}; {valid}"),
+        },
+        (false, _) => fail(format!("App Attest certificate chain not valid at the start of {span}; {valid}")),
+        (true, false) => fail(format!("App Attest certificate chain not valid at the end of {span}; {valid}")),
+    }
+}
+
+/// Put `check` (from [`appattest_validity_check`]) in place of the report's
+/// `app-attest-validity` NOT-CHECKED line. That line is there only after an
+/// `app-attest` PASS, so a report without it is left unchanged and this returns
+/// `false`: there is no verified chain to date.
+pub fn set_app_attest_validity(report: &mut Report, check: Check) -> bool {
+    match report.checks.iter_mut().find(|c| c.name == APP_ATTEST_VALIDITY) {
+        Some(line) => {
+            *line = check;
+            true
+        }
+        None => false,
     }
 }
 
@@ -369,10 +439,11 @@ fn appattest_check_da(
     }
 }
 
-/// Schema version of the **JSON** enrolment bundle this verifier accepts. The
-/// proto bundle path evolves via protobuf field numbers, so this version tag is
-/// JSON-only.
-pub const BUNDLE_SCHEMA_VERSION: u32 = 1;
+/// Newest schema version of the **JSON** enrolment bundle this verifier accepts.
+/// `v:1` requires `app_attest_assertion`; `v:2` makes it optional (an object-only
+/// bundle, see [`appattest_enroll`]). Both are accepted. The proto bundle path
+/// evolves via protobuf field numbers, so this version tag is JSON-only.
+pub const BUNDLE_SCHEMA_VERSION: u32 = 2;
 
 /// Verify an out-of-band SDK-key **enrolment bundle** and return the
 /// [`AttestedKey`] the caller should cache (keyed by `key_id`).
@@ -397,12 +468,32 @@ pub const BUNDLE_SCHEMA_VERSION: u32 = 1;
 /// did not verify. The counter of the returned key is whatever the bundled
 /// assertion carries — the verifier imposes no snapshot-vs-fresh policy; the SDK
 /// owns that decision.
+///
+/// **Object-only bundle** (no `app_attest_assertion`, JSON `v:2`): the object is
+/// verified the same way (Apple root, nonce, app identity, environment, `key_id`)
+/// and the key's counter baseline is the object's own, which is 0. Nothing is lost:
+/// the enrolment assertion only proved possession of the key once, and every proof
+/// verified with the key still needs its own assertion. This is the form a
+/// licence backend forwards when it holds the bootstrap object without the SDK's
+/// local enrolment assertion.
 pub fn appattest_enroll(
     da: &DeviceAttestation,
     expect: &Expectation,
 ) -> anyhow::Result<AttestedKey> {
-    if da.app_attest_attestation.as_deref().is_none_or(<[u8]>::is_empty) {
+    let Some(obj) = da.app_attest_attestation.as_deref().filter(|o| !o.is_empty()) else {
         anyhow::bail!("enrolment bundle carries no App Attest attestation object");
+    };
+    if da.app_attest_assertion.as_deref().is_none_or(<[u8]>::is_empty) {
+        let nonce = da
+            .attestation_nonce
+            .as_deref()
+            .filter(|n| !n.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("enrolment bundle carries no attestation nonce"))?;
+        let key_id = base64::engine::general_purpose::STANDARD
+            .decode(&da.key_id)
+            .map_err(|_| anyhow::anyhow!("enrolment bundle key_id is not valid base64"))?;
+        return verify_attestation(obj, nonce, &expect.app_id, &key_id, expect.accept_env)
+            .map_err(|e| anyhow::anyhow!("enrolment bundle failed verification: attestation verification failed: {e}"));
     }
     // The enrolment snapshot assertion is always nonce-only (a one-time bootstrap,
     // not a per-proof replay vector) — no signing-key binding here.
@@ -410,7 +501,8 @@ pub fn appattest_enroll(
     key.ok_or_else(|| anyhow::anyhow!("enrolment bundle failed verification: {}", check.detail))
 }
 
-/// Deserialize a **JSON** enrolment bundle (schema `v:1`) into a
+/// Deserialize a **JSON** enrolment bundle (schema `v:1`, or `v:2` with
+/// `app_attest_assertion` optional) into a
 /// [`DeviceAttestation`] ready for [`appattest_enroll`].
 ///
 /// Every field is **base64url, no padding**, of the raw bytes — including
@@ -427,16 +519,21 @@ pub fn bundle_from_json(json: &[u8]) -> anyhow::Result<DeviceAttestation> {
         v: u32,
         key_id: String,
         app_attest_attestation: String,
-        app_attest_assertion: String,
+        #[serde(default)]
+        app_attest_assertion: Option<String>,
         attestation_nonce: String,
     }
 
     let b: BundleJson =
         serde_json::from_slice(json).context("enrolment bundle is not valid JSON")?;
     anyhow::ensure!(
-        b.v == BUNDLE_SCHEMA_VERSION,
-        "unsupported enrolment bundle schema version {} (expected {BUNDLE_SCHEMA_VERSION})",
+        (1..=BUNDLE_SCHEMA_VERSION).contains(&b.v),
+        "unsupported enrolment bundle schema version {} (expected 1 to {BUNDLE_SCHEMA_VERSION})",
         b.v,
+    );
+    anyhow::ensure!(
+        b.v >= 2 || b.app_attest_assertion.is_some(),
+        "enrolment bundle v:1 requires app_attest_assertion (an object-only bundle is v:2)",
     );
 
     let url = base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -450,7 +547,11 @@ pub fn bundle_from_json(json: &[u8]) -> anyhow::Result<DeviceAttestation> {
         // Back to base64-standard: the proto-string form appattest_check decodes.
         key_id: base64::engine::general_purpose::STANDARD.encode(key_id_raw),
         app_attest_attestation: Some(dec(&b.app_attest_attestation, "app_attest_attestation")?),
-        app_attest_assertion: Some(dec(&b.app_attest_assertion, "app_attest_assertion")?),
+        app_attest_assertion: b
+            .app_attest_assertion
+            .as_deref()
+            .map(|a| dec(a, "app_attest_assertion"))
+            .transpose()?,
         attestation_nonce: Some(dec(&b.attestation_nonce, "attestation_nonce")?),
         ..Default::default()
     })
@@ -861,9 +962,35 @@ mod tests {
 
     #[test]
     fn bundle_from_json_rejects_wrong_schema_version() {
-        let json = json_bundle(2, &[0u8; 32], &[1], &[1], &[1]);
-        let err = bundle_from_json(json.as_bytes()).unwrap_err().to_string();
-        assert!(err.contains("schema version"), "{err}");
+        for v in [0, 3] {
+            let json = json_bundle(v, &[0u8; 32], &[1], &[1], &[1]);
+            let err = bundle_from_json(json.as_bytes()).unwrap_err().to_string();
+            assert!(err.contains("schema version"), "v:{v}: {err}");
+        }
+    }
+
+    /// An object-only JSON bundle: `v:2` without `app_attest_assertion`.
+    fn object_only_json(v: u32) -> String {
+        format!(
+            r#"{{"v":{v},"key_id":"{}","app_attest_attestation":"{}","attestation_nonce":"{}"}}"#,
+            b64url(&[7u8; 32]), b64url(&[0xCB, 0x0B]), b64url(&[9u8; 32]),
+        )
+    }
+
+    #[test]
+    fn bundle_from_json_v2_makes_the_assertion_optional() {
+        let da = bundle_from_json(object_only_json(2).as_bytes()).unwrap();
+        assert_eq!(da.app_attest_assertion, None);
+        assert_eq!(da.app_attest_attestation.as_deref(), Some(&[0xCB, 0x0B][..]));
+        // v:2 still accepts a bundle that does carry one.
+        let full = json_bundle(2, &[7u8; 32], &[0xCB, 0x0B], &[1, 2, 3], &[9u8; 32]);
+        assert_eq!(bundle_from_json(full.as_bytes()).unwrap().app_attest_assertion.as_deref(), Some(&[1, 2, 3][..]));
+    }
+
+    #[test]
+    fn bundle_from_json_v1_still_requires_the_assertion() {
+        let err = bundle_from_json(object_only_json(1).as_bytes()).unwrap_err().to_string();
+        assert!(err.contains("v:1 requires app_attest_assertion"), "{err}");
     }
 
     #[test]

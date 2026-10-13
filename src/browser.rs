@@ -49,9 +49,13 @@ pub const VERDICT_JWKS_ARCHIVE_URL: &str =
 /// Published root manifest (compact JWS; its payload is the manifest bytes).
 pub const MANIFEST_URL: &str = "https://geo.octetproof.com/.well-known/octet-browser-manifest.json.jws";
 /// octet's pinned offline roots, as `{"roots":[...]}` (octet-browser
-/// `keys/octet-root.json`). Empty until the first root ceremony; until then the
-/// manifest check needs `--roots` / [`BrowserVerdictInputs::roots`].
-pub const PINNED_ROOTS_JSON: &str = r#"{"roots":[]}"#;
+/// `keys/octet-root.json`). Added at the first root ceremony (2026-10-12): two
+/// ES256 keys, each generated on its own YubiKey (PIV slot 9c) and attested by
+/// Yubico; either may sign a manifest.
+pub const PINNED_ROOTS_JSON: &str = r#"{"roots":[
+{"kty":"EC","crv":"P-256","kid":"octet-root-a-2026-10","x":"-TTm69g0eOIcWb-I9gVwsZCsSNTSPJIjmuJQetUVO7o","y":"SfDnpa7Jtnw8FDYvcPnZUJZN8D2wQSztUMlucUHyM6A","octet_purpose":"octet-root"},
+{"kty":"EC","crv":"P-256","kid":"octet-root-b-2026-10","x":"Nl3Zsqh92UZPPCVGqpQYPP-pZoKI7_YNhGG4qaS4qM8","y":"6MdPuYVrKIeDV4_gSDfqL5EnABIwXSyjo8-gd3i9TtM","octet_purpose":"octet-root"}
+]}"#;
 const MANIFEST_TYP: &str = "octet-browser-manifest";
 const ROOT_JWS_TYP: &str = "octet-root+jws;v=1";
 const ROOT_PURPOSE: &str = "octet-root";
@@ -730,7 +734,7 @@ fn check_manifest(r: &mut BrowserReport, inp: &BrowserVerdictInputs) -> Option<M
     use BrowserStatus::*;
     if inp.roots.is_empty() {
         r.add("root-manifest", NotChecked,
-            "no pinned octet root to verify a manifest with (production roots are added at octet's first root ceremony)");
+            "no pinned octet root to verify a manifest with");
         return None;
     }
     let Some(jws) = inp.manifest else {

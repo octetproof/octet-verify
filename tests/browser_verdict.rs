@@ -641,8 +641,81 @@ fn manifest_rollback_and_absence() {
     assert_eq!(r.status("manifest-verdict-key"), Some(NotChecked));
     assert_eq!(r.status("key-validity"), Some(NotChecked));
     assert!(r.is_valid());
-    // The built-in pins are empty until octet's first root ceremony.
-    assert!(parse_roots(octet_verify::browser::PINNED_ROOTS_JSON).unwrap().is_empty());
+}
+
+// --- production roots (first root ceremony, 2026-10-12) -----------------------
+
+/// The production seq 1 manifest exactly as committed in octet-browser
+/// (`keys/octet-browser-manifest.json.jws`, trailing newline included).
+const PROD_MANIFEST: &str = include_str!("../test-vectors/browser-verdict-chain/prod-manifest-seq1.json.jws");
+const ROOT_A: &str = "octet-root-a-2026-10";
+const ROOT_B: &str = "octet-root-b-2026-10";
+
+fn pinned() -> Vec<Jwk> {
+    parse_roots(octet_verify::browser::PINNED_ROOTS_JSON).unwrap()
+}
+
+#[test]
+fn pinned_roots_are_the_ceremony_keys() {
+    let roots = pinned();
+    let kids: Vec<&str> = roots.iter().map(|r| r.kid.as_str()).collect();
+    assert_eq!(kids, [ROOT_A, ROOT_B]);
+    // The public keys attested by Yubico on each root's YubiKey.
+    assert_eq!(roots[0].x, "-TTm69g0eOIcWb-I9gVwsZCsSNTSPJIjmuJQetUVO7o");
+    assert_eq!(roots[0].y.as_deref(), Some("SfDnpa7Jtnw8FDYvcPnZUJZN8D2wQSztUMlucUHyM6A"));
+    assert_eq!(roots[1].x, "Nl3Zsqh92UZPPCVGqpQYPP-pZoKI7_YNhGG4qaS4qM8");
+    assert_eq!(roots[1].y.as_deref(), Some("6MdPuYVrKIeDV4_gSDfqL5EnABIwXSyjo8-gd3i9TtM"));
+    assert!(roots.iter().all(|r| r.purpose.as_deref() == Some("octet-root")));
+}
+
+#[test]
+fn prod_manifest_verifies_with_the_pinned_roots() {
+    let hex = |b: &[u8]| hex::encode(b);
+    // The bytes are the ones octet-browser recorded at the ceremony.
+    assert_eq!(hex(&Sha256::digest(PROD_MANIFEST)), "98c9f12c2ed1f81b2d032e3376a96c6e255aa4608ea32fb0ad252f72216bce41");
+    assert_eq!(hex(&Sha256::digest(PROD_MANIFEST.trim_end())), "a3dd8c373876d55edaf163d44da520863f43a76163dc8d23bc870950342c2dcb");
+
+    let m = verify_manifest(PROD_MANIFEST, &pinned()).unwrap();
+    assert_eq!(m.seq, 1);
+    assert_eq!(m.root_kid, ROOT_A);
+    assert_eq!((m.iat, m.exp), (1_791_798_127, 1_823_334_127)); // 2026-10-12 .. 2027-10-12
+    assert_eq!(m.roots, [ROOT_A, ROOT_B]);
+    let kids = |k: &[Jwk]| k.iter().map(|j| j.kid.clone()).collect::<Vec<_>>();
+    assert_eq!(kids(&m.verdict_keys), ["octet-browser-verdict-2026-09"]);
+    assert_eq!(kids(&m.challenge_keys), ["octet-browser-challenge-2026-10"]);
+    assert_eq!(m.verdict_keys[0].not_before, Some(1_790_696_802));
+}
+
+#[test]
+fn prod_manifest_needs_root_a_and_the_exact_bytes() {
+    let roots = pinned();
+    // Root B alone cannot stand in for root A.
+    let only_b: Vec<Jwk> = roots.iter().filter(|r| r.kid == ROOT_B).cloned().collect();
+    assert!(verify_manifest(PROD_MANIFEST, &only_b).unwrap_err().contains("not a pinned root"));
+    // A changed payload or signature does not verify.
+    let parts: Vec<&str> = PROD_MANIFEST.trim().split('.').collect();
+    let mut payload = B64.decode(parts[1]).unwrap();
+    let kid = b"octet-browser-verdict-2026-09";
+    let at = payload.windows(kid.len()).position(|w| w == kid).unwrap() + kid.len() - 1;
+    payload[at] = b'8';
+    let forged = format!("{}.{}.{}", parts[0], B64.encode(&payload), parts[2]);
+    assert!(verify_manifest(&forged, &roots).unwrap_err().contains("does not verify"));
+    let mut sig = B64.decode(parts[2]).unwrap();
+    sig[10] ^= 1;
+    let forged = format!("{}.{}.{}", parts[0], parts[1], B64.encode(&sig));
+    assert!(verify_manifest(&forged, &roots).is_err());
+    // The dev manifest is not signed by a production root.
+    assert!(verify_manifest(manifest_vector()["jws"].as_str().unwrap(), &roots).is_err());
+}
+
+/// Production pins refuse a dev-stack verdict: its key is not in the manifest.
+#[test]
+fn prod_manifest_refuses_the_dev_verdict_key() {
+    let r = dev_with_manifest(PROD_MANIFEST, &pinned(), 1_791_798_127 + 86_400, None);
+    assert_eq!(r.status("root-manifest"), Some(Verified), "{:?}", r.checks);
+    assert_eq!(r.status("manifest-verdict-key"), Some(Failed));
+    assert_eq!(r.manifest_seq, Some(1));
+    assert!(!r.is_valid());
 }
 
 // Manifests signed with a throwaway root, for the negatives.

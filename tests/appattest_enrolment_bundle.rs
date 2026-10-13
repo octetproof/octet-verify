@@ -13,10 +13,16 @@
 //!   * the CLI flag deserializes a proto bundle and drives it through enrolment,
 //!     chaining the object to Apple's root (`cli_flag_*` below);
 //!   * the flag requires `--app-attest-config` (`*_without_config_*` below).
+//!
+//! The object-only bundle (JSON `v:2` / proto without an assertion) needs no
+//! device-made assertion, so it is built from the fixture itself and runs the
+//! fully green enrol → assertion-only PASS path, in the library and the CLI
+//! (`object_only_*` and `cli_object_only_*` below).
 #![cfg(feature = "appattest")]
 
 use octet_verify::appattest_layer::{
-    appattest_check, verify_attested_cached, AcceptEnvironment, Expectation,
+    appattest_check, appattest_enroll, bundle_from_json, verify_attested_cached, AcceptEnvironment,
+    Expectation,
 };
 use octet_verify::crypto::P256VerifyingKey;
 use octet_verify::navigate::{DeviceAttestation, LocationProof};
@@ -192,4 +198,144 @@ fn enrolment_bundle_without_config_is_rejected() {
     );
 
     let _ = std::fs::remove_file(&bundle_path);
+}
+
+// --- object-only enrolment (JSON v:2 / proto without app_attest_assertion) ---
+//
+// The committed fixture's object and nonce are a genuine enrolment pair, so an
+// object-only bundle built from them is a real one: these run the full
+// enrol → assertion-only PASS path on real Apple crypto.
+
+/// The fixture's object, nonce and key_id, with no assertion.
+fn object_only_da(proof: &LocationProof) -> DeviceAttestation {
+    let da = proof.device_attestation.as_ref().unwrap();
+    DeviceAttestation {
+        key_id: da.key_id.clone(),
+        app_attest_attestation: da.app_attest_attestation.clone(),
+        attestation_nonce: da.attestation_nonce.clone(),
+        ..Default::default()
+    }
+}
+
+/// The same bundle as canonical JSON `v:2` (b64url-no-pad, raw key_id bytes).
+fn object_only_json(proof: &LocationProof) -> String {
+    use base64::Engine;
+    let url = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let da = proof.device_attestation.as_ref().unwrap();
+    let key_id = base64::engine::general_purpose::STANDARD.decode(&da.key_id).unwrap();
+    format!(
+        r#"{{"v":2,"key_id":"{}","app_attest_attestation":"{}","attestation_nonce":"{}"}}"#,
+        url.encode(key_id),
+        url.encode(da.app_attest_attestation.as_ref().unwrap()),
+        url.encode(da.attestation_nonce.as_ref().unwrap()),
+    )
+}
+
+#[test]
+fn object_only_bundle_enrols_with_counter_zero_and_passes_a_later_assertion() {
+    let proof = full_proof();
+    let hw = se_key(&proof);
+    let bare = assertion_only(&proof);
+    for (form, da) in [
+        ("proto", object_only_da(&proof)),
+        ("json v:2", bundle_from_json(object_only_json(&proof).as_bytes()).expect("v:2 parses")),
+    ] {
+        assert_eq!(da.app_attest_assertion, None, "{form}");
+        let key = appattest_enroll(&da, &expectation()).unwrap_or_else(|e| panic!("{form}: {e}"));
+        assert_eq!(key.last_counter, 0, "{form}: counter baseline is the object's, 0");
+        let (report, advanced) = verify_attested_cached(&bare, &opts(&hw), &expectation(), Some(&key));
+        assert_eq!(status(&report, "app-attest"), Some(Status::Pass), "{form}");
+        assert!(report.is_attested(), "{form}");
+        assert!(advanced.expect("PASS returns the advanced key").last_counter > 0, "{form}");
+    }
+}
+
+#[test]
+fn object_only_bundle_is_refused_when_tampered_or_for_another_app() {
+    let proof = full_proof();
+    // Wrong nonce: the object's Apple nonce no longer matches.
+    let mut da = object_only_da(&proof);
+    da.attestation_nonce.as_mut().unwrap()[0] ^= 0xFF;
+    assert!(appattest_enroll(&da, &expectation()).is_err(), "edited nonce");
+    // Wrong key_id: no longer SHA256 of the attested key.
+    let mut da = object_only_da(&proof);
+    da.key_id = {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode([0u8; 32])
+    };
+    assert!(appattest_enroll(&da, &expectation()).is_err(), "edited key_id");
+    // Another app identity.
+    let other = Expectation::new("6ZH5F97PWU", "com.example.other", AcceptEnvironment::Any);
+    assert!(appattest_enroll(&object_only_da(&proof), &other).is_err(), "other bundle id");
+    // No nonce at all.
+    let mut da = object_only_da(&proof);
+    da.attestation_nonce = None;
+    let err = appattest_enroll(&da, &expectation()).unwrap_err().to_string();
+    assert!(err.contains("no attestation nonce"), "{err}");
+}
+
+#[test]
+fn cli_object_only_json_bundle_takes_an_assertion_only_proof_to_pass() {
+    let proof = full_proof();
+    let proof_path = tmp("oo-proof.bin");
+    let bundle_path = tmp("oo-bundle.json");
+    let cfg_path = tmp("oo-app-attest.toml");
+    std::fs::write(&proof_path, assertion_only(&proof).encode_to_vec()).unwrap();
+    std::fs::write(&bundle_path, object_only_json(&proof)).unwrap();
+    std::fs::write(
+        &cfg_path,
+        "[app_attest]\nteam_id = \"6ZH5F97PWU\"\nbundle_id = \"com.octetproof.sample\"\nenvironment = \"any\"\n",
+    )
+    .unwrap();
+    let out = Command::new(BIN)
+        .arg(&proof_path)
+        .args(["--app-attest-config", cfg_path.to_str().unwrap()])
+        .args(["--app-attest-enrolment-bundle", bundle_path.to_str().unwrap()])
+        .args(["--max-age-seconds", "9999999999999"])
+        .arg("--json")
+        .output()
+        .expect("run verifier with an object-only bundle");
+    for p in [&proof_path, &bundle_path, &cfg_path] {
+        let _ = std::fs::remove_file(p);
+    }
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("CLI JSON: {e}; stderr:\n{}", String::from_utf8_lossy(&out.stderr)));
+    let aa = json["checks"].as_array().unwrap().iter().find(|c| c["name"] == "app-attest").expect("app-attest");
+    assert_eq!(aa["status"], "PASS", "{aa}");
+    assert_eq!(json["verdict"], "VALID");
+}
+
+/// An assertion-only proof carries no object, so `--app-attest-window` dates the
+/// enrolment bundle's object, the one the verified key came from.
+#[test]
+fn cli_app_attest_window_dates_the_enrolment_bundles_object() {
+    let proof = full_proof();
+    let run = |window: &str, tag: &str| {
+        let proof_path = tmp(&format!("aw-{tag}-proof.bin"));
+        let bundle_path = tmp(&format!("aw-{tag}-bundle.json"));
+        let cfg_path = tmp(&format!("aw-{tag}-app-attest.toml"));
+        std::fs::write(&proof_path, assertion_only(&proof).encode_to_vec()).unwrap();
+        std::fs::write(&bundle_path, object_only_json(&proof)).unwrap();
+        std::fs::write(
+            &cfg_path,
+            "[app_attest]\nteam_id = \"6ZH5F97PWU\"\nbundle_id = \"com.octetproof.sample\"\nenvironment = \"any\"\n",
+        )
+        .unwrap();
+        let out = Command::new(BIN)
+            .arg(&proof_path)
+            .args(["--app-attest-config", cfg_path.to_str().unwrap()])
+            .args(["--app-attest-enrolment-bundle", bundle_path.to_str().unwrap()])
+            .args(["--app-attest-window", window])
+            .args(["--max-age-seconds", "9999999999999", "--json"])
+            .output()
+            .unwrap();
+        for p in [&proof_path, &bundle_path, &cfg_path] {
+            let _ = std::fs::remove_file(p);
+        }
+        let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        let line = json["checks"].as_array().unwrap().iter().find(|c| c["name"] == "app-attest-validity").cloned();
+        (json["verdict"].clone(), line.expect("app-attest-validity line")["status"].clone())
+    };
+    assert_eq!(run("leaf/2026-08-24T00:00:00Z", "in"), ("VALID".into(), "PASS".into()));
+    assert_eq!(run("leaf/2026-08-27T00:00:00Z", "out"), ("INVALID".into(), "FAIL".into()));
 }

@@ -52,8 +52,12 @@ struct Args {
     /// Out-of-band App Attest **enrolment bundle**: recovers the attested key
     /// so an assertion-only iOS proof (one carrying no attestation object — the
     /// steady state) can reach `app-attest` PASS via the cached-key path instead of
-    /// NOT-CHECKED. Requires `--app-attest-config`. JSON (`v:1`) or proto form.
+    /// NOT-CHECKED. Requires `--app-attest-config`. JSON (`v:1`/`v:2`) or proto form.
     app_attest_enrolment_bundle: Option<String>,
+    /// `--app-attest-window <lower|leaf>/<upper>`: date-check the App Attest chain
+    /// over a caller-given window, as `(lower_ms, upper_ms)`; `None` lower = the
+    /// leaf's notBefore. Requires `--app-attest-config`.
+    app_attest_window: Option<(Option<i64>, i64)>,
     /// Expected Android app identity `(package_name, signing_cert_sha256)` for the
     /// key-attestation `attestationApplicationId` binding ( rec: bind the
     /// Android chain to a specific app, not just "some app"). Parsed from
@@ -197,12 +201,13 @@ fn run(args: &Args) -> anyhow::Result<Report> {
         // location, nothing hardcoded.
         if let Some(cfg_path) = &args.app_attest_config {
             #[cfg(feature = "appattest")]
-            report.checks.push(appattest_from_config(
+            report.checks.extend(appattest_from_config(
                 &proof,
                 cfg_path,
                 args.app_attest_enrolment_bundle.as_deref(),
                 hw_key.as_ref().map(|vk| vk.to_sec1_bytes()).as_deref(),
                 args.require_attestation,
+                args.app_attest_window,
             )?);
             #[cfg(not(feature = "appattest"))]
             {
@@ -377,6 +382,8 @@ fn query_region_match_check(spec: &str, report: &Report) -> verify_mod::Check {
 }
 
 /// Load the shared App Attest config and verify the proof's evidence against it.
+/// Returns the `app-attest` check, followed on a PASS by the
+/// `app-attest-validity` NOT-CHECKED line, as the library's `verify_attested` does.
 #[cfg(feature = "appattest")]
 fn appattest_from_config(
     proof: &octet_verify::navigate::LocationProof,
@@ -384,9 +391,13 @@ fn appattest_from_config(
     enrolment_bundle: Option<&str>,
     signing_key_sec1: Option<&[u8]>,
     require_binding: bool,
-) -> anyhow::Result<verify_mod::Check> {
+    window: Option<(Option<i64>, i64)>,
+) -> anyhow::Result<Vec<verify_mod::Check>> {
     use octet_attest_verify::config::Config;
-    use octet_verify::appattest_layer::{appattest_check, Expectation};
+    use octet_verify::appattest_layer::{
+        appattest_check, appattest_validity_check, appattest_validity_not_checked, AppAttestWindow,
+        Expectation,
+    };
 
     let cfg = Config::from_file(cfg_path)
         .map_err(|e| anyhow::anyhow!("app-attest config: {e}"))?;
@@ -401,13 +412,31 @@ fn appattest_from_config(
     // reaches PASS via the cached-key path.
     //: the live assertion is bound to the SE signing key (certificate_chain[0])
     // — PreferBound by default, RequireBound under --require-attestation.
-    let cached = match enrolment_bundle {
+    let enrolled = match enrolment_bundle {
         Some(path) => Some(resolve_enrolment_key(path, &expect)?),
         None => None,
     };
-    let (check, _key) =
-        appattest_check(proof, &expect, cached.as_ref(), signing_key_sec1, require_binding);
-    Ok(check)
+    let cached = enrolled.as_ref().map(|(key, _)| key);
+    let (check, _key) = appattest_check(proof, &expect, cached, signing_key_sec1, require_binding);
+    let passed = check.status == Status::Pass;
+    let mut checks = vec![check];
+    if passed {
+        // The object the verified key came from: the proof's own (first proof of
+        // a key), else the enrolment bundle's.
+        let object = proof
+            .device_attestation
+            .as_ref()
+            .and_then(|da| da.app_attest_attestation.as_deref())
+            .filter(|o| !o.is_empty())
+            .or_else(|| enrolled.as_ref().map(|(_, obj)| obj.as_slice()));
+        checks.push(match (window, object) {
+            (Some((lower_ms, upper_ms)), Some(obj)) => {
+                appattest_validity_check(obj, &AppAttestWindow { lower_ms, upper_ms })
+            }
+            _ => appattest_validity_not_checked(),
+        });
+    }
+    Ok(checks)
 }
 
 /// Recover the attested key from an out-of-band App Attest **enrolment bundle**
@@ -428,7 +457,7 @@ fn appattest_from_config(
 fn resolve_enrolment_key(
     bundle_path: &str,
     expect: &octet_verify::appattest_layer::Expectation,
-) -> anyhow::Result<octet_attest_verify::appattest::AttestedKey> {
+) -> anyhow::Result<(octet_attest_verify::appattest::AttestedKey, Vec<u8>)> {
     use octet_verify::appattest_layer::{appattest_enroll, bundle_from_json, bundle_from_proto};
 
     let bytes = std::fs::read(bundle_path)
@@ -443,7 +472,7 @@ fn resolve_enrolment_key(
     };
     let mut key = appattest_enroll(&da, expect)?;
     key.last_counter = 0;
-    Ok(key)
+    Ok((key, da.app_attest_attestation.unwrap_or_default()))
 }
 
 /// Build and run the online Play Integrity check from the resolved config
@@ -839,6 +868,9 @@ fn parse_args() -> Result<Args, String> {
             "--app-attest-enrolment-bundle" => {
                 args.app_attest_enrolment_bundle = Some(need_value(&mut iter, &a)?);
             }
+            "--app-attest-window" => {
+                args.app_attest_window = Some(parse_app_attest_window(&need_value(&mut iter, &a)?)?);
+            }
             "--android-app-identity" => {
                 let v = need_value(&mut iter, &a)?;
                 args.android_app_identities.push(parse_android_identity(&v)?);
@@ -863,6 +895,9 @@ fn parse_args() -> Result<Args, String> {
     // config is the only source of team/bundle, so require it.
     if args.app_attest_enrolment_bundle.is_some() && args.app_attest_config.is_none() {
         return Err("--app-attest-enrolment-bundle requires --app-attest-config".to_string());
+    }
+    if args.app_attest_window.is_some() && args.app_attest_config.is_none() {
+        return Err("--app-attest-window requires --app-attest-config".to_string());
     }
     if args.at_ms.is_some() && args.validation_window.is_some() {
         return Err("--at and --window are mutually exclusive".to_string());
@@ -945,6 +980,23 @@ fn parse_window(s: &str) -> Result<ValidationWindow, String> {
         .ok_or_else(|| format!("bad --window {s:?}: expected <from>/<to>"))?;
     let (from, to) = (parse_instant_ms(from)?, parse_instant_ms(to)?);
     ValidationWindow::new(from, to).ok_or_else(|| format!("bad --window {s:?}: start is after end"))
+}
+
+/// `--app-attest-window <lower|leaf>/<upper>`: like `--window`, except the lower
+/// bound may be `leaf` (the leaf certificate's own notBefore), returned as `None`.
+fn parse_app_attest_window(s: &str) -> Result<(Option<i64>, i64), String> {
+    let (lower, upper) = s
+        .split_once('/')
+        .ok_or_else(|| format!("bad --app-attest-window {s:?}: expected <lower|leaf>/<upper>"))?;
+    let lower = match lower.trim() {
+        "leaf" => None,
+        l => Some(parse_instant_ms(l)?),
+    };
+    let upper = parse_instant_ms(upper)?;
+    if lower.is_some_and(|l| l > upper) {
+        return Err(format!("bad --app-attest-window {s:?}: start is after end"));
+    }
+    Ok((lower, upper))
 }
 
 fn days_in_month(year: i64, month: i64) -> i64 {
@@ -1122,6 +1174,9 @@ mod backend {
         Range,
     }
 
+    // The App Attest and Android identity flags are parsed in every build, but
+    // only an `appattest` build uses them.
+    #[cfg_attr(not(feature = "appattest"), allow(dead_code))]
     struct Args {
         sub: Sub,
         backend: String,
@@ -1145,6 +1200,7 @@ mod backend {
         until: Option<String>,
         app_attest_config: Option<String>,
         app_attest_enrolment_bundle: Option<String>,
+        app_attest_window: Option<(Option<i64>, i64)>,
         android_app_identities: Vec<(String, [u8; 32])>,
         skip_hardware_attestation: bool,
         integrity_decode_url: Option<String>,
@@ -1247,7 +1303,7 @@ mod backend {
                 }
                 None => {
                     empty_polls += 1;
-                    if !args.json && empty_polls % EMPTY_POLL_HEARTBEAT == 0 {
+                    if !args.json && empty_polls.is_multiple_of(EMPTY_POLL_HEARTBEAT) {
                         eprintln!(
                             "still watching — {empty_polls} polls, no proofs yet for this license \
                              (backend reachable, /v1/proofs/latest returns none)"
@@ -1336,12 +1392,13 @@ mod backend {
         if !args.skip_hardware_attestation {
             #[cfg(feature = "appattest")]
             if let Some(cfg_path) = &args.app_attest_config {
-                report.checks.push(super::appattest_from_config(
+                report.checks.extend(super::appattest_from_config(
                     &proof,
                     cfg_path,
                     args.app_attest_enrolment_bundle.as_deref(),
                     hw_key.as_ref().map(|vk| vk.to_sec1_bytes()).as_deref(),
                     args.require_attestation,
+                    args.app_attest_window,
                 )?);
             }
             #[cfg(feature = "appattest")]
@@ -1629,6 +1686,7 @@ mod backend {
         let mut integrity_package = None;
         let mut integrity_max_age_s = None;
         let mut app_attest_enrolment_bundle = None;
+        let mut app_attest_window = None;
         let mut android_app_identities = Vec::new();
         let mut skip_hardware_attestation = false;
         let mut proof_id: Option<String> = None;
@@ -1701,6 +1759,11 @@ mod backend {
                 "--app-attest-enrolment-bundle" => {
                     app_attest_enrolment_bundle = Some(need(&mut it, a)?)
                 }
+                "--app-attest-window" => {
+                    app_attest_window = Some(
+                        super::parse_app_attest_window(&need(&mut it, a)?).map_err(|e| anyhow!(e))?,
+                    );
+                }
                 "--android-app-identity" => {
                     android_app_identities
                         .push(parse_android_identity(&need(&mut it, a)?).map_err(|e| anyhow!("{e}"))?);
@@ -1723,6 +1786,9 @@ mod backend {
         // against, so require --app-attest-config alongside it.
         if app_attest_enrolment_bundle.is_some() && app_attest_config.is_none() {
             bail!("--app-attest-enrolment-bundle requires --app-attest-config");
+        }
+        if app_attest_window.is_some() && app_attest_config.is_none() {
+            bail!("--app-attest-window requires --app-attest-config");
         }
 
         let sub = match sub_name {
@@ -1771,6 +1837,7 @@ mod backend {
             until,
             app_attest_config,
             app_attest_enrolment_bundle,
+            app_attest_window,
             android_app_identities,
             skip_hardware_attestation,
             integrity_decode_url,
@@ -1784,6 +1851,261 @@ mod backend {
         it.next()
             .map(|s| s.to_string())
             .ok_or_else(|| anyhow!("{flag} requires a value"))
+    }
+}
+
+
+// ===========================================================================
+// Browser verdict profile (subcommand: browser-verdict, feature `browser`)
+//
+// Verifies the octet browser product's signed verdict token and its session
+// chain. A separate profile from the LocationProof verifier above: its own
+// inputs, checks and statuses. See VERIFICATION-SPEC.md, "Browser verdict
+// profile".
+// ===========================================================================
+
+#[cfg(not(feature = "browser"))]
+fn browser_dispatch(_argv: &[String]) -> ExitCode {
+    eprintln!(
+        "error: the `browser-verdict` subcommand requires a build with the `browser` feature.\n\n    \
+         cargo build --features browser        (JWKS from a file)\n    \
+         cargo build --features browser,net    (JWKS from a URL, the default)"
+    );
+    ExitCode::from(2)
+}
+
+#[cfg(feature = "browser")]
+fn browser_dispatch(argv: &[String]) -> ExitCode {
+    match browser_cli::run(argv) {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("error: {e}\n\nrun `octet-verify browser-verdict --help` for usage");
+            ExitCode::from(2)
+        }
+    }
+}
+
+#[cfg(feature = "browser")]
+mod browser_cli {
+    use octet_verify::browser::{
+        parse_jwks, parse_roots, verify_browser_verdict, BrowserReport, BrowserVerdictInputs, CHALLENGE_JWKS_URL,
+        MANIFEST_URL, PINNED_ROOTS_JSON, VERDICT_JWKS_ARCHIVE_URL, VERDICT_JWKS_URL,
+    };
+    use std::process::ExitCode;
+
+    const HELP: &str = "\
+octet-verify browser-verdict — verify an octet browser verdict token and its chain
+
+USAGE:
+    octet-verify browser-verdict <verdict-token> [options]
+
+Token arguments take the token itself, @<file>, or - for stdin.
+
+OPTIONS:
+    --jwks <url|file>          Verdict JWKS. Default: the live JWKS
+                               (https://geo.octetproof.com/.well-known/browser-verdict-jwks.json).
+    --archive                  Use the verdict key archive instead, for a stored token
+                               whose key has rotated; also checks the key's signing
+                               window and revocation.
+    --challenge <token>        The challenge token kept from POST /v1/challenge:
+                               checks the session link (s0, signature, sessionRef,
+                               lid, time window).
+    --challenge-jwks <url|file>
+                               Challenge JWKS. Default: the live challenge JWKS.
+    --edge-log <line|@file>    An edge log line {\"octetChain\":{...}}: checks the
+                               edge link. The raw line, log prefix included, is
+                               fine: paste it straight from the edge's log.
+    --roots <file>             octet's pinned offline roots ({\"roots\":[...]}, as in
+                               octet-browser keys/octet-root.json). Default: the
+                               roots built into this binary (octet-root-a-2026-10
+                               and octet-root-b-2026-10). Never taken from the
+                               server being checked.
+    --manifest <url|file>      The root manifest JWS. Default with pinned roots:
+                               https://geo.octetproof.com/.well-known/octet-browser-manifest.json.jws.
+                               Checks the verdict (and challenge) key is listed in
+                               it, and takes the key's validity window from it.
+    --manifest-seq-store <file>
+                               Remember the highest manifest seq seen; a lower one
+                               is a rollback and FAILS.
+    --min-manifest-seq <n>     Refuse a manifest with seq below n.
+    --now <unix-seconds>       Verification time for the expiry reports (default: now).
+    --json                     Machine-readable output.
+
+A URL needs a build with the `net` feature; a JWKS file always works offline.
+
+Exit codes: 0 verified (no check failed), 1 a check failed, 2 usage/IO error.
+";
+
+    fn read_arg(v: &str) -> Result<String, String> {
+        if v == "-" {
+            let mut s = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut s).map_err(|e| format!("stdin: {e}"))?;
+            Ok(s.trim().to_string())
+        } else if let Some(path) = v.strip_prefix('@') {
+            std::fs::read_to_string(path).map(|s| s.trim().to_string()).map_err(|e| format!("{path}: {e}"))
+        } else {
+            Ok(v.to_string())
+        }
+    }
+
+    fn load_text(src: &str) -> Result<String, String> {
+        if src.starts_with("https://") || src.starts_with("http://") {
+            fetch(src)
+        } else {
+            std::fs::read_to_string(src).map_err(|e| format!("{src}: {e}"))
+        }
+    }
+
+    fn load_jwks(src: &str) -> Result<Vec<octet_verify::browser::Jwk>, String> {
+        parse_jwks(&load_text(src)?).map_err(|e| format!("{src}: {e}"))
+    }
+
+    #[cfg(feature = "net")]
+    fn fetch(url: &str) -> Result<String, String> {
+        ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+            .get(url)
+            .call()
+            .map_err(|e| format!("{url}: {e}"))?
+            .into_string()
+            .map_err(|e| format!("{url}: {e}"))
+    }
+
+    #[cfg(not(feature = "net"))]
+    fn fetch(url: &str) -> Result<String, String> {
+        Err(format!("{url}: fetching a JWKS needs a build with the `net` feature; download it and pass the file"))
+    }
+
+    pub fn run(argv: &[String]) -> Result<ExitCode, String> {
+        let mut token = None;
+        let (mut jwks, mut archive, mut challenge, mut challenge_jwks) = (None, false, None, None);
+        let (mut edge, mut now, mut json) = (None, None, false);
+        let (mut roots_file, mut manifest_src, mut seq_store, mut min_seq) = (None, None, None, None::<u64>);
+        let mut it = argv.iter();
+        while let Some(a) = it.next() {
+            let mut val = || it.next().cloned().ok_or_else(|| format!("{a} needs a value"));
+            match a.as_str() {
+                "-h" | "--help" => {
+                    print!("{HELP}");
+                    return Ok(ExitCode::SUCCESS);
+                }
+                "--jwks" => jwks = Some(val()?),
+                "--archive" => archive = true,
+                "--challenge" => challenge = Some(read_arg(&val()?)?),
+                "--challenge-jwks" => challenge_jwks = Some(val()?),
+                "--edge-log" => edge = Some(read_arg(&val()?)?),
+                "--now" => now = Some(val()?.parse::<i64>().map_err(|e| format!("bad --now: {e}"))?),
+                "--json" => json = true,
+                "--roots" => roots_file = Some(val()?),
+                "--manifest" => manifest_src = Some(val()?),
+                "--manifest-seq-store" => seq_store = Some(val()?),
+                "--min-manifest-seq" => min_seq = Some(val()?.parse().map_err(|e| format!("bad --min-manifest-seq: {e}"))?),
+                s if s.starts_with("--") => return Err(format!("unknown flag: {s}")),
+                s if token.is_none() => token = Some(read_arg(s)?),
+                s => return Err(format!("unexpected argument: {s}")),
+            }
+        }
+        let token = token.ok_or("missing <verdict-token>")?;
+        if archive && jwks.is_some() {
+            return Err("pass --jwks or --archive, not both".into());
+        }
+        let vsrc = jwks.unwrap_or_else(|| (if archive { VERDICT_JWKS_ARCHIVE_URL } else { VERDICT_JWKS_URL }).to_string());
+        let vkeys = load_jwks(&vsrc)?;
+        let ckeys = match &challenge {
+            Some(_) => Some(load_jwks(challenge_jwks.as_deref().unwrap_or(CHALLENGE_JWKS_URL))?),
+            None => None,
+        };
+        let roots_json = match &roots_file {
+            Some(f) => std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?,
+            None => PINNED_ROOTS_JSON.to_string(),
+        };
+        let roots = parse_roots(&roots_json).map_err(|e| format!("roots: {e}"))?;
+        // The manifest: explicit (a failure is an error), else the published one
+        // when there is a root to check it with (unreachable ⇒ NOT-CHECKED).
+        let manifest = match (&manifest_src, roots.is_empty()) {
+            (Some(src), _) => Some(load_text(src)?),
+            (None, true) => None,
+            (None, false) => match load_text(MANIFEST_URL) {
+                Ok(m) => Some(m),
+                Err(e) => {
+                    eprintln!("note: root manifest unavailable ({e}); root-manifest is NOT-CHECKED");
+                    None
+                }
+            },
+        };
+        let stored_seq = match &seq_store {
+            Some(f) => match std::fs::read_to_string(f) {
+                Ok(t) => Some(t.trim().parse::<u64>().map_err(|e| format!("{f}: not a seq: {e}"))?),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(format!("{f}: {e}")),
+            },
+            None => None,
+        };
+        let min_manifest_seq = stored_seq.max(min_seq);
+        let now = now.unwrap_or_else(|| {
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+        });
+        let report = verify_browser_verdict(&BrowserVerdictInputs {
+            verdict_token: &token,
+            verdict_keys: &vkeys,
+            challenge_token: challenge.as_deref(),
+            challenge_keys: ckeys.as_deref(),
+            edge_log: edge.as_deref(),
+            now_unix: now,
+            manifest: manifest.as_deref(),
+            roots: &roots,
+            min_manifest_seq,
+        });
+        if let (Some(f), Some(seq)) = (&seq_store, report.manifest_seq) {
+            if stored_seq.is_none_or(|s| seq > s) {
+                std::fs::write(f, format!("{seq}\n")).map_err(|e| format!("{f}: {e}"))?;
+            }
+        }
+        if json {
+            println!("{}", to_json(&report));
+        } else {
+            print_human(&report);
+        }
+        Ok(if report.is_valid() { ExitCode::SUCCESS } else { ExitCode::from(1) })
+    }
+
+    fn print_human(r: &BrowserReport) {
+        println!("browser verdict: {}", if r.is_valid() { "VERIFIED" } else { "FAILED" });
+        if let Some(c) = &r.claims {
+            let f = |k: &str| c.get(k).map(|v| super::sanitize_terminal(&v.to_string())).unwrap_or_else(|| "-".into());
+            println!(
+                "  v={} sessionRef={} alarm={} confidence={} country={} modelVersion={}",
+                r.version.unwrap_or(0), f("sessionRef"), f("alarm"), f("confidence"), f("country"), f("modelVersion")
+            );
+        }
+        if let Some(m) = r.client_net_match() {
+            println!("  clientNetMatch (signed): {m}{}", if m { "" } else { "  (report came from a different network than the partner saw)" });
+        }
+        if let Some(lid) = &r.lid {
+            println!("  licence (from the challenge): {}", super::sanitize_terminal(lid));
+        }
+        for c in &r.checks {
+            println!("    [{:>11}] {:<22} {}", c.status.tag(), c.name, super::sanitize_terminal(&c.detail));
+        }
+    }
+
+    fn to_json(r: &BrowserReport) -> String {
+        let checks: Vec<_> = r
+            .checks
+            .iter()
+            .map(|c| serde_json::json!({ "name": c.name, "status": c.status.tag(), "detail": c.detail }))
+            .collect();
+        serde_json::to_string_pretty(&serde_json::json!({
+            "valid": r.is_valid(),
+            "version": r.version,
+            "lid": r.lid,
+            "manifest_seq": r.manifest_seq,
+            "client_net_match": r.client_net_match(),
+            "claims": r.claims,
+            "checks": checks,
+        }))
+        .expect("serialisable")
     }
 }
 
@@ -1972,259 +2294,5 @@ mod tests {
         assert!(key.is_some());
 
         let _ = std::fs::remove_dir_all(&dir);
-    }
-}
-
-// ===========================================================================
-// Browser verdict profile (subcommand: browser-verdict, feature `browser`)
-//
-// Verifies the octet browser product's signed verdict token and its session
-// chain. A separate profile from the LocationProof verifier above: its own
-// inputs, checks and statuses. See VERIFICATION-SPEC.md, "Browser verdict
-// profile".
-// ===========================================================================
-
-#[cfg(not(feature = "browser"))]
-fn browser_dispatch(_argv: &[String]) -> ExitCode {
-    eprintln!(
-        "error: the `browser-verdict` subcommand requires a build with the `browser` feature.\n\n    \
-         cargo build --features browser        (JWKS from a file)\n    \
-         cargo build --features browser,net    (JWKS from a URL, the default)"
-    );
-    ExitCode::from(2)
-}
-
-#[cfg(feature = "browser")]
-fn browser_dispatch(argv: &[String]) -> ExitCode {
-    match browser_cli::run(argv) {
-        Ok(code) => code,
-        Err(e) => {
-            eprintln!("error: {e}\n\nrun `octet-verify browser-verdict --help` for usage");
-            ExitCode::from(2)
-        }
-    }
-}
-
-#[cfg(feature = "browser")]
-mod browser_cli {
-    use octet_verify::browser::{
-        parse_jwks, parse_roots, verify_browser_verdict, BrowserReport, BrowserVerdictInputs, CHALLENGE_JWKS_URL,
-        MANIFEST_URL, PINNED_ROOTS_JSON, VERDICT_JWKS_ARCHIVE_URL, VERDICT_JWKS_URL,
-    };
-    use std::process::ExitCode;
-
-    const HELP: &str = "\
-octet-verify browser-verdict — verify an octet browser verdict token and its chain
-
-USAGE:
-    octet-verify browser-verdict <verdict-token> [options]
-
-Token arguments take the token itself, @<file>, or - for stdin.
-
-OPTIONS:
-    --jwks <url|file>          Verdict JWKS. Default: the live JWKS
-                               (https://geo.octetproof.com/.well-known/browser-verdict-jwks.json).
-    --archive                  Use the verdict key archive instead, for a stored token
-                               whose key has rotated; also checks the key's signing
-                               window and revocation.
-    --challenge <token>        The challenge token kept from POST /v1/challenge:
-                               checks the session link (s0, signature, sessionRef,
-                               lid, time window).
-    --challenge-jwks <url|file>
-                               Challenge JWKS. Default: the live challenge JWKS.
-    --edge-log <line|@file>    An edge log line {\"octetChain\":{...}}: checks the
-                               edge link. The raw line, log prefix included, is
-                               fine: paste it straight from the edge's log.
-    --roots <file>             octet's pinned offline roots ({\"roots\":[...]}, as in
-                               octet-browser keys/octet-root.json). Default: the
-                               roots built into this binary (none yet: they are
-                               added at octet's first root ceremony). Never taken
-                               from the server being checked.
-    --manifest <url|file>      The root manifest JWS. Default with pinned roots:
-                               https://geo.octetproof.com/.well-known/octet-browser-manifest.json.jws.
-                               Checks the verdict (and challenge) key is listed in
-                               it, and takes the key's validity window from it.
-    --manifest-seq-store <file>
-                               Remember the highest manifest seq seen; a lower one
-                               is a rollback and FAILS.
-    --min-manifest-seq <n>     Refuse a manifest with seq below n.
-    --now <unix-seconds>       Verification time for the expiry reports (default: now).
-    --json                     Machine-readable output.
-
-A URL needs a build with the `net` feature; a JWKS file always works offline.
-
-Exit codes: 0 verified (no check failed), 1 a check failed, 2 usage/IO error.
-";
-
-    fn read_arg(v: &str) -> Result<String, String> {
-        if v == "-" {
-            let mut s = String::new();
-            std::io::Read::read_to_string(&mut std::io::stdin(), &mut s).map_err(|e| format!("stdin: {e}"))?;
-            Ok(s.trim().to_string())
-        } else if let Some(path) = v.strip_prefix('@') {
-            std::fs::read_to_string(path).map(|s| s.trim().to_string()).map_err(|e| format!("{path}: {e}"))
-        } else {
-            Ok(v.to_string())
-        }
-    }
-
-    fn load_text(src: &str) -> Result<String, String> {
-        if src.starts_with("https://") || src.starts_with("http://") {
-            fetch(src)
-        } else {
-            std::fs::read_to_string(src).map_err(|e| format!("{src}: {e}"))
-        }
-    }
-
-    fn load_jwks(src: &str) -> Result<Vec<octet_verify::browser::Jwk>, String> {
-        parse_jwks(&load_text(src)?).map_err(|e| format!("{src}: {e}"))
-    }
-
-    #[cfg(feature = "net")]
-    fn fetch(url: &str) -> Result<String, String> {
-        ureq::AgentBuilder::new()
-            .timeout(std::time::Duration::from_secs(20))
-            .build()
-            .get(url)
-            .call()
-            .map_err(|e| format!("{url}: {e}"))?
-            .into_string()
-            .map_err(|e| format!("{url}: {e}"))
-    }
-
-    #[cfg(not(feature = "net"))]
-    fn fetch(url: &str) -> Result<String, String> {
-        Err(format!("{url}: fetching a JWKS needs a build with the `net` feature; download it and pass the file"))
-    }
-
-    pub fn run(argv: &[String]) -> Result<ExitCode, String> {
-        let mut token = None;
-        let (mut jwks, mut archive, mut challenge, mut challenge_jwks) = (None, false, None, None);
-        let (mut edge, mut now, mut json) = (None, None, false);
-        let (mut roots_file, mut manifest_src, mut seq_store, mut min_seq) = (None, None, None, None::<u64>);
-        let mut it = argv.iter();
-        while let Some(a) = it.next() {
-            let mut val = || it.next().cloned().ok_or_else(|| format!("{a} needs a value"));
-            match a.as_str() {
-                "-h" | "--help" => {
-                    print!("{HELP}");
-                    return Ok(ExitCode::SUCCESS);
-                }
-                "--jwks" => jwks = Some(val()?),
-                "--archive" => archive = true,
-                "--challenge" => challenge = Some(read_arg(&val()?)?),
-                "--challenge-jwks" => challenge_jwks = Some(val()?),
-                "--edge-log" => edge = Some(read_arg(&val()?)?),
-                "--now" => now = Some(val()?.parse::<i64>().map_err(|e| format!("bad --now: {e}"))?),
-                "--json" => json = true,
-                "--roots" => roots_file = Some(val()?),
-                "--manifest" => manifest_src = Some(val()?),
-                "--manifest-seq-store" => seq_store = Some(val()?),
-                "--min-manifest-seq" => min_seq = Some(val()?.parse().map_err(|e| format!("bad --min-manifest-seq: {e}"))?),
-                s if s.starts_with("--") => return Err(format!("unknown flag: {s}")),
-                s if token.is_none() => token = Some(read_arg(s)?),
-                s => return Err(format!("unexpected argument: {s}")),
-            }
-        }
-        let token = token.ok_or("missing <verdict-token>")?;
-        if archive && jwks.is_some() {
-            return Err("pass --jwks or --archive, not both".into());
-        }
-        let vsrc = jwks.unwrap_or_else(|| (if archive { VERDICT_JWKS_ARCHIVE_URL } else { VERDICT_JWKS_URL }).to_string());
-        let vkeys = load_jwks(&vsrc)?;
-        let ckeys = match &challenge {
-            Some(_) => Some(load_jwks(challenge_jwks.as_deref().unwrap_or(CHALLENGE_JWKS_URL))?),
-            None => None,
-        };
-        let roots_json = match &roots_file {
-            Some(f) => std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?,
-            None => PINNED_ROOTS_JSON.to_string(),
-        };
-        let roots = parse_roots(&roots_json).map_err(|e| format!("roots: {e}"))?;
-        // The manifest: explicit (a failure is an error), else the published one
-        // when there is a root to check it with (unreachable ⇒ NOT-CHECKED).
-        let manifest = match (&manifest_src, roots.is_empty()) {
-            (Some(src), _) => Some(load_text(src)?),
-            (None, true) => None,
-            (None, false) => match load_text(MANIFEST_URL) {
-                Ok(m) => Some(m),
-                Err(e) => {
-                    eprintln!("note: root manifest unavailable ({e}); root-manifest is NOT-CHECKED");
-                    None
-                }
-            },
-        };
-        let stored_seq = match &seq_store {
-            Some(f) => match std::fs::read_to_string(f) {
-                Ok(t) => Some(t.trim().parse::<u64>().map_err(|e| format!("{f}: not a seq: {e}"))?),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-                Err(e) => return Err(format!("{f}: {e}")),
-            },
-            None => None,
-        };
-        let min_manifest_seq = stored_seq.max(min_seq);
-        let now = now.unwrap_or_else(|| {
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
-        });
-        let report = verify_browser_verdict(&BrowserVerdictInputs {
-            verdict_token: &token,
-            verdict_keys: &vkeys,
-            challenge_token: challenge.as_deref(),
-            challenge_keys: ckeys.as_deref(),
-            edge_log: edge.as_deref(),
-            now_unix: now,
-            manifest: manifest.as_deref(),
-            roots: &roots,
-            min_manifest_seq,
-        });
-        if let (Some(f), Some(seq)) = (&seq_store, report.manifest_seq) {
-            if stored_seq.is_none_or(|s| seq > s) {
-                std::fs::write(f, format!("{seq}\n")).map_err(|e| format!("{f}: {e}"))?;
-            }
-        }
-        if json {
-            println!("{}", to_json(&report));
-        } else {
-            print_human(&report);
-        }
-        Ok(if report.is_valid() { ExitCode::SUCCESS } else { ExitCode::from(1) })
-    }
-
-    fn print_human(r: &BrowserReport) {
-        println!("browser verdict: {}", if r.is_valid() { "VERIFIED" } else { "FAILED" });
-        if let Some(c) = &r.claims {
-            let f = |k: &str| c.get(k).map(|v| super::sanitize_terminal(&v.to_string())).unwrap_or_else(|| "-".into());
-            println!(
-                "  v={} sessionRef={} alarm={} confidence={} country={} modelVersion={}",
-                r.version.unwrap_or(0), f("sessionRef"), f("alarm"), f("confidence"), f("country"), f("modelVersion")
-            );
-        }
-        if let Some(m) = r.client_net_match() {
-            println!("  clientNetMatch (signed): {m}{}", if m { "" } else { "  (report came from a different network than the partner saw)" });
-        }
-        if let Some(lid) = &r.lid {
-            println!("  licence (from the challenge): {}", super::sanitize_terminal(lid));
-        }
-        for c in &r.checks {
-            println!("    [{:>11}] {:<22} {}", c.status.tag(), c.name, super::sanitize_terminal(&c.detail));
-        }
-    }
-
-    fn to_json(r: &BrowserReport) -> String {
-        let checks: Vec<_> = r
-            .checks
-            .iter()
-            .map(|c| serde_json::json!({ "name": c.name, "status": c.status.tag(), "detail": c.detail }))
-            .collect();
-        serde_json::to_string_pretty(&serde_json::json!({
-            "valid": r.is_valid(),
-            "version": r.version,
-            "lid": r.lid,
-            "manifest_seq": r.manifest_seq,
-            "client_net_match": r.client_net_match(),
-            "claims": r.claims,
-            "checks": checks,
-        }))
-        .expect("serialisable")
     }
 }

@@ -2,6 +2,19 @@
 
 Vectors copied verbatim from octet-browser. Do not edit them here.
 
+## `prod-manifest-seq1.json.jws`
+
+octet's first **production** root manifest (`seq` 1, issued 2026-10-12, expires
+2027-10-12), byte for byte as committed in octet-browser
+(`keys/octet-browser-manifest.json.jws`, with its trailing newline; SHA-256
+`98c9f12c2ed1f81b2d032e3376a96c6e255aa4608ea32fb0ad252f72216bce41`). The served
+copy has no trailing newline (SHA-256
+`a3dd8c373876d55edaf163d44da520863f43a76163dc8d23bc870950342c2dcb`); both verify
+the same way. It is signed by the pinned root `octet-root-a-2026-10` and lists
+the production verdict key `octet-browser-verdict-2026-09`, the challenge key
+`octet-browser-challenge-2026-10` and the anchors `lon1`, `chs1` and
+`sin1-prod-2026-09`. The roots for the next manifest are root A and root B.
+
 ## `manifest-vector.json`
 
 A root manifest (`seq` 1) listing octet-browser's dev verdict and challenge keys,

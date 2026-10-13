@@ -44,8 +44,9 @@ OPTIONS:
                                bounds. --max-age-seconds does not apply. Bounds
                                should come from independent evidence (e.g. the
                                upload-nonce issue time and a trusted timestamp).
-                               App Attest certificate dates are never checked
-                               (app-attest-validity NOT-CHECKED).
+                               App Attest certificate dates are not checked here
+                               (app-attest-validity NOT-CHECKED); see
+                               --app-attest-window.
                                Mutually exclusive with --at.
     --nullifier-store <file>   Newline-delimited hex file of seen nullifiers;
                                best-effort, single-process local replay check
@@ -130,12 +131,22 @@ OPTIONS:
                                state, since iOS emits the object only on a key's
                                first proof) reaches app-attest PASS via the
                                cached-key path instead of NOT-CHECKED. Accepts the
-                               JSON (v:1) or proto DeviceAttestation form,
-                               auto-detected. Requires --app-attest-config (the
+                               JSON (v:1, or v:2 where the assertion is optional)
+                               or proto DeviceAttestation form, auto-detected. Requires --app-attest-config (the
                                source of the expected app identity) and the
                                `appattest` feature. A stateless CLI does not
                                enforce cross-proof assertion-counter monotonicity
                                (use the library + a persisted key for that).
+    --app-attest-window <lower|leaf>/<upper>
+                               Date-check the App Attest certificate chain: after
+                               an app-attest PASS, app-attest-validity PASSes when
+                               the chain is valid at both bounds and FAILs
+                               otherwise. <upper> is a time you trust the
+                               attestation object existed by (e.g. when it was
+                               anchored); <lower> is a time, or `leaf` for the leaf
+                               certificate's notBefore. Times as for --at; they are
+                               taken as given. Dates the proof's own object, else
+                               the enrolment bundle's. Requires --app-attest-config.
     --android-app-identity <package>,<cert_sha256_hex>
                                Bind the Android key-attestation chain to a specific
                                app: its package name and the SHA-256 (64 hex chars)
@@ -205,7 +216,7 @@ BACKEND FETCH MODE (subcommands; requires a build with --features net):
     --require-session-binding, --require-schema-v2, --require-attestation,
     --require-verdict,
     --max-age-seconds, --at, --window,
-    --json, --app-attest-config, --app-attest-enrolment-bundle,
+    --json, --app-attest-config, --app-attest-enrolment-bundle, --app-attest-window,
     --android-app-identity, --skip-hardware-attestation,
     --integrity-decode-url / --integrity-decode-token / --integrity-package /
     --integrity-max-age-seconds all apply as above — a

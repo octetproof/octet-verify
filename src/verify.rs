@@ -1143,7 +1143,7 @@ fn query_region_id_shape_ok(region_type: u32, region_id: &[u8]) -> bool {
     match region_type {
         1 => region_id.len() == 8,
         2 => region_id.len() == 2,
-        4 | 5 | 6 => region_id.len() == 32,
+        4..=6 => region_id.len() == 32,
         7 => !region_id.is_empty()
             && region_id.iter().all(|b| b.is_ascii())
             && region_id.contains(&b'-'),
@@ -2359,7 +2359,7 @@ mod tests {
             center: Some(LatLon { latitude: 48.2082, longitude: 16.3738 }),
             semi_major_m: 1500.5, semi_minor_m: 1500.5, heading_deg: 0.0,
         };
-        let disc_region = ProofRegion { region: Some(Region::Ellipse(disc.clone())) };
+        let disc_region = ProofRegion { region: Some(Region::Ellipse(disc)) };
         let disc_ref = query_region_ref(&disc_region).expect("disc has a reference");
         assert_eq!(disc_ref.region_type, 4);
         let pd = v3_proof(1, Some(RegionRef { region_type: disc_ref.region_type, region_id: disc_ref.region_id.clone() }));
