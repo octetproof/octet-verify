@@ -1,0 +1,19 @@
+{
+  "entries" : [
+    {
+      "contentType" : "text\/plain",
+      "key" : "note",
+      "salt" : "02a7be8e1b61792407d89aa375c0aec1dfea9ff5f3e56168dbf4770e31a750c4",
+      "sha256" : "0ddb6739bc37b5d78dacb51641e256dab6a6f3f519a2e117cbe162cc12cfd83c",
+      "size" : 40
+    },
+    {
+      "contentType" : "application\/octet-stream",
+      "key" : "file",
+      "salt" : "",
+      "sha256" : "d41d438c379110c7f7b2c561b1f04f26c1b4549110791f8e022f48974280c13e",
+      "size" : 4096
+    }
+  ],
+  "v" : 1
+}

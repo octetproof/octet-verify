@@ -1,0 +1,40 @@
+{
+  "note": "Golden v=3 verdict token: captured before v=4 existed, so a licence not opted in to the early verdict must keep getting exactly these bytes. Test-only Ed25519 key: seed = sha256(seedLabel), never used anywhere else.",
+  "seedLabel": "octet-browser verdict golden vector (test only)",
+  "kid": "octet-verdict-golden-test",
+  "input": {
+    "verdict": { "country": "GB", "confidence": 0.9, "alarm": "none" },
+    "sessionRef": "ref-golden-v3",
+    "clientNetMatch": true,
+    "deviceKey": "dk1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "nowMs": 1791000002000
+  },
+  "claims": {
+    "iss": "octet-browser",
+    "iat": 1791000002,
+    "exp": 1791000302,
+    "sessionRef": "ref-golden-v3",
+    "country": "GB",
+    "confidence": 0.9,
+    "alarm": "none",
+    "clientNetMatch": true,
+    "deviceKey": "dk1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "chain": {
+      "v": 1,
+      "s0": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "reports": [
+        {
+          "s1": {
+            "bundle": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            "t": 1791000001200,
+            "sig": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+          },
+          "env": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
+        }
+      ]
+    },
+    "chain_root": "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
+    "modelVersion": "1.6.0"
+  },
+  "token": "eyJhbGciOiJFZERTQSIsInR5cCI6Im9jdGV0LWJyb3dzZXItdmVyZGljdCtqd3Q7dj0zIiwia2lkIjoib2N0ZXQtdmVyZGljdC1nb2xkZW4tdGVzdCJ9.eyJpc3MiOiJvY3RldC1icm93c2VyIiwiaWF0IjoxNzkxMDAwMDAyLCJleHAiOjE3OTEwMDAzMDIsInNlc3Npb25SZWYiOiJyZWYtZ29sZGVuLXYzIiwiY291bnRyeSI6IkdCIiwiY29uZmlkZW5jZSI6MC45LCJhbGFybSI6Im5vbmUiLCJjbGllbnROZXRNYXRjaCI6dHJ1ZSwiZGV2aWNlS2V5IjoiZGsxX0FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUEiLCJjaGFpbiI6eyJ2IjoxLCJzMCI6IkFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUEiLCJyZXBvcnRzIjpbeyJzMSI6eyJidW5kbGUiOiJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCIiwidCI6MTc5MTAwMDAwMTIwMCwic2lnIjoiQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQyJ9LCJlbnYiOiJEREREREREREREREREREREREREREREREREREREREREREREREREREREREREIn1dfSwiY2hhaW5fcm9vdCI6IkVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUUiLCJtb2RlbFZlcnNpb24iOiIxLjYuMCJ9.7wjBJgH-3C5dEQI8HJ50R6xuMWlMcv8AoasU3vQGgEc_zKLbaW94W5iLCOGP1BFpMbdXN9ssyGIlIN-vo6kxDg"
+}

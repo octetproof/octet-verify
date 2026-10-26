@@ -44,6 +44,15 @@ struct Args {
     expect_query_region: Option<String>,
     session_nonce: Option<Vec<u8>>,
     require_session_binding: bool,
+    /// Caller metadata: the presenter manifest (`--caller-manifest`), content
+    /// files per key (`--content <key>=<file>`), and the relying party's
+    /// requirements (`--require-content`, `--require-content-all`,
+    /// `--require-caller-metadata`).
+    caller_manifest: Option<String>,
+    content: Vec<(String, String)>,
+    require_content: Vec<String>,
+    require_content_all: bool,
+    require_caller_metadata: bool,
     require_schema_v2: bool,
     require_attestation: bool,
     /// `--require-verdict verified|plausible`: minimum signed spoofing-verdict tier.
@@ -160,6 +169,12 @@ fn run(args: &Args) -> anyhow::Result<Report> {
     // Wire-format guard: reject a proof that smuggles a duplicate of a
     // non-repeated proto field (prost silently keeps the last value).
     report.checks.push(wire_check(&proof_bytes));
+
+    // Caller metadata: content the integrator bound into the proof, checked
+    // against the callerMetadata stage when a manifest / content is presented.
+    if let Some(r) = caller_metadata_check(&proof, args)? {
+        report.add_caller_metadata(r);
+    }
 
     // Replay-control binding: in --envelope mode, bind the envelope's
     // replay_control to the signed proof (same check the backend-fetch path
@@ -314,6 +329,55 @@ fn run(args: &Args) -> anyhow::Result<Report> {
     }
 
     Ok(report)
+}
+
+/// Run the `caller-metadata` check, or `None` when the proof carries no
+/// callerMetadata stage and no caller-metadata flag was given (a report for an
+/// ordinary proof is unchanged). An unreadable `--content` file is not an error
+/// here: it makes the entry unresolved (INCONCLUSIVE).
+fn caller_metadata_check(
+    proof: &LocationProof,
+    args: &Args,
+) -> anyhow::Result<Option<octet_verify::caller_metadata::CallerMetadataResult>> {
+    use octet_verify::caller_metadata::{self as cm, CallerMetadataInputs, Content, RequireContent};
+    let has_stage = proof.stage_attestations.iter().any(|s| s.stage == cm::CALLER_METADATA_STAGE);
+    let asked = args.caller_manifest.is_some()
+        || !args.content.is_empty()
+        || !args.require_content.is_empty()
+        || args.require_content_all
+        || args.require_caller_metadata;
+    if !has_stage && !asked {
+        return Ok(None);
+    }
+    let manifest = match &args.caller_manifest {
+        None => None,
+        Some(path) => {
+            let bytes = std::fs::read(path).map_err(|e| anyhow::anyhow!("failed to read --caller-manifest {path}: {e}"))?;
+            #[cfg(feature = "caller-metadata")]
+            let parsed = cm::CallerManifest::from_json(&bytes);
+            // parse_args refuses --caller-manifest on a build without the feature.
+            #[cfg(not(feature = "caller-metadata"))]
+            let parsed = {
+                let _ = bytes;
+                Err("this binary was built without the `caller-metadata` feature".to_string())
+            };
+            Some(parsed)
+        }
+    };
+    let require_content = if args.require_content_all {
+        RequireContent::All
+    } else if args.require_content.is_empty() {
+        RequireContent::None
+    } else {
+        RequireContent::Keys(args.require_content.clone())
+    };
+    let inputs = CallerMetadataInputs {
+        manifest,
+        content: args.content.iter().map(|(k, f)| (k.clone(), Content::File(PathBuf::from(f)))).collect(),
+        require_content,
+        require_stage: args.require_caller_metadata,
+    };
+    Ok(Some(cm::check_caller_metadata(proof, &inputs)))
 }
 
 /// Parse an `--expect-query-region` spec into a `ProofRegion`, whose canonical
@@ -616,15 +680,18 @@ fn read_input(path: Option<&str>) -> anyhow::Result<Vec<u8>> {
 // --- reporting ---
 
 /// Headline reflects assurance precisely: a passing structure with unverified
-/// signatures is INCONCLUSIVE, never VALID.
+/// signatures, or with caller content left unresolved, is INCONCLUSIVE, never
+/// VALID.
 fn headline(report: &Report) -> &'static str {
     if !report.is_valid() {
         return "INVALID";
     }
-    if report.sigs_verified() {
-        "VALID"
-    } else {
+    if !report.sigs_verified() {
         "INCONCLUSIVE (signatures not verified)"
+    } else if !report.content_resolved() {
+        "INCONCLUSIVE (content unresolved)"
+    } else {
+        "VALID"
     }
 }
 
@@ -662,16 +729,40 @@ fn query_region_json(report: &Report) -> String {
     }
 }
 
+/// JSON value for the proof's readable caller manifest (field 19): an array of
+/// `{"key","content_type","size","sha256","locator"}` (sha256 hex, locator `""`
+/// when none), or `null` when the proof carries none or it did not recompute the
+/// signed stage.
+fn caller_manifest_json(report: &Report) -> String {
+    let Some(m) = report.caller_manifest() else { return "null".into() };
+    let entries: Vec<String> = m
+        .entries
+        .iter()
+        .map(|e| {
+            format!(
+                "{{\"key\": \"{}\", \"content_type\": \"{}\", \"size\": {}, \"sha256\": \"{}\", \"locator\": \"{}\"}}",
+                json_escape(&e.key),
+                json_escape(&e.content_type),
+                e.size,
+                e.sha256.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                json_escape(&e.locator)
+            )
+        })
+        .collect();
+    format!("[{}]", entries.join(", "))
+}
+
 /// Tri-state CLI exit code — the single source of truth for every command:
 ///   `0` = authentic (VALID) · `1` = invalid (a check failed) ·
-///   `3` = inconclusive (structure ok, signatures not verified).
+///   `3` = inconclusive (structure ok, signatures not verified, or caller
+///   content unresolved).
 /// `2` is reserved for usage / IO / decode / backend errors (returned
 /// elsewhere). INCONCLUSIVE is deliberately non-zero so that
 /// `octet-verify … && deploy` can never treat an unverified proof as success.
 fn exit_code(report: &Report) -> ExitCode {
     if !report.is_valid() {
         ExitCode::from(1)
-    } else if report.sigs_verified() {
+    } else if report.is_authentic() {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(3)
@@ -724,6 +815,10 @@ fn print_json(report: &Report) {
     // consumer matches `region_id` against its own query_region_ref(R) to read
     // within(R) directly. region_id is hex.
     out.push_str(&format!("  \"query_region\": {},\n", query_region_json(report)));
+    // The proof's readable caller manifest (field 19), or null when it carries
+    // none or it did not recompute the signed stage. sha256 is hex; locator is an
+    // unauthenticated hint.
+    out.push_str(&format!("  \"caller_manifest\": {},\n", caller_manifest_json(report)));
     out.push_str("  \"checks\": [\n");
     for (i, c) in report.checks.iter().enumerate() {
         let comma = if i + 1 < report.checks.len() { "," } else { "" };
@@ -850,6 +945,17 @@ fn parse_args() -> Result<Args, String> {
                 args.session_nonce = Some(parse_hex_nonce(&v)?);
             }
             "--require-session-binding" => args.require_session_binding = true,
+            "--caller-manifest" => args.caller_manifest = Some(need_value(&mut iter, &a)?),
+            "--content" => {
+                let v = need_value(&mut iter, &a)?;
+                match v.split_once('=') {
+                    Some((k, f)) if !k.is_empty() && !f.is_empty() => args.content.push((k.to_owned(), f.to_owned())),
+                    _ => return Err(format!("--content {v:?}: expected <key>=<file>")),
+                }
+            }
+            "--require-content" => args.require_content.push(need_value(&mut iter, &a)?),
+            "--require-content-all" => args.require_content_all = true,
+            "--require-caller-metadata" => args.require_caller_metadata = true,
             "--require-schema-v2" => args.require_schema_v2 = true,
             "--require-attestation" => args.require_attestation = true,
             "--require-verdict" => {
@@ -901,6 +1007,13 @@ fn parse_args() -> Result<Args, String> {
     }
     if args.at_ms.is_some() && args.validation_window.is_some() {
         return Err("--at and --window are mutually exclusive".to_string());
+    }
+    if !args.content.is_empty() && args.caller_manifest.is_none() {
+        return Err("--content requires --caller-manifest".to_string());
+    }
+    #[cfg(not(feature = "caller-metadata"))]
+    if args.caller_manifest.is_some() {
+        return Err("--caller-manifest needs a build with --features caller-metadata".to_string());
     }
     Ok(args)
 }
@@ -1235,7 +1348,7 @@ mod backend {
             let report = verify_envelope(seen, env, args)?;
             if !report.is_valid() {
                 invalid += 1; // a check actively failed (incl. refetch-consistency)
-            } else if !report.sigs_verified() {
+            } else if !report.is_authentic() {
                 inconclusive += 1; // structure ok, signatures never verified
             }
             total += 1;
@@ -1888,8 +2001,9 @@ fn browser_dispatch(argv: &[String]) -> ExitCode {
 #[cfg(feature = "browser")]
 mod browser_cli {
     use octet_verify::browser::{
-        parse_jwks, parse_roots, verify_browser_verdict, BrowserReport, BrowserVerdictInputs, CHALLENGE_JWKS_URL,
-        MANIFEST_URL, PINNED_ROOTS_JSON, VERDICT_JWKS_ARCHIVE_URL, VERDICT_JWKS_URL,
+        parse_jwks, parse_roots, verify_browser_verdict_with, BrowserReport, BrowserVerdictInputs,
+        BrowserVerdictOptions, SessionRevisions, VerdictStage, CHALLENGE_JWKS_URL, MANIFEST_URL, PINNED_ROOTS_JSON,
+        VERDICT_JWKS_ARCHIVE_URL, VERDICT_JWKS_URL,
     };
     use std::process::ExitCode;
 
@@ -1928,12 +2042,20 @@ OPTIONS:
                                Remember the highest manifest seq seen; a lower one
                                is a rollback and FAILS.
     --min-manifest-seq <n>     Refuse a manifest with seq below n.
+    --accept-provisional       Accept a v=4 provisional or incomplete-final verdict
+                               as a pass. By default only a final one passes (exit 3
+                               otherwise): a provisional verdict is judged on layer 1
+                               alone, fine for showing a page, not for a gated action.
+    --revision-store <file>    Remember, per sessionRef, the highest v=4 revision and
+                               the final one accepted; a lower revision, or a second
+                               final, FAILS. Updated only after a valid token.
     --now <unix-seconds>       Verification time for the expiry reports (default: now).
     --json                     Machine-readable output.
 
 A URL needs a build with the `net` feature; a JWKS file always works offline.
 
-Exit codes: 0 verified (no check failed), 1 a check failed, 2 usage/IO error.
+Exit codes: 0 verified (no check failed), 1 a check failed, 2 usage/IO error,
+3 a valid v=4 provisional or incomplete-final verdict without --accept-provisional.
 ";
 
     fn read_arg(v: &str) -> Result<String, String> {
@@ -1982,6 +2104,7 @@ Exit codes: 0 verified (no check failed), 1 a check failed, 2 usage/IO error.
         let (mut jwks, mut archive, mut challenge, mut challenge_jwks) = (None, false, None, None);
         let (mut edge, mut now, mut json) = (None, None, false);
         let (mut roots_file, mut manifest_src, mut seq_store, mut min_seq) = (None, None, None, None::<u64>);
+        let (mut accept_provisional, mut revision_store) = (false, None);
         let mut it = argv.iter();
         while let Some(a) = it.next() {
             let mut val = || it.next().cloned().ok_or_else(|| format!("{a} needs a value"));
@@ -2001,6 +2124,8 @@ Exit codes: 0 verified (no check failed), 1 a check failed, 2 usage/IO error.
                 "--manifest" => manifest_src = Some(val()?),
                 "--manifest-seq-store" => seq_store = Some(val()?),
                 "--min-manifest-seq" => min_seq = Some(val()?.parse().map_err(|e| format!("bad --min-manifest-seq: {e}"))?),
+                "--accept-provisional" => accept_provisional = true,
+                "--revision-store" => revision_store = Some(val()?),
                 s if s.starts_with("--") => return Err(format!("unknown flag: {s}")),
                 s if token.is_none() => token = Some(read_arg(s)?),
                 s => return Err(format!("unexpected argument: {s}")),
@@ -2046,7 +2171,16 @@ Exit codes: 0 verified (no check failed), 1 a check failed, 2 usage/IO error.
         let now = now.unwrap_or_else(|| {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
         });
-        let report = verify_browser_verdict(&BrowserVerdictInputs {
+        // The session's revisions so far, looked up by the token's sessionRef. The
+        // claims are read before the signature is checked only to find the
+        // entry; the verification below decides everything else.
+        let mut revisions = match &revision_store {
+            Some(f) => read_revision_store(f)?,
+            None => serde_json::Map::new(),
+        };
+        let session_ref = unverified_session_ref(&token);
+        let prior = session_ref.as_deref().and_then(|s| revisions.get(s)).map(revisions_from_json).transpose()?;
+        let report = verify_browser_verdict_with(&BrowserVerdictInputs {
             verdict_token: &token,
             verdict_keys: &vkeys,
             challenge_token: challenge.as_deref(),
@@ -2056,28 +2190,91 @@ Exit codes: 0 verified (no check failed), 1 a check failed, 2 usage/IO error.
             manifest: manifest.as_deref(),
             roots: &roots,
             min_manifest_seq,
-        });
+        }, &BrowserVerdictOptions { prior });
+        if let (Some(f), Some(next)) = (&revision_store, report.next_revisions(prior)) {
+            let signed_ref = report.claims.as_ref().and_then(|c| c.get("sessionRef")).and_then(|v| v.as_str());
+            if let Some(sr) = signed_ref {
+                revisions.insert(sr.to_owned(), serde_json::json!({ "highest": next.highest, "final": next.final_revision }));
+                let text = serde_json::to_string_pretty(&serde_json::Value::Object(revisions)).expect("serialisable");
+                std::fs::write(f, format!("{text}\n")).map_err(|e| format!("{f}: {e}"))?;
+            }
+        }
         if let (Some(f), Some(seq)) = (&seq_store, report.manifest_seq) {
             if stored_seq.is_none_or(|s| seq > s) {
                 std::fs::write(f, format!("{seq}\n")).map_err(|e| format!("{f}: {e}"))?;
             }
         }
         if json {
-            println!("{}", to_json(&report));
+            println!("{}", to_json(&report, accept_provisional));
         } else {
-            print_human(&report);
+            print_human(&report, accept_provisional);
         }
-        Ok(if report.is_valid() { ExitCode::SUCCESS } else { ExitCode::from(1) })
+        Ok(if !report.is_valid() {
+            ExitCode::from(1)
+        } else if report.passes_gate(accept_provisional) {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(3)
+        })
     }
 
-    fn print_human(r: &BrowserReport) {
-        println!("browser verdict: {}", if r.is_valid() { "VERIFIED" } else { "FAILED" });
+    fn read_revision_store(f: &str) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+        match std::fs::read_to_string(f) {
+            Ok(t) => match serde_json::from_str(&t) {
+                Ok(serde_json::Value::Object(m)) => Ok(m),
+                _ => Err(format!("{f}: not a revision store (a JSON object keyed by sessionRef)")),
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(serde_json::Map::new()),
+            Err(e) => Err(format!("{f}: {e}")),
+        }
+    }
+
+    fn revisions_from_json(v: &serde_json::Value) -> Result<SessionRevisions, String> {
+        let highest = v.get("highest").and_then(|h| h.as_u64()).ok_or("revision store entry has no integer highest")?;
+        let final_revision = match v.get("final") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(f) => Some(f.as_u64().ok_or("revision store entry has a non-integer final")?),
+        };
+        Ok(SessionRevisions { highest, final_revision })
+    }
+
+    /// The token's `sessionRef`, read without verifying it: only to find the
+    /// session's entry in the revision store.
+    fn unverified_session_ref(token: &str) -> Option<String> {
+        use base64::Engine;
+        let payload = token.trim().split('.').nth(1)?;
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload).ok()?;
+        let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        v.get("sessionRef")?.as_str().map(str::to_owned)
+    }
+
+    fn headline(r: &BrowserReport, accept_provisional: bool) -> &'static str {
+        match (r.is_valid(), r.is_final(), accept_provisional) {
+            (false, _, _) => "FAILED",
+            (true, true, _) => "VERIFIED",
+            (true, false, true) => "VERIFIED (not final: accepted with --accept-provisional)",
+            (true, false, false) => "INCONCLUSIVE (not final: not a pass for a gated action)",
+        }
+    }
+
+    fn stage_name(r: &BrowserReport) -> Option<&'static str> {
+        r.stage().map(|s| match s {
+            VerdictStage::Provisional => "provisional",
+            VerdictStage::Final => "final",
+        })
+    }
+
+    fn print_human(r: &BrowserReport, accept_provisional: bool) {
+        println!("browser verdict: {}", headline(r, accept_provisional));
         if let Some(c) = &r.claims {
             let f = |k: &str| c.get(k).map(|v| super::sanitize_terminal(&v.to_string())).unwrap_or_else(|| "-".into());
             println!(
                 "  v={} sessionRef={} alarm={} confidence={} country={} modelVersion={}",
                 r.version.unwrap_or(0), f("sessionRef"), f("alarm"), f("confidence"), f("country"), f("modelVersion")
             );
+        }
+        if let (Some(stage), Some(rev)) = (stage_name(r), r.revision()) {
+            println!("  stage={stage} revision={rev}{}", if r.incomplete() { " incomplete" } else { "" });
         }
         if let Some(m) = r.client_net_match() {
             println!("  clientNetMatch (signed): {m}{}", if m { "" } else { "  (report came from a different network than the partner saw)" });
@@ -2090,7 +2287,7 @@ Exit codes: 0 verified (no check failed), 1 a check failed, 2 usage/IO error.
         }
     }
 
-    fn to_json(r: &BrowserReport) -> String {
+    fn to_json(r: &BrowserReport, accept_provisional: bool) -> String {
         let checks: Vec<_> = r
             .checks
             .iter()
@@ -2098,7 +2295,12 @@ Exit codes: 0 verified (no check failed), 1 a check failed, 2 usage/IO error.
             .collect();
         serde_json::to_string_pretty(&serde_json::json!({
             "valid": r.is_valid(),
+            "verdict": headline(r, accept_provisional).split(' ').next(),
+            "passes_gate": r.passes_gate(accept_provisional),
             "version": r.version,
+            "stage": stage_name(r),
+            "revision": r.revision(),
+            "incomplete": r.version.filter(|v| *v == 4).map(|_| r.incomplete()),
             "lid": r.lid,
             "manifest_seq": r.manifest_seq,
             "client_net_match": r.client_net_match(),

@@ -25,11 +25,17 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 /// Accepted JWS `typ` values; the suffix versions the claim set.
-const VERDICT_TYPS: [(&str, u8); 3] = [
+const VERDICT_TYPS: [(&str, u8); 4] = [
     ("octet-browser-verdict+jwt;v=1", 1),
     ("octet-browser-verdict+jwt;v=2", 2),
     ("octet-browser-verdict+jwt;v=3", 3),
+    ("octet-browser-verdict+jwt;v=4", 4),
 ];
+/// The v=4 early-verdict claims; a v=1–v=3 token carries none of them.
+const STAGE_CLAIMS: [&str; 3] = ["stage", "revision", "incomplete"];
+/// A provisional verdict (and an incomplete final, which keeps its fields) is
+/// judged on layer 1 alone, and octet caps its confidence at this.
+const PROVISIONAL_CONFIDENCE_CAP: f64 = 0.7;
 const VERDICT_ISS: &str = "octet-browser";
 const VERDICT_PURPOSE: &str = "browser-verdict";
 const CHALLENGE_PURPOSE: &str = "browser-challenge";
@@ -250,6 +256,34 @@ pub fn verify_manifest(jws: &str, roots: &[Jwk]) -> Result<Manifest, String> {
     })
 }
 
+/// What a caller has already accepted for one `sessionRef` (v=4 early verdict).
+/// Persist it per session after each accepted token, from
+/// [`BrowserReport::next_revisions`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SessionRevisions {
+    /// The highest `revision` accepted so far.
+    pub highest: u64,
+    /// The revision of the accepted `final`, once there is one. A session has at most one.
+    pub final_revision: Option<u64>,
+}
+
+/// Options for [`verify_browser_verdict_with`]. The default is a stateless check.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BrowserVerdictOptions {
+    /// What has been accepted for this token's `sessionRef`. With it, a v=4 token
+    /// with a lower `revision`, or a second `final`, FAILS. `None`: nothing yet.
+    pub prior: Option<SessionRevisions>,
+}
+
+/// A v=4 token's `stage`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VerdictStage {
+    /// Judged on layer 1 alone.
+    Provisional,
+    /// The whole session (or, with `incomplete`, closed without layer 2).
+    Final,
+}
+
 /// Inputs to [`verify_browser_verdict`].
 pub struct BrowserVerdictInputs<'a> {
     pub verdict_token: &'a str,
@@ -299,6 +333,61 @@ impl BrowserReport {
 
     pub fn status(&self, name: &str) -> Option<BrowserStatus> {
         self.checks.iter().find(|c| c.name == name).map(|c| c.status)
+    }
+
+    fn v4_claim(&self, f: &str) -> Option<&Value> {
+        self.claims.as_ref().filter(|_| self.version == Some(4))?.get(f)
+    }
+
+    /// The signed `stage` of a v=4 token; `None` for v=1–v=3 or an unverified token.
+    pub fn stage(&self) -> Option<VerdictStage> {
+        match self.v4_claim("stage")?.as_str()? {
+            "provisional" => Some(VerdictStage::Provisional),
+            "final" => Some(VerdictStage::Final),
+            _ => None,
+        }
+    }
+
+    /// The signed `revision` of a v=4 token.
+    pub fn revision(&self) -> Option<u64> {
+        self.v4_claim("revision")?.as_u64()
+    }
+
+    /// True when a v=4 final token carries `incomplete: true` (layer 2 never arrived).
+    pub fn incomplete(&self) -> bool {
+        self.v4_claim("incomplete").and_then(Value::as_bool) == Some(true)
+    }
+
+    /// The session's verdict, to act on as such: a v=1–v=3 token, or a v=4
+    /// `final` that is not `incomplete`. A provisional or incomplete-final token
+    /// is genuine but judged on layer 1 alone.
+    pub fn is_final(&self) -> bool {
+        match self.version {
+            Some(4) => self.stage() == Some(VerdictStage::Final) && !self.incomplete(),
+            Some(_) => true,
+            None => false,
+        }
+    }
+
+    /// Whether this token may pass a gated action: valid, and final (see
+    /// [`is_final`](Self::is_final)) unless the caller explicitly accepts a
+    /// provisional or incomplete-final verdict.
+    pub fn passes_gate(&self, accept_provisional: bool) -> bool {
+        self.is_valid() && (accept_provisional || self.is_final())
+    }
+
+    /// The per-session state to persist after this token, or `None` when it
+    /// changes nothing (not valid, or not a v=4 token).
+    pub fn next_revisions(&self, prior: Option<SessionRevisions>) -> Option<SessionRevisions> {
+        if !self.is_valid() {
+            return None;
+        }
+        let (rev, stage) = (self.revision()?, self.stage()?);
+        let prior = prior.unwrap_or_default();
+        Some(SessionRevisions {
+            highest: prior.highest.max(rev),
+            final_revision: if stage == VerdictStage::Final { Some(rev) } else { prior.final_revision },
+        })
     }
 
     fn add(&mut self, name: &'static str, status: BrowserStatus, detail: impl Into<String>) {
@@ -428,7 +517,7 @@ fn verify_jws<'k>(token: &str, keys: &'k [Jwk]) -> Result<(u8, Value, &'k Jwk), 
         .iter()
         .find(|(t, _)| *t == typ)
         .map(|(_, v)| *v)
-        .ok_or_else(|| format!("typ {typ:?} is not octet-browser-verdict+jwt;v=1|2|3"))?;
+        .ok_or_else(|| format!("typ {typ:?} is not octet-browser-verdict+jwt;v=1|2|3|4"))?;
     let kid = header.get("kid").and_then(Value::as_str).ok_or("header has no kid")?;
     let alg = header.get("alg").and_then(Value::as_str).ok_or("header has no alg")?;
     let key = find_key(keys, kid, VERDICT_PURPOSE)?;
@@ -502,8 +591,15 @@ fn int(v: &Value, f: &str) -> Option<i64> {
     v.get(f).and_then(Value::as_i64)
 }
 
-/// Verify a browser verdict token and its chain. See the module docs.
+/// Verify a browser verdict token and its chain. See the module docs. Stateless:
+/// see [`verify_browser_verdict_with`] for a v=4 session's revisions.
 pub fn verify_browser_verdict(inp: &BrowserVerdictInputs) -> BrowserReport {
+    verify_browser_verdict_with(inp, &BrowserVerdictOptions::default())
+}
+
+/// [`verify_browser_verdict`], with the session state a v=4 token's `revision`
+/// is checked against.
+pub fn verify_browser_verdict_with(inp: &BrowserVerdictInputs, opts: &BrowserVerdictOptions) -> BrowserReport {
     use BrowserStatus::*;
     let mut r = BrowserReport { checks: Vec::new(), claims: None, version: None, lid: None, manifest_seq: None };
 
@@ -596,6 +692,11 @@ pub fn verify_browser_verdict(inp: &BrowserVerdictInputs) -> BrowserReport {
             _ => r.add("chain-root", Failed, "a v=3 token must carry chain and chain_root"),
         }
     }
+    // 2b. The v=4 early-verdict profile: stage, revision, incomplete.
+    if let Some((status, detail)) = verdict_stage(version, &claims, opts.prior) {
+        r.add("verdict-stage", status, detail);
+    }
+
     let chain = chain.filter(|_| chain_ok);
     let not_v3 = |r: &mut BrowserReport, name| r.add(name, NotChecked, if version < 3 {
         format!("v={version} tokens carry no chain")
@@ -666,6 +767,77 @@ pub fn verify_browser_verdict(inp: &BrowserVerdictInputs) -> BrowserReport {
 
     r.claims = Some(claims);
     r
+}
+
+/// The `verdict-stage` check. `None` for a v=1–v=3 token without the v=4
+/// claims, so those reports are unchanged.
+fn verdict_stage(version: u8, claims: &Value, prior: Option<SessionRevisions>) -> Option<(BrowserStatus, String)> {
+    use BrowserStatus::*;
+    if version < 4 {
+        let found: Vec<&str> = STAGE_CLAIMS.into_iter().filter(|c| claims.get(*c).is_some()).collect();
+        return (!found.is_empty())
+            .then(|| (Failed, format!("a v={version} token never carries {}; only v=4 does", found.join(", "))));
+    }
+    let fail = |e: String| Some((Failed, e));
+    let stage = match claims.get("stage").and_then(Value::as_str) {
+        Some("provisional") => VerdictStage::Provisional,
+        Some("final") => VerdictStage::Final,
+        Some(other) => return fail(format!("stage {other:?} is not \"provisional\" or \"final\"")),
+        None => return fail("a v=4 token must carry stage".into()),
+    };
+    let Some(rev) = claims.get("revision").and_then(Value::as_u64).filter(|r| *r >= 1) else {
+        return fail(match claims.get("revision") {
+            None => "a v=4 token must carry revision".into(),
+            Some(v) => format!("revision {v} is not an integer of 1 or more"),
+        });
+    };
+    let incomplete = match claims.get("incomplete") {
+        None => false,
+        Some(Value::Bool(true)) if stage == VerdictStage::Final => true,
+        Some(Value::Bool(true)) => return fail("incomplete is only allowed on a final token".into()),
+        Some(v) => return fail(format!("incomplete is {v}; it is either absent or true")),
+    };
+    // Layer 1 only: one report. A full final has one (a single complete
+    // report) or two (layer 1, then layer 2).
+    let reports = claims.get("chain").and_then(|c| c.get("reports")).and_then(Value::as_array).map(Vec::len);
+    let layer1_only = stage == VerdictStage::Provisional || incomplete;
+    let what = match (stage, incomplete) {
+        (VerdictStage::Provisional, _) => "a provisional",
+        (VerdictStage::Final, true) => "an incomplete final",
+        (VerdictStage::Final, false) => "a final",
+    };
+    match reports {
+        None => return fail(format!("{what} token must carry chain.reports")),
+        Some(n) if layer1_only && n != 1 => {
+            return fail(format!("{what} token commits to layer 1 only, but chain.reports has {n} entries"))
+        }
+        Some(n) if !(1..=2).contains(&n) => return fail(format!("a final token commits to one or two reports, not {n}")),
+        Some(_) => {}
+    }
+    if layer1_only {
+        if let Some(c) = claims.get("confidence").and_then(Value::as_f64).filter(|c| *c > PROVISIONAL_CONFIDENCE_CAP) {
+            return fail(format!("{what} verdict is capped at confidence {PROVISIONAL_CONFIDENCE_CAP}, but carries {c}"));
+        }
+    }
+    if let Some(p) = prior {
+        if rev < p.highest {
+            return fail(format!("revision {rev} is lower than revision {} already accepted for this session", p.highest));
+        }
+        if let Some(f) = p.final_revision {
+            if rev != f || stage != VerdictStage::Final {
+                return fail(format!(
+                    "this session already has its final verdict (revision {f}); a session has at most one final"
+                ));
+            }
+        }
+    }
+    Some(match (stage, incomplete) {
+        (VerdictStage::Final, false) => (Verified, format!("final, revision {rev}: the session's verdict")),
+        (VerdictStage::Final, true) => (Warning, format!(
+            "final but incomplete, revision {rev}: layer 2 never arrived, so it is no stronger than a provisional verdict; not a pass for a gated action")),
+        (VerdictStage::Provisional, _) => (Warning, format!(
+            "provisional, revision {rev}: judged on layer 1 alone; fine to show a page, not a pass for a gated action")),
+    })
 }
 
 fn session_link(

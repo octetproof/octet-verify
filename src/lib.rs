@@ -32,6 +32,7 @@ pub mod attest {
     include!(concat!(env!("OUT_DIR"), "/octet.attest.rs"));
 }
 
+pub mod caller_metadata;
 pub mod crypto;
 pub mod keys;
 pub mod replay;

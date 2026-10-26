@@ -137,6 +137,130 @@ trusts city coordinates fails closed. Binding city/earth geometry is the later
 
 A proof carrying no `semanticFields` stage reports NOT-CHECKED for this binding.
 
+### 2.2 Caller metadata (`callerMetadata` stage)
+
+An integrator can bind its own content (text, images, documents) into a proof.
+The device signs only **digests** of that content, in a `callerMetadata` stage
+(placed after `sessionBinding`, before `semanticFields`) whose `data_hash` is
+`SHA-256` over:
+
+```
+preimage = "octet-caller-metadata-v1"            (raw ASCII, no length prefix)
+         ‖ u32_be(entry_count)
+         ‖ for each entry, in the caller's order:
+             u32_be(len(key)) ‖ key
+           ‖ u32_be(len(contentType)) ‖ contentType
+           ‖ u64_be(size)
+           ‖ u32_be(32) ‖ entry_digest
+
+entry_digest = SHA-256(salt ‖ value)    salt is 0, 16 or 32 bytes; size = len(value)
+```
+
+The salt is not in the preimage: `entry_digest` commits to it, and the signed
+`size` fixes where the salt ends and the value begins. `key` and `contentType`
+are compared byte for byte (no Unicode normalisation, no case folding), entry
+order is significant, and the encoding is injective. The stage proves *this
+attested device asserted this content*; it does not prove the content is
+authentic or unedited.
+
+**Limits** (enforced on the device and again here; a breach is
+`MANIFEST_INVALID`, never a truncation): 1 to 16 entries; unique keys of 1 to 64
+bytes; a contentType of 1 to 127 bytes that is an RFC 6838 `type/subtype`
+(restricted-name characters, no parameters); a salt of 0, 16 or 32 bytes; a
+preimage of at most 16 KiB.
+
+**Inputs.** The stage holds only a hash, so the presenter hands over a manifest
+listing every entry in preimage order (`--caller-manifest`, needs `--features
+caller-metadata`):
+
+```json
+{"v":1,"entries":[{"key":"note","contentType":"text/plain","size":11,"salt":"","sha256":"<hex entry_digest>"}]}
+```
+
+plus, per key, the content itself (`--content <key>=<file>`, streamed with
+bounded memory) or nothing, in which case the entry is accepted on its digest
+alone.
+
+The salt in each entry comes from **the app that made the proof**: the SDK
+salts every item by default with a random 32-byte salt, returns it to the app,
+and never puts it in the proof. Only that app (or whoever it hands the
+manifest to) can supply it, so a content check on a salted entry needs the
+app's manifest; field 19 alone cannot provide it. An empty salt means the app
+opted out of salting.
+
+A caller that reads the content itself, such as a browser page with a file
+too large to hold in memory, hashes it in chunks with
+`caller_metadata::EntryHasher` (seeded with the entry's salt) and passes the
+result as `Content::Hashed`; it counts as content. Only bytes the caller read
+itself may be passed this way: a digest handed over by someone else is what
+the manifest already carries, and accepting it as content would prove
+nothing. A relying party can require content for some keys (`--require-content
+<key>`) or all (`--require-content-all`), and require the stage itself
+(`--require-caller-metadata`). In the library the inputs go to
+`caller_metadata::check_caller_metadata`, separate from `VerifyOptions`; append
+the result with `Report::add_caller_metadata`.
+
+**Results** (check `caller-metadata`; worst state wins):
+
+| Result | When |
+|---|---|
+| `PASS` | The manifest recomputes the stage hash, and every entry presented as content is exactly `size` bytes with `SHA-256(salt ‖ value)` equal to its `entry_digest`. The detail counts entries matched by content and by digest. |
+| `FAIL` `CONTENT_MISMATCH` | A value is not `size` bytes or does not match its `entry_digest` (a wrong salt included); the manifest does not recompute the stage hash; content was presented for a proof with no `callerMetadata` stage; or content is required for a key the proof does not commit. |
+| `FAIL` `MANIFEST_INVALID` | The manifest is malformed, has an unknown field or a `v` other than 1, breaks a limit, repeats a key, or content was supplied for a key it does not list. |
+| `WARN` `CONTENT_UNRESOLVED` | An entry is unresolved: its content was referenced but can't be read, or it was required and not presented. The report is **INCONCLUSIVE** (exit 3), never VALID. |
+| `FAIL` | `--require-caller-metadata` (or required content) and the proof has no `callerMetadata` stage. |
+| `NOT-CHECKED` | The proof has no `callerMetadata` stage and nothing was presented (it asserts no content), or it has one and no manifest was presented. |
+
+An entry offered as digest only is not unresolved. Any FAIL makes the proof
+INVALID; otherwise an unresolved entry makes it INCONCLUSIVE.
+`Report::content_resolved()` reports the latter, and `Report::is_authentic()`
+requires it. Removing the stage is already caught by `stage-chain` and
+`chain-assembly`. Verifiers that predate this check treat the stage as an
+ordinary signed stage, so such proofs keep verifying there without a content
+check.
+
+The golden vectors in `test-vectors/caller-metadata/` pin the preimage, the
+limits and every result above; the SDKs test against the same file.
+
+**Readable manifest (`LocationProof` field 19).** A proof may also list its
+committed entries itself:
+
+```proto
+CallerManifest caller_manifest = 19;            // in LocationProof
+
+message CallerManifest      { repeated CallerManifestEntry entries = 1; }   // preimage order
+message CallerManifestEntry {
+  string key = 1;  string content_type = 2;  uint64 size = 3;
+  bytes sha256 = 4;                             // entry_digest, 32 bytes
+  string locator = 5;                           // optional hint; empty = none
+}
+```
+
+It carries digests only: no salt and no value. Field 19 is not signed. Because
+the salt is not in the preimage, the stage hash recomputes from field 19 alone,
+and `verify` adds a **`caller-manifest`** line whenever the proof carries it (no
+line otherwise, so other reports are unchanged):
+
+| Result | When |
+|---|---|
+| `PASS` | Field 19's entries pass the limits above and recompute the `callerMetadata` stage hash. `Report::caller_manifest()` and the JSON `caller_manifest` then expose it. |
+| `FAIL` `MANIFEST_MISMATCH` | The hash differs; field 19 is present but the stage is not; or a presenter manifest differs from field 19 in key, contentType, size or digest (count and order included). |
+| `FAIL` `MANIFEST_INVALID` | An entry breaks a limit, repeats a key, or has a `sha256` that is not 32 bytes. |
+
+A presenter manifest handed over for such a proof must agree with field 19:
+otherwise `caller-metadata` is also `FAIL` `MANIFEST_MISMATCH`, before any
+content is looked at. Checking content still needs the presenter's manifest,
+since only it carries the salts, which come from the app that made the proof.
+
+`locator` is outside the preimage, so anyone holding the proof could change it.
+It never affects a result; the detail shows it as a hint. When a locator is
+longer than 256 bytes, or is a URL carrying a query string or userinfo (the
+shape of a pre-signed URL or credential), a separate **`caller-manifest-locator`**
+`WARN` says so. That WARN does not make content unresolved. A second copy of
+field 19 on the wire is refused by `wire-format`, since protobuf would merge the
+two lists. The vectors for field 19 are in
+`test-vectors/caller-metadata/field19.json`.
+
 ---
 
 ## 3. Transport signature (optional)
@@ -350,9 +474,9 @@ the clear.
 
 | Field | Meaning |
 |---|---|
-| `valid` | **Authenticity** — `true` only if the proof was *not rejected* **and** its stage signatures were cryptographically verified. This is the bit to gate on. It is `false` for a proof whose signatures were `NOT-CHECKED` (e.g. no hardware key available), even though no check actively failed. |
+| `valid` | **Authenticity** — `true` only if the proof was *not rejected*, its stage signatures were cryptographically verified, **and** no caller content was left unresolved (§2.2). This is the bit to gate on. It is `false` for a proof whose signatures were `NOT-CHECKED` (e.g. no hardware key available), even though no check actively failed. |
 | `signatures_verified` | The cryptographic bit on its own: `true` iff the `stage-signatures` check passed. |
-| `verdict` | Tri-state string: `"VALID"`, `"INCONCLUSIVE (signatures not verified)"`, or `"INVALID"`. Lets a careful consumer distinguish "unverified" from "rejected". |
+| `verdict` | Tri-state string: `"VALID"`, `"INCONCLUSIVE (signatures not verified)"`, `"INCONCLUSIVE (content unresolved)"`, or `"INVALID"`. Lets a careful consumer distinguish "unverified" from "rejected". |
 | `checks` | The full per-check array (`name` / `status` / `detail`). |
 
 **`valid` is authenticity, not structural validity.** A structurally-sound proof
@@ -371,7 +495,7 @@ never `0`, so `octet-verify … && deploy` cannot accept an unverified proof:
 | `0` | **Authentic** — not rejected and signatures cryptographically verified (`VALID`). |
 | `1` | **Invalid** — a check actively failed (`INVALID`). |
 | `2` | Usage / IO / decode / backend error. |
-| `3` | **Inconclusive** — structurally valid but signatures not verified (`INCONCLUSIVE`, e.g. no hardware key). |
+| `3` | **Inconclusive** — structurally valid but signatures not verified (`INCONCLUSIVE`, e.g. no hardware key), or caller content unresolved (§2.2). |
 
 For `range` / `watch`, the code reflects the worst proof observed: any `1` → `1`,
 else any `3` → `3`, else `0`. Both the exit code and the JSON `valid` field are
@@ -390,11 +514,13 @@ whether the browser's signals were true.
 octet-verify browser-verdict <verdict-token> [--jwks <url|file> | --archive]
     [--challenge <token> [--challenge-jwks <url|file>]] [--edge-log <line|@file>]
     [--roots <file>] [--manifest <url|file>] [--manifest-seq-store <file>]
-    [--min-manifest-seq <n>] [--now <unix-seconds>] [--json]
+    [--min-manifest-seq <n>] [--accept-provisional] [--revision-store <file>]
+    [--now <unix-seconds>] [--json]
 ```
 
 A URL needs `--features net`; a JWKS file works offline. The library entry point
-is `browser::verify_browser_verdict`.
+is `browser::verify_browser_verdict`, or `browser::verify_browser_verdict_with`
+to pass a `v=4` session's revisions (§9.2a).
 
 ### 9.1 Inputs
 
@@ -413,13 +539,14 @@ the same `kid` are refused.
 ### 9.2 Checks
 
 Each check reports `VERIFIED`, `FAILED`, `NOT-CHECKED`, `WARN` (the root
-manifest only, §9.3), or `ATTESTED` (5 below).
+manifest, §9.3, and a `v=4` verdict that is not final, §9.2a), or `ATTESTED`
+(5 below).
 The verdict passes when no check FAILED and `verdict-jws` VERIFIED. If
 `verdict-jws` fails, every other check is NOT-CHECKED and the claims are not
 reported.
 
-1. **`verdict-jws`.** `typ` is `octet-browser-verdict+jwt;v=1`, `v=2` or `v=3`
-   (the suffix versions the claim set). The key is the one the header `kid`
+1. **`verdict-jws`.** `typ` is `octet-browser-verdict+jwt;v=1`, `v=2`, `v=3` or
+   `v=4` (the suffix versions the claim set; `v=4` is §9.2a). The key is the one the header `kid`
    names, and the `alg` must match it: `ES256` with an EC P-256 key (signature
    is IEEE P1363 raw `r‖s`, 64 bytes, not DER) or `EdDSA` with an OKP Ed25519
    key. Any other pairing is refused, as is a header `alg` that differs from the
@@ -472,6 +599,51 @@ reported.
    `rcpt`, which name the user's IP) are reported as **ATTESTED**, meaning
    "attested by octet". A third party cannot re-check them, so they are never
    VERIFIED.
+
+### 9.2a The early verdict (`v=4`)
+
+A licence opted in to the early verdict gets `v=4` tokens: the same keys, JWKS,
+archive, root manifest and alg rules as `v=3`, and every `v=3` claim. A session
+sends two reports under one challenge, layer 1 and then layer 2, and octet keeps
+one verdict per `sessionRef` with revisions. Three claims say which revision a
+token is:
+
+| Claim | Rule |
+|---|---|
+| `stage` | `"provisional"` (judged on layer 1 alone) or `"final"`; required |
+| `revision` | an integer of 1 or more, counting up within one `sessionRef`; required |
+| `incomplete` | absent, or `true` on a `final` token: layer 2 never arrived, so octet closed the session with the provisional verdict's fields |
+
+**`verdict-stage`** (`v=4`; also any `v=1`–`v=3` token carrying one of these
+claims, which FAILS). It FAILS when:
+
+- `stage` or `revision` is missing or invalid, or `incomplete` is anything but
+  absent or `true` on a `final` token;
+- a provisional or incomplete-final token's `chain.reports` has other than one
+  entry (it commits to layer 1 only), or a full final's has other than one or
+  two (one complete report, or layer 1 then layer 2);
+- a provisional or incomplete-final token's `confidence` is above 0.7, the cap
+  octet applies to a verdict judged on layer 1 alone;
+- with the session's state (`BrowserVerdictOptions::prior`), its `revision` is
+  lower than one already accepted, or the session already has a different
+  `final` (a session has at most one).
+
+Otherwise it is VERIFIED for a `final` token that is not `incomplete`, and **WARN**
+for a provisional or incomplete-final one. The chain check is unchanged.
+
+**Acting on it.** `BrowserReport::is_final()` is true for a `v=1`–`v=3` token and
+for a `v=4` `final` that is not `incomplete`. `passes_gate(accept_provisional)`
+is `is_valid()` and, unless the caller accepts a provisional verdict, `is_final()`.
+A provisional verdict is fine for showing a page, not for a gated action (a
+deposit, a withdrawal, a KYC or geofencing gate); an incomplete final is no
+stronger. `stage()`, `revision()` and `incomplete()` report the claims.
+
+**Revisions.** The verifier is stateless. The caller keeps, per `sessionRef`,
+the highest accepted `revision` and the `final` one (`SessionRevisions`), passes
+it in, and stores `next_revisions()` after each valid token. A higher revision
+replaces a lower one; the exact numbers carry no other meaning. The CLI keeps it
+in `--revision-store <file>`, a JSON object keyed by `sessionRef`, written only
+after a valid token.
 
 The digests themselves are defined as: `s0 = SHA-256(challenge token)`,
 `s1.bundle = SHA-256(signed bundle JSON)`, `s1.sig = SHA-256(raw S1 signature)`,
@@ -550,15 +722,21 @@ one in its WARN grace still is.
 
 ### 9.5 Output and exit codes
 
-`--json` emits `valid`, `version` (the `typ` suffix), `lid` (when the session
+`--json` emits `valid` (no check failed), `verdict` (`VERIFIED`, `INCONCLUSIVE`
+or `FAILED`), `passes_gate`, `version` (the `typ` suffix), `stage`, `revision`
+and `incomplete` (`v=4`, else `null`), `lid` (when the session
 link verified), `manifest_seq` (when the root manifest verified),
 `client_net_match` (the signed `clientNetMatch`, or `null`), `claims`
 (only when `verdict-jws` VERIFIED) and `checks`
 (`name` / `status` / `detail`). Exit codes: `0` no check failed, `1` a check
-failed, `2` usage, IO or JWKS error.
+failed, `2` usage, IO or JWKS error, `3` a valid `v=4` verdict that is not final
+(provisional, or final but incomplete), unless `--accept-provisional`.
 
 Golden vectors in `test-vectors/browser-verdict-chain/`: `chain-vector.json`
 (deterministic, shared with octet-browser's server and edge), `dev-vector.json`
 (a real verdict from octet-browser's dev stack, through S0, S1, S2 and the edge
-log; verify it at its `nowForChecks`), and `manifest-vector.json` (a root manifest signed by the dev root `root-dev-1`,
-which production never trusts, with timestamps for each expiry window).
+log; verify it at its `nowForChecks`), `manifest-vector.json` (a root manifest signed by the dev root `root-dev-1`,
+which production never trusts, with timestamps for each expiry window), and
+`verdict-v4-vectors.json` / `verdict-v3-golden.json` (the `v=4` profile's valid
+and invalid tokens, and the `v=3` token a licence not opted in keeps getting,
+signed with a test-only key; their chain digests are placeholders).

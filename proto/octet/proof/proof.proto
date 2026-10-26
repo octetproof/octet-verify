@@ -225,7 +225,32 @@ message LocationProof {
   // (city has no v2 region_id, so it stays unbound). See RegionRef.
   RegionRef query_region = 18;
 
+  // The readable list of caller content the proof commits (caller-metadata
+  // phase B): one entry per committed item, in preimage order. Carries digests
+  // only — no salt, no value. Not itself signed: it is checked by recomputing
+  // the callerMetadata stage's preimage from it. Absent when the proof commits
+  // no content.
+  CallerManifest caller_manifest = 19;
+
   reserved 9, 14, 15;
+}
+
+// The committed caller content, readable (caller-metadata phase B). Entries are
+// in preimage order, so the callerMetadata stage hash can be recomputed from
+// them without the presenter.
+message CallerManifest {
+  repeated CallerManifestEntry entries = 1;
+}
+
+message CallerManifestEntry {
+  string key = 1;           // UTF-8, 1–64 bytes, compared byte for byte
+  string content_type = 2;  // strict RFC 6838 type/subtype, 1–127 bytes
+  uint64 size = 3;          // len(value), salt excluded
+  bytes sha256 = 4;         // entry_digest = SHA256(salt ‖ value), 32 bytes
+  // Opaque, unauthenticated hint for where the bytes can be fetched (empty =
+  // none, at most 256 bytes). Outside the preimage: it never affects the result,
+  // and fetched bytes must still match sha256. Never a URL with credentials.
+  string locator = 5;
 }
 
 // Reference to a region by its v2 claim-table encoding (, semantic-binding

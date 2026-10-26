@@ -1,0 +1,15 @@
+{
+  "note": "Real-device proofs from OctetSDK 3.0.0 (sdk_version \"3.0.0\"), captured 2026-10-13 on an iPhone 11 (App Attest, development) and a Pixel 9 (StrongBox, dev licence). Direct transport, OS attestation on, semantic-binding v2 (v3 is dark in 3.0.0). A Pixel 9 recapture on 2026-10-15, after the SDK fix for the earth area claim, adds android-pixel9-2026-10-15/. All VALID in octet-verify 1.7.0. proof file = raw LocationProof bytes; the harness pins now_ms to the signed proofAssembly time. See README.md.",
+  "sdk_version": "3.0.0",
+  "vectors": [
+    { "file": "android-pixel9/area_country.bin", "platform": "android", "kind": "area", "claimed_region": "earth", "location_verdict": null },
+    { "file": "android-pixel9/area_subdivision.bin", "platform": "android", "kind": "area", "claimed_region": "country:GB", "location_verdict": null },
+    { "file": "android-pixel9/within_country_gb.bin", "platform": "android", "kind": "within", "claimed_region": "country:GB", "location_verdict": "Inside" },
+    { "file": "android-pixel9-2026-10-15/area_country.bin", "platform": "android", "kind": "area", "claimed_region": "country:GB", "location_verdict": null },
+    { "file": "android-pixel9-2026-10-15/within_country_gb.bin", "platform": "android", "kind": "within", "claimed_region": "country:GB", "location_verdict": "Inside" },
+    { "file": "ios-iphone11/area_country.bin", "platform": "ios", "kind": "area", "claimed_region": "country:GB", "location_verdict": null },
+    { "file": "ios-iphone11/area_subdivision.bin", "platform": "ios", "kind": "area", "claimed_region": "country:GB", "location_verdict": null },
+    { "file": "ios-iphone11/within_country_gb.bin", "platform": "ios", "kind": "within", "claimed_region": "country:GB", "location_verdict": "Inside" },
+    { "file": "ios-iphone11/within_country_gb_first_call.bin", "platform": "ios", "kind": "within", "claimed_region": "country:GB", "location_verdict": "Inside" }
+  ]
+}

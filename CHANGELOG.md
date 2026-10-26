@@ -4,6 +4,85 @@ All notable changes to `octet-verify` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [1.8.0] - 2026-10-26
+
+### Added
+- **Browser verdict `v=4`, the early verdict.** The browser profile accepts
+  `octet-browser-verdict+jwt;v=4`: the `v=3` claims plus `stage`
+  (`provisional` or `final`), `revision` and `incomplete`, checked by a new
+  `verdict-stage` line. It FAILS a missing or invalid claim, `incomplete` other
+  than `true` on a final token, a provisional or incomplete-final token whose
+  chain has other than one report or whose confidence is above 0.7, a lower
+  revision than one already accepted for the session, a second final, and any
+  `v=1`–`v=3` token carrying the new claims. A provisional or incomplete-final
+  verdict reads WARN: genuine, but not a pass for a gated action.
+  `BrowserReport` gains `stage()`, `revision()`, `incomplete()`, `is_final()`,
+  `passes_gate()` and `next_revisions()`; `verify_browser_verdict_with` takes
+  the session's `SessionRevisions`. `BrowserVerdictInputs` is unchanged. CLI:
+  exit 3 for a verdict that is not final unless `--accept-provisional`, and
+  `--revision-store <file>`; `--json` adds `verdict`, `passes_gate`, `stage`,
+  `revision` and `incomplete`. Vectors from octet-browser:
+  `verdict-v4-vectors.json` and `verdict-v3-golden.json`.
+- **Caller metadata (phase A).** Checks content an integrator bound into a proof
+  against its hardware-signed `callerMetadata` stage, following the frozen
+  caller-metadata binding spec. New `caller_metadata` module: the preimage, the
+  limits, a streaming entry digest, and `check_caller_metadata`, reported as the
+  `caller-metadata` check with the results `CONTENT_MISMATCH` and
+  `MANIFEST_INVALID` (FAIL) and `CONTENT_UNRESOLVED` (INCONCLUSIVE, exit 3).
+  `Report::content_resolved()` is new, and `Report::is_authentic()` now also
+  requires it; reports without caller metadata are unchanged. `VerifyOptions`
+  is unchanged. CLI: `--caller-manifest` and `--content <key>=<file>` (new
+  feature `caller-metadata`, which adds the JSON manifest parser),
+  `--require-content <key>`, `--require-content-all` and
+  `--require-caller-metadata`. `caller_metadata::EntryHasher` hashes a value in
+  chunks with bounded memory, and `Content::Hashed` hands the result to the
+  check, for callers that read content themselves (a browser page with a large
+  file). Golden vectors in `test-vectors/caller-metadata/`
+  pin the preimage, the limits and every result, for the SDKs to test against.
+- **Caller metadata (phase B): the readable manifest in `LocationProof` field
+  19.** New proto messages `CallerManifest` / `CallerManifestEntry` (key,
+  contentType, size, entry digest and an optional `locator`; no salt, no value).
+  `verify()` adds a `caller-manifest` line whenever a proof carries field 19:
+  PASS when it recomputes the signed `callerMetadata` stage, FAIL
+  `MANIFEST_MISMATCH` or `MANIFEST_INVALID` otherwise; proofs without field 19
+  get no new line. A presenter manifest must agree with field 19
+  (`caller-metadata` FAIL `MANIFEST_MISMATCH` otherwise). `locator` is unsigned
+  and never affects a result; a credential-shaped one gets a separate
+  `caller-manifest-locator` WARN. New `Report::caller_manifest()`, and the JSON
+  output gains `caller_manifest`. `wire-format` refuses a duplicated field 19.
+  Vectors in `test-vectors/caller-metadata/field19.json` pin the encoded bytes
+  and every result.
+- **Browser verdict-key rotation vectors** (`test-vectors/browser-verdict-chain`):
+  production root manifests seq 2 and seq 3, and one production verdict signed
+  on each side of the 2026-10-19 switch from the file key to the Cloud KMS key
+  (ES256). Tests check that both verify under seq 3, that the KMS verdict is
+  refused under seq 2, that a closed key window refuses the older verdict, and
+  that seq 2 is a rollback once seq 3 has been seen.
+- **Caller-metadata real-device test vectors**
+  (`test-vectors/caller-metadata-device`): one proof each from an iPhone 11 and
+  a Pixel 9, each committing a salted text entry and an unsalted 4 KiB file.
+  A second set (`test-vectors/caller-metadata-device-b`) adds the readable
+  manifest in field 19. `tests/caller_metadata_device.rs` checks both sets match
+  by content, that field 19 recomputes the stage and equals the presenter
+  manifest, that changed, swapped or unreadable content is refused, and each
+  phone's hardware attestation.
+- **OctetSDK 3.0.0 real-device test vectors** (`test-vectors/sdk-3.0.0-device`):
+  nine proofs from an iPhone 11 and a Pixel 9 (area and `isWithin` country
+  proofs, semantic-binding v2), all VALID. `tests/sdk_3_0_0_device.rs` checks
+  them at their own signed time, including the Android hardware attestation
+  and, with the key's enrolment bundle, iOS App Attest and its date window.
+
+### Changed
+- **`Report::is_authentic()` also requires caller content to be resolved.** A
+  report whose `caller-metadata` check is `CONTENT_UNRESOLVED` is INCONCLUSIVE
+  (exit 3), never VALID. Reports without caller metadata are unchanged.
+
+### Fixed
+- **Duplicate-field guard covers `location_verdict` (17) and `query_region` (18).**
+  A proof carrying a second copy of either is refused by `wire-format`, as for
+  every other singular field, so no parser can read a different signed verdict
+  or region than the one checked.
+
 ## [1.7.0] - 2026-10-12
 
 ### Added

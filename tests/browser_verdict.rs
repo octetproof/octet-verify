@@ -265,8 +265,11 @@ fn wrong_typ_iss_and_alg_are_refused() {
     let v = vector();
     let keys = || vec![ed_jwk("k1", json!({}))];
     let c = base_claims(&v, T);
-    let r = run_own(&ed_token(H("octet-browser-verdict+jwt;v=4"), c.clone()), keys(), T);
+    let r = run_own(&ed_token(H("octet-browser-verdict+jwt;v=5"), c.clone()), keys(), T);
     assert_eq!(r.status("verdict-jws"), Some(Failed));
+    // v=4 is known, but a v=3 claim set under it lacks stage and revision.
+    let r = run_own(&ed_token(H("octet-browser-verdict+jwt;v=4"), c.clone()), keys(), T);
+    assert_eq!((r.status("verdict-jws"), r.status("verdict-stage")), (Some(Verified), Some(Failed)));
     let r = run_own(&ed_token(H("JWT"), c.clone()), keys(), T);
     assert_eq!(r.status("verdict-jws"), Some(Failed));
 
@@ -853,4 +856,434 @@ fn dev_challenge_cn_tag_is_opaque_and_covered_by_s0() {
     assert!(claims["cn"].is_string(), "the vector's challenge carries cn");
     let c = claims_of(d["token"].as_str().unwrap());
     assert_eq!(B64.encode(sha(ch.as_bytes())), c["chain"]["s0"].as_str().unwrap());
+}
+
+// --- production verdict-key rotation to Cloud KMS (seq 2 → seq 3, 2026-10-19) --
+
+const PROD_SEQ2: &str = include_str!("../test-vectors/browser-verdict-chain/prod-manifest-seq2.json.jws");
+const PROD_SEQ3: &str = include_str!("../test-vectors/browser-verdict-chain/prod-manifest-seq3.json.jws");
+const FILE_KEY: &str = "octet-browser-verdict-2026-09";
+const KMS_KEY: &str = "octet-browser-verdict-2026-10";
+/// The switch: 2026-10-19 15:00 UK. The file key's `octet_not_after`, the KMS key's `octet_not_before`.
+const SWITCH: i64 = 1_792_418_400;
+
+fn prod_verdict(name: &str) -> Value {
+    let path = format!("{}/test-vectors/browser-verdict-chain/{name}", env!("CARGO_MANIFEST_DIR"));
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// A production verdict file checked end to end under `manifest`, at its own iat.
+fn prod_run(v: &Value, manifest: &str, roots: &[Jwk]) -> octet_verify::browser::BrowserReport {
+    let m = verify_manifest(manifest, roots).unwrap();
+    let token = v["token"].as_str().unwrap();
+    verify_browser_verdict(&BrowserVerdictInputs {
+        verdict_token: token,
+        verdict_keys: &m.verdict_keys,
+        challenge_token: v["challenge"].as_str(),
+        challenge_keys: Some(&m.challenge_keys),
+        edge_log: None,
+        now_unix: claims_of(token)["iat"].as_i64().unwrap() + 60,
+        manifest: Some(manifest),
+        roots,
+        min_manifest_seq: None,
+    })
+}
+
+#[test]
+fn prod_manifests_seq2_and_seq3_rotate_to_the_kms_key() {
+    let hex = |b: &[u8]| hex::encode(b);
+    assert_eq!(hex(&Sha256::digest(PROD_SEQ2)), "01907d63f689caafbda90b89eb07e4fa8266e5a4825da6ee8a037762ded44843");
+    assert_eq!(hex(&Sha256::digest(PROD_SEQ3)), "11cefca4b908c15f779daac61fb680b0d1cafac8a8330fab7c2e45d305316e5b");
+    // geo serves seq 3 without the trailing newline.
+    assert_eq!(hex(&Sha256::digest(PROD_SEQ3.trim_end())), "371d729f1fe63eda9466101f2e750cd72bb45e5444cf6e9e3904a58325b94cab");
+
+    let roots = pinned();
+    let s2 = verify_manifest(PROD_SEQ2, &roots).unwrap();
+    let s3 = verify_manifest(PROD_SEQ3, &roots).unwrap();
+    assert_eq!((s2.seq, s3.seq), (2, 3));
+    assert_eq!((s2.root_kid.as_str(), s3.root_kid.as_str()), (ROOT_A, ROOT_A));
+    assert_eq!((s2.roots.clone(), s3.roots.clone()), (vec![ROOT_A.to_string(), ROOT_B.into()], vec![ROOT_A.to_string(), ROOT_B.into()]));
+
+    // seq 2: the file key alone, open-ended.
+    assert_eq!(s2.verdict_keys.len(), 1);
+    assert_eq!((s2.verdict_keys[0].kid.as_str(), s2.verdict_keys[0].not_after), (FILE_KEY, None));
+
+    // seq 3: the file key ends at the switch, the KMS key starts there.
+    let key = |kid: &str| s3.verdict_keys.iter().find(|k| k.kid == kid).unwrap();
+    assert_eq!(s3.verdict_keys.len(), 2);
+    let (file, kms) = (key(FILE_KEY), key(KMS_KEY));
+    assert_eq!((file.x.as_str(), file.not_before, file.not_after), (s2.verdict_keys[0].x.as_str(), Some(1_790_696_802), Some(SWITCH)));
+    assert_eq!((kms.kty.as_str(), kms.crv.as_str(), kms.alg.as_deref()), ("EC", "P-256", Some("ES256")));
+    assert_eq!((kms.not_before, kms.not_after, kms.revoked_at), (Some(SWITCH), None, None));
+    assert!(file.revoked_at.is_none());
+}
+
+#[test]
+fn prod_kms_verdict_verifies_under_seq3() {
+    let v = prod_verdict("prod-verdict-2026-10-kms.json");
+    assert!(claims_of(v["token"].as_str().unwrap())["iat"].as_i64().unwrap() > SWITCH);
+    let r = prod_run(&v, PROD_SEQ3, &pinned());
+    assert!(r.is_valid(), "{:?}", r.checks);
+    assert_eq!(r.version, Some(3));
+    assert_eq!(r.manifest_seq, Some(3));
+    for check in ["verdict-jws", "root-manifest", "manifest-verdict-key", "key-validity", "chain-root", "session-link", "manifest-challenge-key"] {
+        assert_eq!(r.status(check), Some(Verified), "{check}: {:?}", r.checks);
+    }
+    let jws = r.checks.iter().find(|c| c.name == "verdict-jws").unwrap();
+    assert!(jws.detail.contains("ES256") && jws.detail.contains(KMS_KEY), "{}", jws.detail);
+    assert_eq!(r.claims.as_ref().unwrap()["country"], "GB");
+}
+
+#[test]
+fn prod_file_key_verdict_from_before_the_switch_still_verifies_under_seq3() {
+    let v = prod_verdict("prod-verdict-2026-09-before-kms.json");
+    assert!(claims_of(v["token"].as_str().unwrap())["iat"].as_i64().unwrap() < SWITCH);
+    let r = prod_run(&v, PROD_SEQ3, &pinned());
+    assert!(r.is_valid(), "{:?}", r.checks);
+    assert_eq!(r.status("key-validity"), Some(Verified));
+    let jws = r.checks.iter().find(|c| c.name == "verdict-jws").unwrap();
+    assert!(jws.detail.contains("EdDSA") && jws.detail.contains(FILE_KEY), "{}", jws.detail);
+}
+
+/// Before seq 3, no manifest vouches for the KMS key: a published key list that
+/// already carries it does not help while the manifest is seq 2.
+#[test]
+fn prod_kms_verdict_is_refused_under_seq2() {
+    let v = prod_verdict("prod-verdict-2026-10-kms.json");
+    let roots = pinned();
+    let published = verify_manifest(PROD_SEQ3, &roots).unwrap();
+    let s2 = verify_manifest(PROD_SEQ2, &roots).unwrap();
+    let token = v["token"].as_str().unwrap();
+    let r = verify_browser_verdict(&BrowserVerdictInputs {
+        verdict_token: token,
+        verdict_keys: &published.verdict_keys,
+        challenge_token: v["challenge"].as_str(),
+        challenge_keys: Some(&s2.challenge_keys),
+        edge_log: None,
+        now_unix: claims_of(token)["iat"].as_i64().unwrap() + 60,
+        manifest: Some(PROD_SEQ2),
+        roots: &roots,
+        min_manifest_seq: None,
+    });
+    assert_eq!(r.status("verdict-jws"), Some(Verified), "{:?}", r.checks);
+    assert_eq!(r.status("manifest-verdict-key"), Some(Failed), "{:?}", r.checks);
+    assert!(!r.is_valid());
+}
+
+/// The cut-over on a real token: had the file key's window closed before this
+/// verdict was issued, the verdict is refused. seq 3's payload is re-signed by a
+/// throwaway root with the file key's `octet_not_after` moved before its iat.
+#[test]
+fn prod_file_key_verdict_is_refused_once_its_window_has_closed() {
+    let v = prod_verdict("prod-verdict-2026-09-before-kms.json");
+    let iat = claims_of(v["token"].as_str().unwrap())["iat"].as_i64().unwrap();
+    let mut m: Value = serde_json::from_slice(&B64.decode(PROD_SEQ3.trim().split('.').nth(1).unwrap()).unwrap()).unwrap();
+    for k in m["verdictKeys"].as_array_mut().unwrap() {
+        if k["kid"] == FILE_KEY {
+            k["octet_not_after"] = json!(iat - 3_600);
+        }
+    }
+    let r = prod_run(&v, &own(&m), &own_roots());
+    assert_eq!(r.status("key-validity"), Some(Failed), "{:?}", r.checks);
+    assert!(!r.is_valid());
+}
+
+/// A verifier that has seen seq 3 refuses a replayed seq 2.
+#[test]
+fn prod_seq2_is_a_rollback_after_seq3() {
+    let v = prod_verdict("prod-verdict-2026-09-before-kms.json");
+    let roots = pinned();
+    let m = verify_manifest(PROD_SEQ2, &roots).unwrap();
+    let token = v["token"].as_str().unwrap();
+    let r = verify_browser_verdict(&BrowserVerdictInputs {
+        verdict_token: token,
+        verdict_keys: &m.verdict_keys,
+        challenge_token: v["challenge"].as_str(),
+        challenge_keys: Some(&m.challenge_keys),
+        edge_log: None,
+        now_unix: claims_of(token)["iat"].as_i64().unwrap() + 60,
+        manifest: Some(PROD_SEQ2),
+        roots: &roots,
+        min_manifest_seq: Some(3),
+    });
+    assert_eq!(r.status("root-manifest"), Some(Failed), "{:?}", r.checks);
+    assert!(!r.is_valid());
+}
+
+// --- v=4: the early verdict -------------------------------------------------
+
+use octet_verify::browser::{
+    verify_browser_verdict_with, BrowserReport, BrowserVerdictOptions, SessionRevisions, VerdictStage,
+};
+
+const V4: &str = "octet-browser-verdict+jwt;v=4";
+
+fn browser_vector(name: &str) -> Value {
+    let path = format!("{}/test-vectors/browser-verdict-chain/{name}", env!("CARGO_MANIFEST_DIR"));
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// The vectors' test-only key: its seed is SHA-256 of the file's `seedLabel`.
+fn golden_test_key(v: &Value) -> Vec<Jwk> {
+    let seed: [u8; 32] = Sha256::digest(v["seedLabel"].as_str().unwrap().as_bytes()).into();
+    let pk = ed25519_dalek::SigningKey::from_bytes(&seed).verifying_key();
+    assert_eq!(B64.encode(pk.as_bytes()), v4_vectors()["publicJwk"]["x"].as_str().unwrap(), "seed derivation");
+    jwks(&[&v4_vectors()["publicJwk"]])
+}
+
+fn v4_vectors() -> Value {
+    browser_vector("verdict-v4-vectors.json")
+}
+
+fn run_with(token: &str, keys: &[Jwk], now: i64, prior: Option<SessionRevisions>) -> BrowserReport {
+    verify_browser_verdict_with(
+        &BrowserVerdictInputs {
+            verdict_token: token,
+            verdict_keys: keys,
+            challenge_token: None,
+            challenge_keys: None,
+            edge_log: None,
+            now_unix: now,
+            manifest: None,
+            roots: &[],
+            min_manifest_seq: None,
+        },
+        &BrowserVerdictOptions { prior },
+    )
+}
+
+/// The three valid v=4 tokens from octet-browser. Their chain digests are
+/// placeholders, so `chain-root` FAILS by design: these vectors pin the token
+/// profile, and the real-chain tokens below pin the whole check.
+#[test]
+fn v4_vectors_valid_tokens_carry_their_stage() {
+    let v = v4_vectors();
+    let keys = golden_test_key(&v);
+    for (name, stage, status, fin) in [
+        ("provisional", VerdictStage::Provisional, Warning, false),
+        ("final", VerdictStage::Final, Verified, true),
+        ("incomplete", VerdictStage::Final, Warning, false),
+    ] {
+        let t = &v["valid"][name];
+        let token = t["token"].as_str().unwrap();
+        assert_eq!(claims_of(token), t["claims"], "{name}: claims as listed");
+        let r = run_with(token, &keys, t["claims"]["iat"].as_i64().unwrap(), None);
+        assert_eq!(r.status("verdict-jws"), Some(Verified), "{name}: {:?}", r.checks);
+        assert_eq!(r.version, Some(4));
+        assert_eq!(r.status("verdict-stage"), Some(status), "{name}: {:?}", r.checks);
+        assert_eq!(r.stage(), Some(stage), "{name}");
+        assert_eq!(r.revision(), t["claims"]["revision"].as_u64(), "{name}");
+        assert_eq!(r.incomplete(), name == "incomplete", "{name}");
+        assert_eq!(r.is_final(), fin, "{name}");
+        assert_eq!(r.status("chain-root"), Some(Failed), "{name}: placeholder chain digests");
+    }
+}
+
+#[test]
+fn v4_vectors_invalid_tokens_fail_the_stage_check() {
+    let v = v4_vectors();
+    let keys = golden_test_key(&v);
+    let invalid = v["invalid"].as_array().unwrap();
+    assert_eq!(invalid.len(), 5);
+    for t in invalid {
+        let name = t["name"].as_str().unwrap();
+        let token = t["token"].as_str().unwrap();
+        let r = run_with(token, &keys, claims_of(token)["iat"].as_i64().unwrap(), None);
+        assert_eq!(r.status("verdict-jws"), Some(Verified), "{name}: genuinely signed");
+        assert_eq!(r.status("verdict-stage"), Some(Failed), "{name}: {:?}", r.checks);
+        assert!(!r.is_valid() && !r.passes_gate(true), "{name}");
+    }
+}
+
+/// A licence not opted in keeps getting this exact v=3 token: it verifies as
+/// before and gets no `verdict-stage` line.
+#[test]
+fn v3_golden_token_is_unchanged() {
+    let v = browser_vector("verdict-v3-golden.json");
+    let keys = golden_test_key(&v);
+    let token = v["token"].as_str().unwrap();
+    assert_eq!(claims_of(token), v["claims"]);
+    let r = run_with(token, &keys, v["claims"]["iat"].as_i64().unwrap(), None);
+    assert_eq!(r.status("verdict-jws"), Some(Verified), "{:?}", r.checks);
+    assert_eq!(r.version, Some(3));
+    assert_eq!(r.status("verdict-stage"), None);
+    assert_eq!((r.stage(), r.revision(), r.incomplete()), (None, None, false));
+    assert!(r.is_final());
+}
+
+// v=4 tokens over the golden vector's real chain, signed with a throwaway key.
+
+/// The golden chain with `n` reports (copies of its one report, each with its
+/// own `s1.t`) and a matching `chain_root`.
+fn v4_claims(stage: &str, revision: Value, reports: usize, confidence: f64) -> Value {
+    let mut c = base_claims(&vector(), T);
+    let one = c["chain"]["reports"][0].clone();
+    c["chain"]["reports"] = Value::Array(
+        (0..reports)
+            .map(|i| {
+                let mut r = one.clone();
+                r["s1"]["t"] = json!(one["s1"]["t"].as_u64().unwrap() + 1_000 * i as u64);
+                r
+            })
+            .collect(),
+    );
+    c["chain_root"] = json!(B64.encode(chain_root(&c["chain"]).unwrap()));
+    c["stage"] = json!(stage);
+    c["revision"] = revision;
+    c["confidence"] = json!(confidence);
+    c
+}
+
+fn own_v4(c: Value, prior: Option<SessionRevisions>) -> BrowserReport {
+    let keys = jwks(&[&ed_jwk("k1", json!({}))]);
+    run_with(&ed_token(H(V4), c), &keys, T, prior)
+}
+
+#[test]
+fn v4_with_a_real_chain_verifies_and_gates() {
+    // 1 provisional: valid, but not a pass for a gated action by default.
+    let r = own_v4(v4_claims("provisional", json!(1), 1, 0.7), None);
+    assert!(r.is_valid(), "{:?}", r.checks);
+    assert_eq!(r.status("chain-root"), Some(Verified));
+    assert_eq!(r.status("verdict-stage"), Some(Warning));
+    assert!(!r.is_final() && !r.passes_gate(false) && r.passes_gate(true));
+
+    // 2 final over both reports: the verdict.
+    let r = own_v4(v4_claims("final", json!(2), 2, 0.9), None);
+    assert!(r.is_valid(), "{:?}", r.checks);
+    assert_eq!(r.status("verdict-stage"), Some(Verified));
+    assert!(r.is_final() && r.passes_gate(false));
+
+    // 1 final from one complete report (passive mode).
+    let r = own_v4(v4_claims("final", json!(1), 1, 0.9), None);
+    assert!(r.is_valid() && r.passes_gate(false), "{:?}", r.checks);
+
+    // 2 final + incomplete over layer 1: valid, no stronger than provisional.
+    let mut c = v4_claims("final", json!(2), 1, 0.7);
+    c["incomplete"] = json!(true);
+    let r = own_v4(c, None);
+    assert!(r.is_valid(), "{:?}", r.checks);
+    assert_eq!(r.status("verdict-stage"), Some(Warning));
+    assert!(r.incomplete() && !r.is_final() && !r.passes_gate(false) && r.passes_gate(true));
+}
+
+#[test]
+fn v4_profile_rules() {
+    let fails = |c: Value, why: &str| {
+        let r = own_v4(c, None);
+        assert_eq!(r.status("verdict-stage"), Some(Failed), "{why}: {:?}", r.checks);
+        assert!(!r.is_valid(), "{why}");
+    };
+    // Layer 1 only means one report.
+    fails(v4_claims("provisional", json!(1), 2, 0.7), "provisional over two reports");
+    let mut c = v4_claims("final", json!(2), 2, 0.7);
+    c["incomplete"] = json!(true);
+    fails(c, "incomplete final over two reports");
+    fails(v4_claims("final", json!(2), 3, 0.9), "final over three reports");
+    // The provisional confidence cap, which an incomplete final keeps.
+    fails(v4_claims("provisional", json!(1), 1, 0.9), "provisional above 0.7");
+    let mut c = v4_claims("final", json!(2), 1, 0.9);
+    c["incomplete"] = json!(true);
+    fails(c, "incomplete final above 0.7");
+    // incomplete is absent or true, and only on a final.
+    let mut c = v4_claims("final", json!(2), 2, 0.9);
+    c["incomplete"] = json!(false);
+    fails(c, "incomplete: false");
+    // revision is an integer of 1 or more.
+    for bad in [json!(0), json!(1.5), json!("2"), json!(-1)] {
+        fails(v4_claims("final", bad.clone(), 1, 0.9), &format!("revision {bad}"));
+    }
+    let mut c = v4_claims("final", json!(1), 1, 0.9);
+    c.as_object_mut().unwrap().remove("revision");
+    fails(c, "no revision");
+    fails(v4_claims("draft", json!(1), 1, 0.7), "stage draft");
+    // A v=3 token never carries the v=4 claims.
+    let mut c = base_claims(&vector(), T);
+    c["revision"] = json!(1);
+    let keys = jwks(&[&ed_jwk("k1", json!({}))]);
+    let r = run_with(&ed_token(H("octet-browser-verdict+jwt;v=3"), c), &keys, T, None);
+    assert_eq!(r.status("verdict-stage"), Some(Failed), "{:?}", r.checks);
+}
+
+#[test]
+fn v4_revisions_only_go_up_and_a_session_has_one_final() {
+    let prov = || v4_claims("provisional", json!(1), 1, 0.7);
+    let fin = |rev: u64| v4_claims("final", json!(rev), 2, 0.9);
+
+    // 1 provisional, then 2 final: each accepted, and the state follows.
+    let r = own_v4(prov(), None);
+    let s1 = r.next_revisions(None).unwrap();
+    assert_eq!(s1, SessionRevisions { highest: 1, final_revision: None });
+    let r = own_v4(fin(2), Some(s1));
+    assert_eq!(r.status("verdict-stage"), Some(Verified), "{:?}", r.checks);
+    let s2 = r.next_revisions(Some(s1)).unwrap();
+    assert_eq!(s2, SessionRevisions { highest: 2, final_revision: Some(2) });
+
+    // The provisional again, after the final: a lower revision.
+    let r = own_v4(prov(), Some(s2));
+    assert_eq!(r.status("verdict-stage"), Some(Failed), "{:?}", r.checks);
+    assert_eq!(r.next_revisions(Some(s2)), None, "a refused token changes nothing");
+    // The same final again is fine; a second final is not.
+    assert_eq!(own_v4(fin(2), Some(s2)).status("verdict-stage"), Some(Verified));
+    assert_eq!(own_v4(fin(3), Some(s2)).status("verdict-stage"), Some(Failed));
+    assert_eq!(own_v4(v4_claims("provisional", json!(3), 1, 0.7), Some(s2)).status("verdict-stage"), Some(Failed));
+
+    // A higher provisional replaces a lower one before the final.
+    let r = own_v4(v4_claims("provisional", json!(2), 1, 0.7), Some(s1));
+    assert_eq!(r.status("verdict-stage"), Some(Warning));
+    // v=3 tokens carry no revisions.
+    let keys = jwks(&[&ed_jwk("k1", json!({}))]);
+    let r = run_with(&ed_token(H("octet-browser-verdict+jwt;v=3"), base_claims(&vector(), T)), &keys, T, Some(s2));
+    assert!(r.is_valid() && r.next_revisions(Some(s2)).is_none());
+}
+
+/// The CLI: exit 3 for a provisional verdict unless --accept-provisional, and the
+/// revision store refusing a lower revision.
+#[test]
+fn v4_cli_exit_codes_and_revision_store() {
+    let dir = std::env::temp_dir().join(format!("octet-v4-cli-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let jwks_file = dir.join("jwks.json");
+    std::fs::write(&jwks_file, json!({ "keys": [ed_jwk("k1", json!({}))] }).to_string()).unwrap();
+    let roots = dir.join("roots.json");
+    std::fs::write(&roots, r#"{"roots":[]}"#).unwrap();
+    let store = dir.join("revisions.json");
+    let run = |c: Value, extra: &[&str]| {
+        let token = ed_token(H(V4), c);
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_octet-verify"))
+            .arg("browser-verdict")
+            .arg(&token)
+            .args(["--jwks", jwks_file.to_str().unwrap(), "--roots", roots.to_str().unwrap(), "--now", &T.to_string()])
+            .args(extra)
+            .output()
+            .unwrap();
+        (out.status.code(), String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let prov = || v4_claims("provisional", json!(1), 1, 0.7);
+    let fin = || v4_claims("final", json!(2), 2, 0.9);
+
+    let (code, out) = run(prov(), &[]);
+    assert_eq!(code, Some(3), "{out}");
+    assert!(out.contains("INCONCLUSIVE") && out.contains("stage=provisional revision=1"), "{out}");
+    assert_eq!(run(prov(), &["--accept-provisional"]).0, Some(0));
+    assert_eq!(run(fin(), &[]).0, Some(0));
+    let (code, out) = run(v4_claims("provisional", json!(1), 2, 0.7), &[]);
+    assert_eq!(code, Some(1), "{out}");
+
+    let (_, json_out) = run(prov(), &["--json"]);
+    let j: Value = serde_json::from_str(&json_out).unwrap();
+    assert_eq!((j["stage"].as_str(), j["revision"].as_u64(), j["incomplete"].as_bool()), (Some("provisional"), Some(1), Some(false)));
+    assert_eq!((j["verdict"].as_str(), j["passes_gate"].as_bool(), j["valid"].as_bool()), (Some("INCONCLUSIVE"), Some(false), Some(true)));
+
+    // The store: provisional 1, final 2, then the provisional again is refused.
+    let s = ["--revision-store", store.to_str().unwrap()];
+    assert_eq!(run(prov(), &s).0, Some(3));
+    assert_eq!(run(fin(), &s).0, Some(0));
+    let kept: Value = serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap();
+    let session = claims_of(vector()["verdictToken"].as_str().unwrap())["sessionRef"].as_str().unwrap().to_owned();
+    assert_eq!(kept[&session], json!({ "highest": 2, "final": 2 }));
+    let (code, out) = run(prov(), &s);
+    assert_eq!(code, Some(1), "{out}");
+    assert!(out.contains("lower than revision 2"), "{out}");
+    std::fs::remove_dir_all(&dir).ok();
 }

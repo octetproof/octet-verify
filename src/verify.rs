@@ -154,6 +154,9 @@ pub struct Report {
     /// The signed spoofing verdict, set only when `semantic-binding` passed and
     /// the verdict is not UNSPECIFIED. Read via [`Report::spoofing_verdict`].
     spoofing_verdict: Option<LocationProofVerdict>,
+    /// The proof's readable caller manifest (field 19), set only when the
+    /// `caller-manifest` check passed. Read via [`Report::caller_manifest`].
+    caller_manifest: Option<crate::navigate::CallerManifest>,
 }
 
 impl Report {
@@ -164,7 +167,17 @@ impl Report {
             location_verdict: None,
             query_region: None,
             spoofing_verdict: None,
+            caller_manifest: None,
         }
+    }
+
+    /// The proof's readable caller manifest (`LocationProof` field 19): the
+    /// committed entries, digests only. `Some` only when field 19 recomputed the
+    /// signed `callerMetadata` stage (`caller-manifest` PASS); `None` when the
+    /// proof carries none or it did not match. Each entry's `locator` is an
+    /// unauthenticated hint even then: it is outside the signed preimage.
+    pub fn caller_manifest(&self) -> Option<&crate::navigate::CallerManifest> {
+        self.caller_manifest.as_ref()
     }
 
     fn add(&mut self, name: &'static str, status: Status, detail: impl Into<String>) {
@@ -192,14 +205,30 @@ impl Report {
             .any(|c| c.name == "stage-signatures" && c.status == Status::Pass)
     }
 
-    /// Authentic = not rejected **and** signatures cryptographically verified.
-    /// This is the bit an automated consumer should gate on. [`is_valid`] alone
-    /// is `true` for an unverified-but-not-rejected proof (e.g. no key supplied),
-    /// so it must never be treated as "authentic" on its own.
+    /// Authentic = not rejected, signatures cryptographically verified, **and**
+    /// no caller content left unresolved. This is the bit an automated consumer
+    /// should gate on. [`is_valid`] alone is `true` for an unverified-but-not-
+    /// rejected proof (e.g. no key supplied, or required content not at hand), so
+    /// it must never be treated as "authentic" on its own.
     ///
     /// [`is_valid`]: Report::is_valid
     pub fn is_authentic(&self) -> bool {
-        self.is_valid() && self.sigs_verified()
+        self.is_valid() && self.sigs_verified() && self.content_resolved()
+    }
+
+    /// False iff a `caller-metadata` check reported `CONTENT_UNRESOLVED`: content
+    /// was referenced but couldn't be read, or was required and not presented.
+    /// Such a report is INCONCLUSIVE (exit 3) unless a check FAILed, and never
+    /// VALID. True when the check is absent, so reports without caller metadata
+    /// are unaffected.
+    pub fn content_resolved(&self) -> bool {
+        // WARN on this check is reserved for CONTENT_UNRESOLVED.
+        !self.checks.iter().any(|c| c.name == "caller-metadata" && c.status == Status::Warn)
+    }
+
+    /// Append the result of [`crate::caller_metadata::check_caller_metadata`].
+    pub fn add_caller_metadata(&mut self, r: crate::caller_metadata::CallerMetadataResult) {
+        self.checks.push(r.check);
     }
 
     /// True iff the device's **hardware attestation** was affirmatively verified:
@@ -627,6 +656,13 @@ pub fn verify(proof: &LocationProof, opts: &VerifyOptions) -> Report {
         opts.session_nonce,
         opts.require_session_binding,
     ));
+    // Caller metadata, phase B: a proof that lists its committed content (field
+    // 19) gets a `caller-manifest` line. Nothing for a proof without it.
+    let manifest_lines = crate::caller_metadata::caller_manifest_checks(proof);
+    if manifest_lines.first().is_some_and(|c| c.status == Status::Pass) {
+        r.caller_manifest = proof.caller_manifest.clone();
+    }
+    r.checks.extend(manifest_lines);
     match &proof.zk_proof {
         Some(zk) if zk.backend == crate::navigate::ZkBackend::Placeholder as i32 =>
             r.add("zk-proof", Status::NotChecked, "backend is PLACEHOLDER; ZK layer contributes no assurance"),

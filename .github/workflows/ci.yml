@@ -110,6 +110,18 @@ jobs:
         # the default-feature run above covers the lean fail-closed path.
         run: cargo test --all-targets --locked --features h3
 
+      - name: Test (--features caller-metadata)
+        # The presenter-manifest parser and the CLI's --caller-manifest /
+        # --content path, run against the check vectors in
+        # test-vectors/caller-metadata/. The preimage vectors also run in the
+        # default-feature step above.
+        run: cargo test --all-targets --locked --features caller-metadata
+
+      - name: Test caller-metadata device proofs (--features caller-metadata,appattest)
+        # The real-device proofs in test-vectors/caller-metadata-device/ also
+        # check each phone's hardware attestation, which needs `appattest`.
+        run: cargo test --locked --features caller-metadata,appattest --test caller_metadata_device
+
       - name: Test (--features browser,net)
         # The browser verdict profile and its golden vector
         # (tests/browser_verdict.rs). Network is only used by the CLI's

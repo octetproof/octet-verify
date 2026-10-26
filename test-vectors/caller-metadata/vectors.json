@@ -1,0 +1,1784 @@
+{
+  "domain": "octet-caller-metadata-v1",
+  "stage": "callerMetadata",
+  "preimage": "ascii(domain) || u32_be(entry_count) || for each entry in order: u32_be(len(key)) || key || u32_be(len(contentType)) || contentType || u64_be(size) || u32_be(32) || entry_digest",
+  "entry_digest": "SHA256(salt || value); salt is 0, 16 or 32 bytes and is not in the preimage; size = len(value)",
+  "hash": "SHA256(preimage) equals the proof's callerMetadata stage data_hash",
+  "limits": {
+    "entries": [
+      1,
+      16
+    ],
+    "key_bytes": [
+      1,
+      64
+    ],
+    "content_type_bytes": [
+      1,
+      127
+    ],
+    "content_type": "RFC 6838 type/subtype restricted-name, no parameters",
+    "preimage_bytes_max": 16384,
+    "salt_bytes": [
+      0,
+      16,
+      32
+    ]
+  },
+  "note": "Hex is lowercase. value_file is relative to this directory. Salts here are fixed patterns so the vectors are reproducible; real salts are random. Results: VALID (preimage vectors) or PASS-path VALID (check vectors), CONTENT_MISMATCH, MANIFEST_INVALID, CONTENT_UNRESOLVED (INCONCLUSIVE, exit 3), NOT_CHECKED, FAIL (stage required but absent). stage_data_hash null means the proof has no callerMetadata stage.",
+  "preimage_vectors": [
+    {
+      "name": "single_unsalted",
+      "comment": "One unsalted text entry: entry_digest = SHA256(value).",
+      "entries": [
+        {
+          "key": "note",
+          "contentType": "text/plain",
+          "value_hex": "68656c6c6f20776f726c64",
+          "size": 11,
+          "salt_hex": ""
+        }
+      ],
+      "expected_entry_digests": [
+        "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+      ],
+      "preimage_hex": "6f637465742d63616c6c65722d6d657461646174612d763100000001000000046e6f74650000000a746578742f706c61696e000000000000000b00000020b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+      "expected_data_hash": "a9e21a2493e5dd9e91c2359567a1bfd473eccefeea3f8a3d3747b72d98499623",
+      "expected": "VALID"
+    },
+    {
+      "name": "salt_16",
+      "comment": "The same value with a 16-byte salt: a different entry_digest, the same size.",
+      "entries": [
+        {
+          "key": "note",
+          "contentType": "text/plain",
+          "value_hex": "68656c6c6f20776f726c64",
+          "size": 11,
+          "salt_hex": "83a2c1e0ff1e3d5c7b9ab9d8f7163554"
+        }
+      ],
+      "expected_entry_digests": [
+        "03e012bc14a4fd31bdd494230659a2535f48b33293b639be563a7ce15c649cd0"
+      ],
+      "preimage_hex": "6f637465742d63616c6c65722d6d657461646174612d763100000001000000046e6f74650000000a746578742f706c61696e000000000000000b0000002003e012bc14a4fd31bdd494230659a2535f48b33293b639be563a7ce15c649cd0",
+      "expected_data_hash": "78c51f3262f8fc66c13d116498811723f26fbac961c4038217a9c9dcb32b49eb",
+      "expected": "VALID"
+    },
+    {
+      "name": "salt_32",
+      "comment": "The same value with a 32-byte salt.",
+      "entries": [
+        {
+          "key": "note",
+          "contentType": "text/plain",
+          "value_hex": "68656c6c6f20776f726c64",
+          "size": 11,
+          "salt_hex": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7"
+        }
+      ],
+      "expected_entry_digests": [
+        "c1be319df36233d41ab3ce8157d2ba069af2d8283d0dcc0ab244b5f6abaa835d"
+      ],
+      "preimage_hex": "6f637465742d63616c6c65722d6d657461646174612d763100000001000000046e6f74650000000a746578742f706c61696e000000000000000b00000020c1be319df36233d41ab3ce8157d2ba069af2d8283d0dcc0ab244b5f6abaa835d",
+      "expected_data_hash": "f3bc1c4d1f28a2e04d2a8c6423642d1052ab17be89f5addd50e0140852398f85",
+      "expected": "VALID"
+    },
+    {
+      "name": "multi_entry",
+      "comment": "Three entries, unsalted, 16-byte and 32-byte salts, in the caller's order.",
+      "entries": [
+        {
+          "key": "note",
+          "contentType": "text/plain",
+          "value_hex": "44656c69766572656420746f207468652066726f6e7420646f6f722e",
+          "size": 28,
+          "salt_hex": ""
+        },
+        {
+          "key": "photo",
+          "contentType": "image/jpeg",
+          "value_hex": "8faecdec0b2a496887a6c5e4032241607f9ebddcfb1a39587796b5d4f31231506f8eadcceb0a29486786a5c4e30221405f7e9dbcdbfa1938577695b4d3f21130",
+          "size": 64,
+          "salt_hex": "83a2c1e0ff1e3d5c7b9ab9d8f7163554"
+        },
+        {
+          "key": "receipt",
+          "contentType": "application/pdf",
+          "value_hex": "1231506f8eadcceb0a29486786a5c4e30221405f7e9dbcdbfa1938577695b4d3f211304f6e8daccbea0928476685a4c3e201203f5e7d9cbbdaf91837567594b3d2f1102f4e6d8cabcae90827466584a3c2e1001f3e5d7c9bbad9f81736557493b2d1f00f2e4d6c8baac9e80726456483a2c1e0ff1e3d5c7b9ab9d8f71635547392b1d0ef0e2d4c6b8aa9c8e70625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7e60524436281a0bfdefd1c3b5a7998b7d6f51433527190afceed0c2b4a6988a7c6e504234261809fbeddfc1b3a597897b6d5f4133251708faecdec0b2a496887a6c5e4032241607f9ebddcfb1a39587796b5d4f3133251708faecdec0b2a496887a6c5e4032241607f9ebddcfb1a39587796b5d4f31231506f8eadcceb0a2948",
+          "size": 300,
+          "salt_hex": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7"
+        }
+      ],
+      "expected_entry_digests": [
+        "a75b5012937ff4cfdac1fad784cd9151fca1d9b17ed207df836646765a876a5a",
+        "186f6b5a041ca2acd3cc3a454f4c8d4ca180229b7d5c11223d8d19dcd0d4a264",
+        "8487500cd21babe7a5dbaa0546d41214bfb8134022a8c1518ce528a799e61c07"
+      ],
+      "preimage_hex": "6f637465742d63616c6c65722d6d657461646174612d763100000003000000046e6f74650000000a746578742f706c61696e000000000000001c00000020a75b5012937ff4cfdac1fad784cd9151fca1d9b17ed207df836646765a876a5a0000000570686f746f0000000a696d6167652f6a706567000000000000004000000020186f6b5a041ca2acd3cc3a454f4c8d4ca180229b7d5c11223d8d19dcd0d4a26400000007726563656970740000000f6170706c69636174696f6e2f706466000000000000012c000000208487500cd21babe7a5dbaa0546d41214bfb8134022a8c1518ce528a799e61c07",
+      "expected_data_hash": "0ec34d65b447b5565f1de194a6ed767ae1a06537dd7240708987905e5f556a8d",
+      "expected": "VALID"
+    },
+    {
+      "name": "multi_entry_reordered",
+      "comment": "multi_entry with the first two entries swapped: order is committed, so the hash differs.",
+      "entries": [
+        {
+          "key": "photo",
+          "contentType": "image/jpeg",
+          "value_hex": "8faecdec0b2a496887a6c5e4032241607f9ebddcfb1a39587796b5d4f31231506f8eadcceb0a29486786a5c4e30221405f7e9dbcdbfa1938577695b4d3f21130",
+          "size": 64,
+          "salt_hex": "83a2c1e0ff1e3d5c7b9ab9d8f7163554"
+        },
+        {
+          "key": "note",
+          "contentType": "text/plain",
+          "value_hex": "44656c69766572656420746f207468652066726f6e7420646f6f722e",
+          "size": 28,
+          "salt_hex": ""
+        },
+        {
+          "key": "receipt",
+          "contentType": "application/pdf",
+          "value_hex": "1231506f8eadcceb0a29486786a5c4e30221405f7e9dbcdbfa1938577695b4d3f211304f6e8daccbea0928476685a4c3e201203f5e7d9cbbdaf91837567594b3d2f1102f4e6d8cabcae90827466584a3c2e1001f3e5d7c9bbad9f81736557493b2d1f00f2e4d6c8baac9e80726456483a2c1e0ff1e3d5c7b9ab9d8f71635547392b1d0ef0e2d4c6b8aa9c8e70625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7e60524436281a0bfdefd1c3b5a7998b7d6f51433527190afceed0c2b4a6988a7c6e504234261809fbeddfc1b3a597897b6d5f4133251708faecdec0b2a496887a6c5e4032241607f9ebddcfb1a39587796b5d4f3133251708faecdec0b2a496887a6c5e4032241607f9ebddcfb1a39587796b5d4f31231506f8eadcceb0a2948",
+          "size": 300,
+          "salt_hex": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7"
+        }
+      ],
+      "expected_entry_digests": [
+        "186f6b5a041ca2acd3cc3a454f4c8d4ca180229b7d5c11223d8d19dcd0d4a264",
+        "a75b5012937ff4cfdac1fad784cd9151fca1d9b17ed207df836646765a876a5a",
+        "8487500cd21babe7a5dbaa0546d41214bfb8134022a8c1518ce528a799e61c07"
+      ],
+      "preimage_hex": "6f637465742d63616c6c65722d6d657461646174612d7631000000030000000570686f746f0000000a696d6167652f6a706567000000000000004000000020186f6b5a041ca2acd3cc3a454f4c8d4ca180229b7d5c11223d8d19dcd0d4a264000000046e6f74650000000a746578742f706c61696e000000000000001c00000020a75b5012937ff4cfdac1fad784cd9151fca1d9b17ed207df836646765a876a5a00000007726563656970740000000f6170706c69636174696f6e2f706466000000000000012c000000208487500cd21babe7a5dbaa0546d41214bfb8134022a8c1518ce528a799e61c07",
+      "expected_data_hash": "7d7c8d24fa684829e0c6c00b75380b02c3844bb80c49a8f193c1c3d57d0a3eb0",
+      "expected": "VALID"
+    },
+    {
+      "name": "empty_value",
+      "comment": "A zero-byte value is allowed: size 0, entry_digest = SHA256(empty).",
+      "entries": [
+        {
+          "key": "flag",
+          "contentType": "application/octet-stream",
+          "value_hex": "",
+          "size": 0,
+          "salt_hex": ""
+        }
+      ],
+      "expected_entry_digests": [
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      ],
+      "preimage_hex": "6f637465742d63616c6c65722d6d657461646174612d76310000000100000004666c6167000000186170706c69636174696f6e2f6f637465742d73747265616d000000000000000000000020e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expected_data_hash": "11708f51b042c9e94a28fb1277e632b4b05e39595333686b5004c684b2c84653",
+      "expected": "VALID"
+    },
+    {
+      "name": "injectivity_key_value_a",
+      "comment": "Injectivity pair with injectivity_key_value_b: naive key||value is \"abc\" for both.",
+      "entries": [
+        {
+          "key": "ab",
+          "contentType": "text/plain",
+          "value_hex": "63",
+          "size": 1,
+          "salt_hex": ""
+        }
+      ],
+      "expected_entry_digests": [
+        "2e7d2c03a9507ae265ecf5b5356885a53393a2029d241394997265a1a25aefc6"
+      ],
+      "preimage_hex": "6f637465742d63616c6c65722d6d657461646174612d7631000000010000000261620000000a746578742f706c61696e0000000000000001000000202e7d2c03a9507ae265ecf5b5356885a53393a2029d241394997265a1a25aefc6",
+      "expected_data_hash": "c91cf1c05344432bb1065c63504dd39055fabda9fdf5b886da4cca086005c689",
+      "expected": "VALID"
+    },
+    {
+      "name": "injectivity_key_value_b",
+      "comment": "Injectivity pair with injectivity_key_value_a.",
+      "entries": [
+        {
+          "key": "a",
+          "contentType": "text/plain",
+          "value_hex": "6263",
+          "size": 2,
+          "salt_hex": ""
+        }
+      ],
+      "expected_entry_digests": [
+        "1e0bbd6c686ba050b8eb03ffeedc64fdc9d80947fce821abbe5d6dc8d252c5ac"
+      ],
+      "preimage_hex": "6f637465742d63616c6c65722d6d657461646174612d76310000000100000001610000000a746578742f706c61696e0000000000000002000000201e0bbd6c686ba050b8eb03ffeedc64fdc9d80947fce821abbe5d6dc8d252c5ac",
+      "expected_data_hash": "9e04d4dcd44fb66870c24889252732d9e206fbdda9517f86113c92ac540a97c0",
+      "expected": "VALID"
+    },
+    {
+      "name": "injectivity_key_type_a",
+      "comment": "Injectivity pair with injectivity_key_type_b: naive key||contentType is \"abx/y\" for both.",
+      "entries": [
+        {
+          "key": "ab",
+          "contentType": "x/y",
+          "value_hex": "76",
+          "size": 1,
+          "salt_hex": ""
+        }
+      ],
+      "expected_entry_digests": [
+        "4c94485e0c21ae6c41ce1dfe7b6bfaceea5ab68e40a2476f50208e526f506080"
+      ],
+      "preimage_hex": "6f637465742d63616c6c65722d6d657461646174612d76310000000100000002616200000003782f790000000000000001000000204c94485e0c21ae6c41ce1dfe7b6bfaceea5ab68e40a2476f50208e526f506080",
+      "expected_data_hash": "b5affa8e3417218aa6be9bfff31c1cab50ffd14e1d2307ecff77d3bb1c699585",
+      "expected": "VALID"
+    },
+    {
+      "name": "injectivity_key_type_b",
+      "comment": "Injectivity pair with injectivity_key_type_a.",
+      "entries": [
+        {
+          "key": "a",
+          "contentType": "bx/y",
+          "value_hex": "76",
+          "size": 1,
+          "salt_hex": ""
+        }
+      ],
+      "expected_entry_digests": [
+        "4c94485e0c21ae6c41ce1dfe7b6bfaceea5ab68e40a2476f50208e526f506080"
+      ],
+      "preimage_hex": "6f637465742d63616c6c65722d6d657461646174612d76310000000100000001610000000462782f790000000000000001000000204c94485e0c21ae6c41ce1dfe7b6bfaceea5ab68e40a2476f50208e526f506080",
+      "expected_data_hash": "cb74095b74b32f5ac39e95bcb570893444acad64db874640701de3c5df112566",
+      "expected": "VALID"
+    },
+    {
+      "name": "content_type_case",
+      "comment": "contentType is compared byte for byte: same value as single_unsalted, different hash.",
+      "entries": [
+        {
+          "key": "note",
+          "contentType": "TEXT/Plain",
+          "value_hex": "68656c6c6f20776f726c64",
+          "size": 11,
+          "salt_hex": ""
+        }
+      ],
+      "expected_entry_digests": [
+        "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+      ],
+      "preimage_hex": "6f637465742d63616c6c65722d6d657461646174612d763100000001000000046e6f74650000000a544558542f506c61696e000000000000000b00000020b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+      "expected_data_hash": "1a639dfd68ee23d3c8645f56078b952d168cb833f7fe71aeb3b89c6adaa043cc",
+      "expected": "VALID"
+    },
+    {
+      "name": "unicode_key_nfc",
+      "comment": "Key in NFC (U+00E9). Paired with unicode_key_nfd: no normalisation, different hashes.",
+      "entries": [
+        {
+          "key": "café",
+          "contentType": "text/plain",
+          "value_hex": "78",
+          "size": 1,
+          "salt_hex": ""
+        }
+      ],
+      "expected_entry_digests": [
+        "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      ],
+      "preimage_hex": "6f637465742d63616c6c65722d6d657461646174612d76310000000100000005636166c3a90000000a746578742f706c61696e0000000000000001000000202d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+      "expected_data_hash": "f9ec9321d73642679f385efe833cb96db0ad6428904d121e68c5eb435cda88f3",
+      "expected": "VALID"
+    },
+    {
+      "name": "unicode_key_nfd",
+      "comment": "Key in NFD (e + U+0301). Paired with unicode_key_nfc.",
+      "entries": [
+        {
+          "key": "café",
+          "contentType": "text/plain",
+          "value_hex": "78",
+          "size": 1,
+          "salt_hex": ""
+        }
+      ],
+      "expected_entry_digests": [
+        "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      ],
+      "preimage_hex": "6f637465742d63616c6c65722d6d657461646174612d7631000000010000000663616665cc810000000a746578742f706c61696e0000000000000001000000202d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+      "expected_data_hash": "d254d50903b7226fd2297f943531744b8cac98e5405be21af3d9036da94789e4",
+      "expected": "VALID"
+    },
+    {
+      "name": "limits_at_maximum",
+      "comment": "16 entries, 64-byte keys, 127-byte contentTypes: every limit at its maximum, still valid.",
+      "entries": [
+        {
+          "key": "k00xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "contentType": "application/vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+          "value_hex": "78",
+          "size": 1,
+          "salt_hex": ""
+        },
+        {
+          "key": "k01xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "contentType": "application/vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+          "value_hex": "fb1a",
+          "size": 2,
+          "salt_hex": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7"
+        },
+        {
+          "key": "k02xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "contentType": "application/vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+          "value_hex": "7e9dbc",
+          "size": 3,
+          "salt_hex": ""
+        },
+        {
+          "key": "k03xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "contentType": "application/vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+          "value_hex": "01203f5e",
+          "size": 4,
+          "salt_hex": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7"
+        },
+        {
+          "key": "k04xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "contentType": "application/vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+          "value_hex": "84a3c2e100",
+          "size": 5,
+          "salt_hex": ""
+        },
+        {
+          "key": "k05xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "contentType": "application/vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+          "value_hex": "0726456483a2",
+          "size": 6,
+          "salt_hex": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7"
+        },
+        {
+          "key": "k06xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "contentType": "application/vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+          "value_hex": "8aa9c8e7062544",
+          "size": 7,
+          "salt_hex": ""
+        },
+        {
+          "key": "k07xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "contentType": "application/vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+          "value_hex": "0d2c4b6a89a8c7e6",
+          "size": 8,
+          "salt_hex": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7"
+        },
+        {
+          "key": "k08xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "contentType": "application/vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+          "value_hex": "90afceed0c2b4a6988",
+          "size": 9,
+          "salt_hex": ""
+        },
+        {
+          "key": "k09xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "contentType": "application/vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+          "value_hex": "133251708faecdec0b2a",
+          "size": 10,
+          "salt_hex": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7"
+        },
+        {
+          "key": "k10xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "contentType": "application/vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+          "value_hex": "96b5d4f31231506f8eadcc",
+          "size": 11,
+          "salt_hex": ""
+        },
+        {
+          "key": "k11xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "contentType": "application/vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+          "value_hex": "1938577695b4d3f211304f6e",
+          "size": 12,
+          "salt_hex": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7"
+        },
+        {
+          "key": "k12xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "contentType": "application/vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+          "value_hex": "9cbbdaf91837567594b3d2f110",
+          "size": 13,
+          "salt_hex": ""
+        },
+        {
+          "key": "k13xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "contentType": "application/vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+          "value_hex": "1f3e5d7c9bbad9f81736557493b2",
+          "size": 14,
+          "salt_hex": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7"
+        },
+        {
+          "key": "k14xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "contentType": "application/vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+          "value_hex": "a2c1e0ff1e3d5c7b9ab9d8f7163554",
+          "size": 15,
+          "salt_hex": ""
+        },
+        {
+          "key": "k15xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "contentType": "application/vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+          "value_hex": "25446382a1c0dffe1d3c5b7a99b8d7f6",
+          "size": 16,
+          "salt_hex": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7"
+        }
+      ],
+      "expected_entry_digests": [
+        "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+        "4cd82cd35d8b52efabb1e7ee26766e49095741619509d8a83a30a272cd0434bb",
+        "f21569c9b4482a08a290f4c02d7e67fc035dc39d3833ff22c13a6cea5b327442",
+        "eaec643861967aa0bf357df1b7a2aa65ba23074c86c6bc7a5229d74bc6866fd5",
+        "465c068dfb67abb94db63779feb735f15e6f316475a92435d3e097c0afd3ce23",
+        "de5233c62e307ec6c206db4c5bba6366160a7500b3baecd1fb4b8277bf444a05",
+        "b3205b587f59bfe45ef44d5994f9f7a422383b8ecde797636cd40a1b56f724ce",
+        "4f4e97b123fad3a963ac106ad5e52242386c7f5e44ef00d5aaf55383065858a8",
+        "bcb470229967b2b7889f9ea784b747c8cc2ebccd01d5b413462db60e398122f2",
+        "9a2494f87c39f814173a9977124ff6d55a000b239d0c42da7fb66a120aa4da30",
+        "e0f5c55a0ff144a55537ee0618b685027c08f19b64d2932f5c81807d86c4aff5",
+        "394a8051f267650e98640a46cc8890158d824fcccf61119d71adffd7ea69a7f6",
+        "c80bd2820d842cc2feddbff5185bcd49fa40ad9521d1acf4bd60667b0ace7966",
+        "0e7d7cd1b59fc82fbf3c16886d0b01250e6442c6729aac223d39331978242141",
+        "42783a8f9163deb4cb0a2fa9378e1330f544430c1c460e5d60b3b5ea36fa6d5c",
+        "d528797d1a014697d3901b44a232fcc107cae2b2371136f78cfefb3c9dd1293d"
+      ],
+      "preimage_hex": "6f637465742d63616c6c65722d6d657461646174612d763100000010000000406b3030787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878780000007f6170706c69636174696f6e2f767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676760000000000000001000000202d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881000000406b3031787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878780000007f6170706c69636174696f6e2f767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676760000000000000002000000204cd82cd35d8b52efabb1e7ee26766e49095741619509d8a83a30a272cd0434bb000000406b3032787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878780000007f6170706c69636174696f6e2f76767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676000000000000000300000020f21569c9b4482a08a290f4c02d7e67fc035dc39d3833ff22c13a6cea5b327442000000406b3033787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878780000007f6170706c69636174696f6e2f76767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676000000000000000400000020eaec643861967aa0bf357df1b7a2aa65ba23074c86c6bc7a5229d74bc6866fd5000000406b3034787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878780000007f6170706c69636174696f6e2f76767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676000000000000000500000020465c068dfb67abb94db63779feb735f15e6f316475a92435d3e097c0afd3ce23000000406b3035787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878780000007f6170706c69636174696f6e2f76767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676000000000000000600000020de5233c62e307ec6c206db4c5bba6366160a7500b3baecd1fb4b8277bf444a05000000406b3036787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878780000007f6170706c69636174696f6e2f76767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676000000000000000700000020b3205b587f59bfe45ef44d5994f9f7a422383b8ecde797636cd40a1b56f724ce000000406b3037787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878780000007f6170706c69636174696f6e2f767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676760000000000000008000000204f4e97b123fad3a963ac106ad5e52242386c7f5e44ef00d5aaf55383065858a8000000406b3038787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878780000007f6170706c69636174696f6e2f76767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676000000000000000900000020bcb470229967b2b7889f9ea784b747c8cc2ebccd01d5b413462db60e398122f2000000406b3039787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878780000007f6170706c69636174696f6e2f76767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676000000000000000a000000209a2494f87c39f814173a9977124ff6d55a000b239d0c42da7fb66a120aa4da30000000406b3130787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878780000007f6170706c69636174696f6e2f76767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676000000000000000b00000020e0f5c55a0ff144a55537ee0618b685027c08f19b64d2932f5c81807d86c4aff5000000406b3131787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878780000007f6170706c69636174696f6e2f76767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676000000000000000c00000020394a8051f267650e98640a46cc8890158d824fcccf61119d71adffd7ea69a7f6000000406b3132787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878780000007f6170706c69636174696f6e2f76767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676000000000000000d00000020c80bd2820d842cc2feddbff5185bcd49fa40ad9521d1acf4bd60667b0ace7966000000406b3133787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878780000007f6170706c69636174696f6e2f76767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676000000000000000e000000200e7d7cd1b59fc82fbf3c16886d0b01250e6442c6729aac223d39331978242141000000406b3134787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878780000007f6170706c69636174696f6e2f76767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676000000000000000f0000002042783a8f9163deb4cb0a2fa9378e1330f544430c1c460e5d60b3b5ea36fa6d5c000000406b3135787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878780000007f6170706c69636174696f6e2f76767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676000000000000001000000020d528797d1a014697d3901b44a232fcc107cae2b2371136f78cfefb3c9dd1293d",
+      "expected_data_hash": "a0b22dc57029343fa8e3431d20b53cc4b60154fc4c1f1d5c85be18d088df0240",
+      "expected": "VALID"
+    },
+    {
+      "name": "large_streamed_value",
+      "comment": "A 256 KiB value read from value_file; the verifier streams it with bounded memory.",
+      "entries": [
+        {
+          "key": "video",
+          "contentType": "video/mp4",
+          "value_file": "large-256k.value",
+          "size": 262144,
+          "salt_hex": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7"
+        }
+      ],
+      "expected_entry_digests": [
+        "0a99604c8fc8627796b8871a3f8822bdae6c9077f5a95553387fa46680256234"
+      ],
+      "preimage_hex": "6f637465742d63616c6c65722d6d657461646174612d76310000000100000005766964656f00000009766964656f2f6d70340000000000040000000000200a99604c8fc8627796b8871a3f8822bdae6c9077f5a95553387fa46680256234",
+      "expected_data_hash": "cb1cffe12925b0e98cffd03c7896835f641af5a1c5bc5bea128aa987c0a3c50a",
+      "expected": "VALID"
+    },
+    {
+      "name": "no_entries",
+      "comment": "Zero entries: the spec allows 1 to 16.",
+      "entries": [],
+      "expected": "MANIFEST_INVALID"
+    },
+    {
+      "name": "too_many_entries",
+      "comment": "17 entries.",
+      "entries": [
+        {
+          "key": "k00",
+          "contentType": "text/plain",
+          "value_hex": "76",
+          "size": 1,
+          "salt_hex": ""
+        },
+        {
+          "key": "k01",
+          "contentType": "text/plain",
+          "value_hex": "76",
+          "size": 1,
+          "salt_hex": ""
+        },
+        {
+          "key": "k02",
+          "contentType": "text/plain",
+          "value_hex": "76",
+          "size": 1,
+          "salt_hex": ""
+        },
+        {
+          "key": "k03",
+          "contentType": "text/plain",
+          "value_hex": "76",
+          "size": 1,
+          "salt_hex": ""
+        },
+        {
+          "key": "k04",
+          "contentType": "text/plain",
+          "value_hex": "76",
+          "size": 1,
+          "salt_hex": ""
+        },
+        {
+          "key": "k05",
+          "contentType": "text/plain",
+          "value_hex": "76",
+          "size": 1,
+          "salt_hex": ""
+        },
+        {
+          "key": "k06",
+          "contentType": "text/plain",
+          "value_hex": "76",
+          "size": 1,
+          "salt_hex": ""
+        },
+        {
+          "key": "k07",
+          "contentType": "text/plain",
+          "value_hex": "76",
+          "size": 1,
+          "salt_hex": ""
+        },
+        {
+          "key": "k08",
+          "contentType": "text/plain",
+          "value_hex": "76",
+          "size": 1,
+          "salt_hex": ""
+        },
+        {
+          "key": "k09",
+          "contentType": "text/plain",
+          "value_hex": "76",
+          "size": 1,
+          "salt_hex": ""
+        },
+        {
+          "key": "k10",
+          "contentType": "text/plain",
+          "value_hex": "76",
+          "size": 1,
+          "salt_hex": ""
+        },
+        {
+          "key": "k11",
+          "contentType": "text/plain",
+          "value_hex": "76",
+          "size": 1,
+          "salt_hex": ""
+        },
+        {
+          "key": "k12",
+          "contentType": "text/plain",
+          "value_hex": "76",
+          "size": 1,
+          "salt_hex": ""
+        },
+        {
+          "key": "k13",
+          "contentType": "text/plain",
+          "value_hex": "76",
+          "size": 1,
+          "salt_hex": ""
+        },
+        {
+          "key": "k14",
+          "contentType": "text/plain",
+          "value_hex": "76",
+          "size": 1,
+          "salt_hex": ""
+        },
+        {
+          "key": "k15",
+          "contentType": "text/plain",
+          "value_hex": "76",
+          "size": 1,
+          "salt_hex": ""
+        },
+        {
+          "key": "k16",
+          "contentType": "text/plain",
+          "value_hex": "76",
+          "size": 1,
+          "salt_hex": ""
+        }
+      ],
+      "expected": "MANIFEST_INVALID"
+    },
+    {
+      "name": "empty_key",
+      "comment": "A key must be 1 to 64 bytes.",
+      "entries": [
+        {
+          "key": "",
+          "contentType": "text/plain",
+          "value_hex": "76",
+          "size": 1,
+          "salt_hex": ""
+        }
+      ],
+      "expected": "MANIFEST_INVALID"
+    },
+    {
+      "name": "key_65_bytes",
+      "comment": "A 65-byte key.",
+      "entries": [
+        {
+          "key": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+          "contentType": "text/plain",
+          "value_hex": "76",
+          "size": 1,
+          "salt_hex": ""
+        }
+      ],
+      "expected": "MANIFEST_INVALID"
+    },
+    {
+      "name": "empty_content_type",
+      "comment": "A contentType must be 1 to 127 bytes.",
+      "entries": [
+        {
+          "key": "note",
+          "contentType": "",
+          "value_hex": "76",
+          "size": 1,
+          "salt_hex": ""
+        }
+      ],
+      "expected": "MANIFEST_INVALID"
+    },
+    {
+      "name": "content_type_128_bytes",
+      "comment": "A 128-byte contentType.",
+      "entries": [
+        {
+          "key": "note",
+          "contentType": "application/vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+          "value_hex": "76",
+          "size": 1,
+          "salt_hex": ""
+        }
+      ],
+      "expected": "MANIFEST_INVALID"
+    },
+    {
+      "name": "content_type_not_media_type",
+      "comment": "Not an RFC 6838 type/subtype.",
+      "entries": [
+        {
+          "key": "note",
+          "contentType": "plaintext",
+          "value_hex": "76",
+          "size": 1,
+          "salt_hex": ""
+        }
+      ],
+      "expected": "MANIFEST_INVALID"
+    },
+    {
+      "name": "content_type_with_parameters",
+      "comment": "Parameters are not part of an RFC 6838 media type name; the contentType is type/subtype only.",
+      "entries": [
+        {
+          "key": "note",
+          "contentType": "text/plain; charset=utf-8",
+          "value_hex": "76",
+          "size": 1,
+          "salt_hex": ""
+        }
+      ],
+      "expected": "MANIFEST_INVALID"
+    },
+    {
+      "name": "salt_8_bytes",
+      "comment": "A salt must be 0, 16 or 32 bytes.",
+      "entries": [
+        {
+          "key": "note",
+          "contentType": "text/plain",
+          "value_hex": "76",
+          "size": 1,
+          "salt_hex": "0c2b4a6988a7c6e5"
+        }
+      ],
+      "expected": "MANIFEST_INVALID"
+    },
+    {
+      "name": "duplicate_key",
+      "comment": "Two entries with the same key.",
+      "entries": [
+        {
+          "key": "note",
+          "contentType": "text/plain",
+          "value_hex": "61",
+          "size": 1,
+          "salt_hex": ""
+        },
+        {
+          "key": "note",
+          "contentType": "text/plain",
+          "value_hex": "62",
+          "size": 1,
+          "salt_hex": ""
+        }
+      ],
+      "expected": "MANIFEST_INVALID"
+    }
+  ],
+  "check_vectors": [
+    {
+      "name": "all_content_matches",
+      "comment": "Every entry presented as content, all match.",
+      "stage_data_hash": "0ec34d65b447b5565f1de194a6ed767ae1a06537dd7240708987905e5f556a8d",
+      "manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "note",
+            "contentType": "text/plain",
+            "size": 28,
+            "salt": "",
+            "sha256": "a75b5012937ff4cfdac1fad784cd9151fca1d9b17ed207df836646765a876a5a"
+          },
+          {
+            "key": "photo",
+            "contentType": "image/jpeg",
+            "size": 64,
+            "salt": "83a2c1e0ff1e3d5c7b9ab9d8f7163554",
+            "sha256": "186f6b5a041ca2acd3cc3a454f4c8d4ca180229b7d5c11223d8d19dcd0d4a264"
+          },
+          {
+            "key": "receipt",
+            "contentType": "application/pdf",
+            "size": 300,
+            "salt": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7",
+            "sha256": "8487500cd21babe7a5dbaa0546d41214bfb8134022a8c1518ce528a799e61c07"
+          }
+        ]
+      },
+      "content": {
+        "note": {
+          "value_hex": "44656c69766572656420746f207468652066726f6e7420646f6f722e"
+        },
+        "photo": {
+          "value_hex": "8faecdec0b2a496887a6c5e4032241607f9ebddcfb1a39587796b5d4f31231506f8eadcceb0a29486786a5c4e30221405f7e9dbcdbfa1938577695b4d3f21130"
+        },
+        "receipt": {
+          "value_hex": "1231506f8eadcceb0a29486786a5c4e30221405f7e9dbcdbfa1938577695b4d3f211304f6e8daccbea0928476685a4c3e201203f5e7d9cbbdaf91837567594b3d2f1102f4e6d8cabcae90827466584a3c2e1001f3e5d7c9bbad9f81736557493b2d1f00f2e4d6c8baac9e80726456483a2c1e0ff1e3d5c7b9ab9d8f71635547392b1d0ef0e2d4c6b8aa9c8e70625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7e60524436281a0bfdefd1c3b5a7998b7d6f51433527190afceed0c2b4a6988a7c6e504234261809fbeddfc1b3a597897b6d5f4133251708faecdec0b2a496887a6c5e4032241607f9ebddcfb1a39587796b5d4f3133251708faecdec0b2a496887a6c5e4032241607f9ebddcfb1a39587796b5d4f31231506f8eadcceb0a2948"
+        }
+      },
+      "require_content": [],
+      "require_caller_metadata": false,
+      "expected": "VALID",
+      "expected_by_content": 3,
+      "expected_by_digest": 0
+    },
+    {
+      "name": "digest_only_mixed",
+      "comment": "Content for one entry; the other two are digest-only, which is not unresolved.",
+      "stage_data_hash": "0ec34d65b447b5565f1de194a6ed767ae1a06537dd7240708987905e5f556a8d",
+      "manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "note",
+            "contentType": "text/plain",
+            "size": 28,
+            "salt": "",
+            "sha256": "a75b5012937ff4cfdac1fad784cd9151fca1d9b17ed207df836646765a876a5a"
+          },
+          {
+            "key": "photo",
+            "contentType": "image/jpeg",
+            "size": 64,
+            "salt": "83a2c1e0ff1e3d5c7b9ab9d8f7163554",
+            "sha256": "186f6b5a041ca2acd3cc3a454f4c8d4ca180229b7d5c11223d8d19dcd0d4a264"
+          },
+          {
+            "key": "receipt",
+            "contentType": "application/pdf",
+            "size": 300,
+            "salt": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7",
+            "sha256": "8487500cd21babe7a5dbaa0546d41214bfb8134022a8c1518ce528a799e61c07"
+          }
+        ]
+      },
+      "content": {
+        "note": {
+          "value_hex": "44656c69766572656420746f207468652066726f6e7420646f6f722e"
+        }
+      },
+      "require_content": [],
+      "require_caller_metadata": false,
+      "expected": "VALID",
+      "expected_by_content": 1,
+      "expected_by_digest": 2
+    },
+    {
+      "name": "manifest_only",
+      "comment": "A manifest and no content: it recomputes the stage, every entry is digest-only.",
+      "stage_data_hash": "0ec34d65b447b5565f1de194a6ed767ae1a06537dd7240708987905e5f556a8d",
+      "manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "note",
+            "contentType": "text/plain",
+            "size": 28,
+            "salt": "",
+            "sha256": "a75b5012937ff4cfdac1fad784cd9151fca1d9b17ed207df836646765a876a5a"
+          },
+          {
+            "key": "photo",
+            "contentType": "image/jpeg",
+            "size": 64,
+            "salt": "83a2c1e0ff1e3d5c7b9ab9d8f7163554",
+            "sha256": "186f6b5a041ca2acd3cc3a454f4c8d4ca180229b7d5c11223d8d19dcd0d4a264"
+          },
+          {
+            "key": "receipt",
+            "contentType": "application/pdf",
+            "size": 300,
+            "salt": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7",
+            "sha256": "8487500cd21babe7a5dbaa0546d41214bfb8134022a8c1518ce528a799e61c07"
+          }
+        ]
+      },
+      "content": {},
+      "require_content": [],
+      "require_caller_metadata": false,
+      "expected": "VALID",
+      "expected_by_content": 0,
+      "expected_by_digest": 3
+    },
+    {
+      "name": "large_streamed_content",
+      "comment": "Content read from value_file and streamed.",
+      "stage_data_hash": "cb1cffe12925b0e98cffd03c7896835f641af5a1c5bc5bea128aa987c0a3c50a",
+      "manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "video",
+            "contentType": "video/mp4",
+            "size": 262144,
+            "salt": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7",
+            "sha256": "0a99604c8fc8627796b8871a3f8822bdae6c9077f5a95553387fa46680256234"
+          }
+        ]
+      },
+      "content": {
+        "video": {
+          "value_file": "large-256k.value"
+        }
+      },
+      "require_content": [],
+      "require_caller_metadata": false,
+      "expected": "VALID",
+      "expected_by_content": 1,
+      "expected_by_digest": 0
+    },
+    {
+      "name": "manifest_uppercase_hex",
+      "comment": "Hex in the manifest is case-insensitive.",
+      "stage_data_hash": "0ec34d65b447b5565f1de194a6ed767ae1a06537dd7240708987905e5f556a8d",
+      "manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "note",
+            "contentType": "text/plain",
+            "size": 28,
+            "salt": "",
+            "sha256": "a75b5012937ff4cfdac1fad784cd9151fca1d9b17ed207df836646765a876a5a"
+          },
+          {
+            "key": "photo",
+            "contentType": "image/jpeg",
+            "size": 64,
+            "salt": "83A2C1E0FF1E3D5C7B9AB9D8F7163554",
+            "sha256": "186F6B5A041CA2ACD3CC3A454F4C8D4CA180229B7D5C11223D8D19DCD0D4A264"
+          },
+          {
+            "key": "receipt",
+            "contentType": "application/pdf",
+            "size": 300,
+            "salt": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7",
+            "sha256": "8487500cd21babe7a5dbaa0546d41214bfb8134022a8c1518ce528a799e61c07"
+          }
+        ]
+      },
+      "content": {
+        "note": {
+          "value_hex": "44656c69766572656420746f207468652066726f6e7420646f6f722e"
+        },
+        "photo": {
+          "value_hex": "8faecdec0b2a496887a6c5e4032241607f9ebddcfb1a39587796b5d4f31231506f8eadcceb0a29486786a5c4e30221405f7e9dbcdbfa1938577695b4d3f21130"
+        },
+        "receipt": {
+          "value_hex": "1231506f8eadcceb0a29486786a5c4e30221405f7e9dbcdbfa1938577695b4d3f211304f6e8daccbea0928476685a4c3e201203f5e7d9cbbdaf91837567594b3d2f1102f4e6d8cabcae90827466584a3c2e1001f3e5d7c9bbad9f81736557493b2d1f00f2e4d6c8baac9e80726456483a2c1e0ff1e3d5c7b9ab9d8f71635547392b1d0ef0e2d4c6b8aa9c8e70625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7e60524436281a0bfdefd1c3b5a7998b7d6f51433527190afceed0c2b4a6988a7c6e504234261809fbeddfc1b3a597897b6d5f4133251708faecdec0b2a496887a6c5e4032241607f9ebddcfb1a39587796b5d4f3133251708faecdec0b2a496887a6c5e4032241607f9ebddcfb1a39587796b5d4f31231506f8eadcceb0a2948"
+        }
+      },
+      "require_content": [],
+      "require_caller_metadata": false,
+      "expected": "VALID",
+      "expected_by_content": 3,
+      "expected_by_digest": 0
+    },
+    {
+      "name": "relabelled_content_type",
+      "comment": "The note relabelled text/plain -> text/html: the preimage no longer recomputes the stage.",
+      "stage_data_hash": "0ec34d65b447b5565f1de194a6ed767ae1a06537dd7240708987905e5f556a8d",
+      "manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "note",
+            "contentType": "text/html",
+            "size": 28,
+            "salt": "",
+            "sha256": "a75b5012937ff4cfdac1fad784cd9151fca1d9b17ed207df836646765a876a5a"
+          },
+          {
+            "key": "photo",
+            "contentType": "image/jpeg",
+            "size": 64,
+            "salt": "83a2c1e0ff1e3d5c7b9ab9d8f7163554",
+            "sha256": "186f6b5a041ca2acd3cc3a454f4c8d4ca180229b7d5c11223d8d19dcd0d4a264"
+          },
+          {
+            "key": "receipt",
+            "contentType": "application/pdf",
+            "size": 300,
+            "salt": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7",
+            "sha256": "8487500cd21babe7a5dbaa0546d41214bfb8134022a8c1518ce528a799e61c07"
+          }
+        ]
+      },
+      "content": {
+        "note": {
+          "value_hex": "44656c69766572656420746f207468652066726f6e7420646f6f722e"
+        },
+        "photo": {
+          "value_hex": "8faecdec0b2a496887a6c5e4032241607f9ebddcfb1a39587796b5d4f31231506f8eadcceb0a29486786a5c4e30221405f7e9dbcdbfa1938577695b4d3f21130"
+        },
+        "receipt": {
+          "value_hex": "1231506f8eadcceb0a29486786a5c4e30221405f7e9dbcdbfa1938577695b4d3f211304f6e8daccbea0928476685a4c3e201203f5e7d9cbbdaf91837567594b3d2f1102f4e6d8cabcae90827466584a3c2e1001f3e5d7c9bbad9f81736557493b2d1f00f2e4d6c8baac9e80726456483a2c1e0ff1e3d5c7b9ab9d8f71635547392b1d0ef0e2d4c6b8aa9c8e70625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7e60524436281a0bfdefd1c3b5a7998b7d6f51433527190afceed0c2b4a6988a7c6e504234261809fbeddfc1b3a597897b6d5f4133251708faecdec0b2a496887a6c5e4032241607f9ebddcfb1a39587796b5d4f3133251708faecdec0b2a496887a6c5e4032241607f9ebddcfb1a39587796b5d4f31231506f8eadcceb0a2948"
+        }
+      },
+      "require_content": [],
+      "require_caller_metadata": false,
+      "expected": "CONTENT_MISMATCH"
+    },
+    {
+      "name": "salt_value_resplit_size_moved",
+      "comment": "16 salt bytes moved into the value, size updated to match: SHA256(salt||value) is unchanged, but the signed size is not, so the preimage differs.",
+      "stage_data_hash": "f3bc1c4d1f28a2e04d2a8c6423642d1052ab17be89f5addd50e0140852398f85",
+      "manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "note",
+            "contentType": "text/plain",
+            "size": 27,
+            "salt": "0625446382a1c0dffe1d3c5b7a99b8d7",
+            "sha256": "c1be319df36233d41ab3ce8157d2ba069af2d8283d0dcc0ab244b5f6abaa835d"
+          }
+        ]
+      },
+      "content": {
+        "note": {
+          "value_hex": "f61534537291b0cfee0d2c4b6a89a8c768656c6c6f20776f726c64"
+        }
+      },
+      "require_content": [],
+      "require_caller_metadata": false,
+      "expected": "CONTENT_MISMATCH"
+    },
+    {
+      "name": "salt_value_resplit_size_kept",
+      "comment": "16 salt bytes moved into the value with the signed size kept: the value is not size bytes long.",
+      "stage_data_hash": "f3bc1c4d1f28a2e04d2a8c6423642d1052ab17be89f5addd50e0140852398f85",
+      "manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "note",
+            "contentType": "text/plain",
+            "size": 11,
+            "salt": "0625446382a1c0dffe1d3c5b7a99b8d7",
+            "sha256": "c1be319df36233d41ab3ce8157d2ba069af2d8283d0dcc0ab244b5f6abaa835d"
+          }
+        ]
+      },
+      "content": {
+        "note": {
+          "value_hex": "f61534537291b0cfee0d2c4b6a89a8c768656c6c6f20776f726c64"
+        }
+      },
+      "require_content": [],
+      "require_caller_metadata": false,
+      "expected": "CONTENT_MISMATCH"
+    },
+    {
+      "name": "wrong_salt",
+      "comment": "The right value with a different 32-byte salt: SHA256(salt||value) differs from entry_digest.",
+      "stage_data_hash": "f3bc1c4d1f28a2e04d2a8c6423642d1052ab17be89f5addd50e0140852398f85",
+      "manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "note",
+            "contentType": "text/plain",
+            "size": 11,
+            "salt": "89a8c7e60524436281a0bfdefd1c3b5a7998b7d6f51433527190afceed0c2b4a",
+            "sha256": "c1be319df36233d41ab3ce8157d2ba069af2d8283d0dcc0ab244b5f6abaa835d"
+          }
+        ]
+      },
+      "content": {
+        "note": {
+          "value_hex": "68656c6c6f20776f726c64"
+        }
+      },
+      "require_content": [],
+      "require_caller_metadata": false,
+      "expected": "CONTENT_MISMATCH"
+    },
+    {
+      "name": "wrong_content",
+      "comment": "Altered content for one entry.",
+      "stage_data_hash": "0ec34d65b447b5565f1de194a6ed767ae1a06537dd7240708987905e5f556a8d",
+      "manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "note",
+            "contentType": "text/plain",
+            "size": 28,
+            "salt": "",
+            "sha256": "a75b5012937ff4cfdac1fad784cd9151fca1d9b17ed207df836646765a876a5a"
+          },
+          {
+            "key": "photo",
+            "contentType": "image/jpeg",
+            "size": 64,
+            "salt": "83a2c1e0ff1e3d5c7b9ab9d8f7163554",
+            "sha256": "186f6b5a041ca2acd3cc3a454f4c8d4ca180229b7d5c11223d8d19dcd0d4a264"
+          },
+          {
+            "key": "receipt",
+            "contentType": "application/pdf",
+            "size": 300,
+            "salt": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7",
+            "sha256": "8487500cd21babe7a5dbaa0546d41214bfb8134022a8c1518ce528a799e61c07"
+          }
+        ]
+      },
+      "content": {
+        "note": {
+          "value_hex": "44656c69766572656420746f20746865206261636b20646f6f722e"
+        },
+        "photo": {
+          "value_hex": "8faecdec0b2a496887a6c5e4032241607f9ebddcfb1a39587796b5d4f31231506f8eadcceb0a29486786a5c4e30221405f7e9dbcdbfa1938577695b4d3f21130"
+        },
+        "receipt": {
+          "value_hex": "1231506f8eadcceb0a29486786a5c4e30221405f7e9dbcdbfa1938577695b4d3f211304f6e8daccbea0928476685a4c3e201203f5e7d9cbbdaf91837567594b3d2f1102f4e6d8cabcae90827466584a3c2e1001f3e5d7c9bbad9f81736557493b2d1f00f2e4d6c8baac9e80726456483a2c1e0ff1e3d5c7b9ab9d8f71635547392b1d0ef0e2d4c6b8aa9c8e70625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7e60524436281a0bfdefd1c3b5a7998b7d6f51433527190afceed0c2b4a6988a7c6e504234261809fbeddfc1b3a597897b6d5f4133251708faecdec0b2a496887a6c5e4032241607f9ebddcfb1a39587796b5d4f3133251708faecdec0b2a496887a6c5e4032241607f9ebddcfb1a39587796b5d4f31231506f8eadcceb0a2948"
+        }
+      },
+      "require_content": [],
+      "require_caller_metadata": false,
+      "expected": "CONTENT_MISMATCH"
+    },
+    {
+      "name": "size_changed_digest_only",
+      "comment": "The manifest's size changed, no content: the preimage no longer recomputes the stage.",
+      "stage_data_hash": "0ec34d65b447b5565f1de194a6ed767ae1a06537dd7240708987905e5f556a8d",
+      "manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "note",
+            "contentType": "text/plain",
+            "size": 28,
+            "salt": "",
+            "sha256": "a75b5012937ff4cfdac1fad784cd9151fca1d9b17ed207df836646765a876a5a"
+          },
+          {
+            "key": "photo",
+            "contentType": "image/jpeg",
+            "size": 64,
+            "salt": "83a2c1e0ff1e3d5c7b9ab9d8f7163554",
+            "sha256": "186f6b5a041ca2acd3cc3a454f4c8d4ca180229b7d5c11223d8d19dcd0d4a264"
+          },
+          {
+            "key": "receipt",
+            "contentType": "application/pdf",
+            "size": 301,
+            "salt": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7",
+            "sha256": "8487500cd21babe7a5dbaa0546d41214bfb8134022a8c1518ce528a799e61c07"
+          }
+        ]
+      },
+      "content": {},
+      "require_content": [],
+      "require_caller_metadata": false,
+      "expected": "CONTENT_MISMATCH"
+    },
+    {
+      "name": "entries_reordered",
+      "comment": "The manifest lists the entries in a different order.",
+      "stage_data_hash": "0ec34d65b447b5565f1de194a6ed767ae1a06537dd7240708987905e5f556a8d",
+      "manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "photo",
+            "contentType": "image/jpeg",
+            "size": 64,
+            "salt": "83a2c1e0ff1e3d5c7b9ab9d8f7163554",
+            "sha256": "186f6b5a041ca2acd3cc3a454f4c8d4ca180229b7d5c11223d8d19dcd0d4a264"
+          },
+          {
+            "key": "note",
+            "contentType": "text/plain",
+            "size": 28,
+            "salt": "",
+            "sha256": "a75b5012937ff4cfdac1fad784cd9151fca1d9b17ed207df836646765a876a5a"
+          },
+          {
+            "key": "receipt",
+            "contentType": "application/pdf",
+            "size": 300,
+            "salt": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7",
+            "sha256": "8487500cd21babe7a5dbaa0546d41214bfb8134022a8c1518ce528a799e61c07"
+          }
+        ]
+      },
+      "content": {},
+      "require_content": [],
+      "require_caller_metadata": false,
+      "expected": "CONTENT_MISMATCH"
+    },
+    {
+      "name": "entry_dropped",
+      "comment": "The manifest leaves an entry out.",
+      "stage_data_hash": "0ec34d65b447b5565f1de194a6ed767ae1a06537dd7240708987905e5f556a8d",
+      "manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "note",
+            "contentType": "text/plain",
+            "size": 28,
+            "salt": "",
+            "sha256": "a75b5012937ff4cfdac1fad784cd9151fca1d9b17ed207df836646765a876a5a"
+          },
+          {
+            "key": "photo",
+            "contentType": "image/jpeg",
+            "size": 64,
+            "salt": "83a2c1e0ff1e3d5c7b9ab9d8f7163554",
+            "sha256": "186f6b5a041ca2acd3cc3a454f4c8d4ca180229b7d5c11223d8d19dcd0d4a264"
+          }
+        ]
+      },
+      "content": {},
+      "require_content": [],
+      "require_caller_metadata": false,
+      "expected": "CONTENT_MISMATCH"
+    },
+    {
+      "name": "required_key_not_committed",
+      "comment": "Content is required for a key the proof does not commit.",
+      "stage_data_hash": "0ec34d65b447b5565f1de194a6ed767ae1a06537dd7240708987905e5f556a8d",
+      "manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "note",
+            "contentType": "text/plain",
+            "size": 28,
+            "salt": "",
+            "sha256": "a75b5012937ff4cfdac1fad784cd9151fca1d9b17ed207df836646765a876a5a"
+          },
+          {
+            "key": "photo",
+            "contentType": "image/jpeg",
+            "size": 64,
+            "salt": "83a2c1e0ff1e3d5c7b9ab9d8f7163554",
+            "sha256": "186f6b5a041ca2acd3cc3a454f4c8d4ca180229b7d5c11223d8d19dcd0d4a264"
+          },
+          {
+            "key": "receipt",
+            "contentType": "application/pdf",
+            "size": 300,
+            "salt": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7",
+            "sha256": "8487500cd21babe7a5dbaa0546d41214bfb8134022a8c1518ce528a799e61c07"
+          }
+        ]
+      },
+      "content": {
+        "note": {
+          "value_hex": "44656c69766572656420746f207468652066726f6e7420646f6f722e"
+        },
+        "photo": {
+          "value_hex": "8faecdec0b2a496887a6c5e4032241607f9ebddcfb1a39587796b5d4f31231506f8eadcceb0a29486786a5c4e30221405f7e9dbcdbfa1938577695b4d3f21130"
+        },
+        "receipt": {
+          "value_hex": "1231506f8eadcceb0a29486786a5c4e30221405f7e9dbcdbfa1938577695b4d3f211304f6e8daccbea0928476685a4c3e201203f5e7d9cbbdaf91837567594b3d2f1102f4e6d8cabcae90827466584a3c2e1001f3e5d7c9bbad9f81736557493b2d1f00f2e4d6c8baac9e80726456483a2c1e0ff1e3d5c7b9ab9d8f71635547392b1d0ef0e2d4c6b8aa9c8e70625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7e60524436281a0bfdefd1c3b5a7998b7d6f51433527190afceed0c2b4a6988a7c6e504234261809fbeddfc1b3a597897b6d5f4133251708faecdec0b2a496887a6c5e4032241607f9ebddcfb1a39587796b5d4f3133251708faecdec0b2a496887a6c5e4032241607f9ebddcfb1a39587796b5d4f31231506f8eadcceb0a2948"
+        }
+      },
+      "require_content": [
+        "video"
+      ],
+      "require_caller_metadata": false,
+      "expected": "CONTENT_MISMATCH"
+    },
+    {
+      "name": "manifest_without_stage",
+      "comment": "A manifest presented for a proof with no callerMetadata stage: it commits no content.",
+      "stage_data_hash": null,
+      "manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "note",
+            "contentType": "text/plain",
+            "size": 28,
+            "salt": "",
+            "sha256": "a75b5012937ff4cfdac1fad784cd9151fca1d9b17ed207df836646765a876a5a"
+          },
+          {
+            "key": "photo",
+            "contentType": "image/jpeg",
+            "size": 64,
+            "salt": "83a2c1e0ff1e3d5c7b9ab9d8f7163554",
+            "sha256": "186f6b5a041ca2acd3cc3a454f4c8d4ca180229b7d5c11223d8d19dcd0d4a264"
+          },
+          {
+            "key": "receipt",
+            "contentType": "application/pdf",
+            "size": 300,
+            "salt": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7",
+            "sha256": "8487500cd21babe7a5dbaa0546d41214bfb8134022a8c1518ce528a799e61c07"
+          }
+        ]
+      },
+      "content": {
+        "note": {
+          "value_hex": "44656c69766572656420746f207468652066726f6e7420646f6f722e"
+        },
+        "photo": {
+          "value_hex": "8faecdec0b2a496887a6c5e4032241607f9ebddcfb1a39587796b5d4f31231506f8eadcceb0a29486786a5c4e30221405f7e9dbcdbfa1938577695b4d3f21130"
+        },
+        "receipt": {
+          "value_hex": "1231506f8eadcceb0a29486786a5c4e30221405f7e9dbcdbfa1938577695b4d3f211304f6e8daccbea0928476685a4c3e201203f5e7d9cbbdaf91837567594b3d2f1102f4e6d8cabcae90827466584a3c2e1001f3e5d7c9bbad9f81736557493b2d1f00f2e4d6c8baac9e80726456483a2c1e0ff1e3d5c7b9ab9d8f71635547392b1d0ef0e2d4c6b8aa9c8e70625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7e60524436281a0bfdefd1c3b5a7998b7d6f51433527190afceed0c2b4a6988a7c6e504234261809fbeddfc1b3a597897b6d5f4133251708faecdec0b2a496887a6c5e4032241607f9ebddcfb1a39587796b5d4f3133251708faecdec0b2a496887a6c5e4032241607f9ebddcfb1a39587796b5d4f31231506f8eadcceb0a2948"
+        }
+      },
+      "require_content": [],
+      "require_caller_metadata": false,
+      "expected": "CONTENT_MISMATCH"
+    },
+    {
+      "name": "require_all_one_missing",
+      "comment": "--require-content-all, content for two of three entries.",
+      "stage_data_hash": "0ec34d65b447b5565f1de194a6ed767ae1a06537dd7240708987905e5f556a8d",
+      "manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "note",
+            "contentType": "text/plain",
+            "size": 28,
+            "salt": "",
+            "sha256": "a75b5012937ff4cfdac1fad784cd9151fca1d9b17ed207df836646765a876a5a"
+          },
+          {
+            "key": "photo",
+            "contentType": "image/jpeg",
+            "size": 64,
+            "salt": "83a2c1e0ff1e3d5c7b9ab9d8f7163554",
+            "sha256": "186f6b5a041ca2acd3cc3a454f4c8d4ca180229b7d5c11223d8d19dcd0d4a264"
+          },
+          {
+            "key": "receipt",
+            "contentType": "application/pdf",
+            "size": 300,
+            "salt": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7",
+            "sha256": "8487500cd21babe7a5dbaa0546d41214bfb8134022a8c1518ce528a799e61c07"
+          }
+        ]
+      },
+      "content": {
+        "note": {
+          "value_hex": "44656c69766572656420746f207468652066726f6e7420646f6f722e"
+        },
+        "photo": {
+          "value_hex": "8faecdec0b2a496887a6c5e4032241607f9ebddcfb1a39587796b5d4f31231506f8eadcceb0a29486786a5c4e30221405f7e9dbcdbfa1938577695b4d3f21130"
+        }
+      },
+      "require_content": "all",
+      "require_caller_metadata": false,
+      "expected": "CONTENT_UNRESOLVED"
+    },
+    {
+      "name": "require_key_present",
+      "comment": "--require-content note, note presented.",
+      "stage_data_hash": "0ec34d65b447b5565f1de194a6ed767ae1a06537dd7240708987905e5f556a8d",
+      "manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "note",
+            "contentType": "text/plain",
+            "size": 28,
+            "salt": "",
+            "sha256": "a75b5012937ff4cfdac1fad784cd9151fca1d9b17ed207df836646765a876a5a"
+          },
+          {
+            "key": "photo",
+            "contentType": "image/jpeg",
+            "size": 64,
+            "salt": "83a2c1e0ff1e3d5c7b9ab9d8f7163554",
+            "sha256": "186f6b5a041ca2acd3cc3a454f4c8d4ca180229b7d5c11223d8d19dcd0d4a264"
+          },
+          {
+            "key": "receipt",
+            "contentType": "application/pdf",
+            "size": 300,
+            "salt": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7",
+            "sha256": "8487500cd21babe7a5dbaa0546d41214bfb8134022a8c1518ce528a799e61c07"
+          }
+        ]
+      },
+      "content": {
+        "note": {
+          "value_hex": "44656c69766572656420746f207468652066726f6e7420646f6f722e"
+        }
+      },
+      "require_content": [
+        "note"
+      ],
+      "require_caller_metadata": false,
+      "expected": "VALID",
+      "expected_by_content": 1,
+      "expected_by_digest": 2
+    },
+    {
+      "name": "require_key_missing",
+      "comment": "--require-content photo, photo not presented.",
+      "stage_data_hash": "0ec34d65b447b5565f1de194a6ed767ae1a06537dd7240708987905e5f556a8d",
+      "manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "note",
+            "contentType": "text/plain",
+            "size": 28,
+            "salt": "",
+            "sha256": "a75b5012937ff4cfdac1fad784cd9151fca1d9b17ed207df836646765a876a5a"
+          },
+          {
+            "key": "photo",
+            "contentType": "image/jpeg",
+            "size": 64,
+            "salt": "83a2c1e0ff1e3d5c7b9ab9d8f7163554",
+            "sha256": "186f6b5a041ca2acd3cc3a454f4c8d4ca180229b7d5c11223d8d19dcd0d4a264"
+          },
+          {
+            "key": "receipt",
+            "contentType": "application/pdf",
+            "size": 300,
+            "salt": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7",
+            "sha256": "8487500cd21babe7a5dbaa0546d41214bfb8134022a8c1518ce528a799e61c07"
+          }
+        ]
+      },
+      "content": {
+        "note": {
+          "value_hex": "44656c69766572656420746f207468652066726f6e7420646f6f722e"
+        }
+      },
+      "require_content": [
+        "photo"
+      ],
+      "require_caller_metadata": false,
+      "expected": "CONTENT_UNRESOLVED"
+    },
+    {
+      "name": "content_unreadable",
+      "comment": "Content referenced for photo but it can't be read (a missing file, a failed fetch).",
+      "stage_data_hash": "0ec34d65b447b5565f1de194a6ed767ae1a06537dd7240708987905e5f556a8d",
+      "manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "note",
+            "contentType": "text/plain",
+            "size": 28,
+            "salt": "",
+            "sha256": "a75b5012937ff4cfdac1fad784cd9151fca1d9b17ed207df836646765a876a5a"
+          },
+          {
+            "key": "photo",
+            "contentType": "image/jpeg",
+            "size": 64,
+            "salt": "83a2c1e0ff1e3d5c7b9ab9d8f7163554",
+            "sha256": "186f6b5a041ca2acd3cc3a454f4c8d4ca180229b7d5c11223d8d19dcd0d4a264"
+          },
+          {
+            "key": "receipt",
+            "contentType": "application/pdf",
+            "size": 300,
+            "salt": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7",
+            "sha256": "8487500cd21babe7a5dbaa0546d41214bfb8134022a8c1518ce528a799e61c07"
+          }
+        ]
+      },
+      "content": {
+        "note": {
+          "value_hex": "44656c69766572656420746f207468652066726f6e7420646f6f722e"
+        }
+      },
+      "content_unreadable": [
+        "photo"
+      ],
+      "require_content": [],
+      "require_caller_metadata": false,
+      "expected": "CONTENT_UNRESOLVED"
+    },
+    {
+      "name": "mismatch_beats_unresolved",
+      "comment": "One wrong value and one unreadable: worst state wins, so FAIL.",
+      "stage_data_hash": "0ec34d65b447b5565f1de194a6ed767ae1a06537dd7240708987905e5f556a8d",
+      "manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "note",
+            "contentType": "text/plain",
+            "size": 28,
+            "salt": "",
+            "sha256": "a75b5012937ff4cfdac1fad784cd9151fca1d9b17ed207df836646765a876a5a"
+          },
+          {
+            "key": "photo",
+            "contentType": "image/jpeg",
+            "size": 64,
+            "salt": "83a2c1e0ff1e3d5c7b9ab9d8f7163554",
+            "sha256": "186f6b5a041ca2acd3cc3a454f4c8d4ca180229b7d5c11223d8d19dcd0d4a264"
+          },
+          {
+            "key": "receipt",
+            "contentType": "application/pdf",
+            "size": 300,
+            "salt": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7",
+            "sha256": "8487500cd21babe7a5dbaa0546d41214bfb8134022a8c1518ce528a799e61c07"
+          }
+        ]
+      },
+      "content": {
+        "note": {
+          "value_hex": "78"
+        }
+      },
+      "content_unreadable": [
+        "photo"
+      ],
+      "require_content": [],
+      "require_caller_metadata": false,
+      "expected": "CONTENT_MISMATCH"
+    },
+    {
+      "name": "required_content_no_manifest",
+      "comment": "Content is required but no manifest was presented.",
+      "stage_data_hash": "0ec34d65b447b5565f1de194a6ed767ae1a06537dd7240708987905e5f556a8d",
+      "manifest": null,
+      "content": {},
+      "require_content": "all",
+      "require_caller_metadata": false,
+      "expected": "CONTENT_UNRESOLVED"
+    },
+    {
+      "name": "no_manifest_no_content",
+      "comment": "The proof commits content, nothing was presented: not checked.",
+      "stage_data_hash": "0ec34d65b447b5565f1de194a6ed767ae1a06537dd7240708987905e5f556a8d",
+      "manifest": null,
+      "content": {},
+      "require_content": [],
+      "require_caller_metadata": false,
+      "expected": "NOT_CHECKED"
+    },
+    {
+      "name": "stage_absent",
+      "comment": "No callerMetadata stage (never emitted, or removed together with a re-signed chain): asserts nothing.",
+      "stage_data_hash": null,
+      "manifest": null,
+      "content": {},
+      "require_content": [],
+      "require_caller_metadata": false,
+      "expected": "NOT_CHECKED"
+    },
+    {
+      "name": "stage_absent_required",
+      "comment": "No callerMetadata stage and require_caller_metadata: FAIL.",
+      "stage_data_hash": null,
+      "manifest": null,
+      "content": {},
+      "require_content": [],
+      "require_caller_metadata": true,
+      "expected": "FAIL"
+    },
+    {
+      "name": "stage_present_required",
+      "comment": "require_caller_metadata with the stage present and nothing presented: not checked, not a FAIL.",
+      "stage_data_hash": "0ec34d65b447b5565f1de194a6ed767ae1a06537dd7240708987905e5f556a8d",
+      "manifest": null,
+      "content": {},
+      "require_content": [],
+      "require_caller_metadata": true,
+      "expected": "NOT_CHECKED"
+    },
+    {
+      "name": "manifest_version_2",
+      "comment": "Only manifest v 1 is defined.",
+      "stage_data_hash": "0ec34d65b447b5565f1de194a6ed767ae1a06537dd7240708987905e5f556a8d",
+      "manifest": {
+        "v": 2,
+        "entries": [
+          {
+            "key": "note",
+            "contentType": "text/plain",
+            "size": 28,
+            "salt": "",
+            "sha256": "a75b5012937ff4cfdac1fad784cd9151fca1d9b17ed207df836646765a876a5a"
+          },
+          {
+            "key": "photo",
+            "contentType": "image/jpeg",
+            "size": 64,
+            "salt": "83a2c1e0ff1e3d5c7b9ab9d8f7163554",
+            "sha256": "186f6b5a041ca2acd3cc3a454f4c8d4ca180229b7d5c11223d8d19dcd0d4a264"
+          },
+          {
+            "key": "receipt",
+            "contentType": "application/pdf",
+            "size": 300,
+            "salt": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7",
+            "sha256": "8487500cd21babe7a5dbaa0546d41214bfb8134022a8c1518ce528a799e61c07"
+          }
+        ]
+      },
+      "content": {},
+      "require_content": [],
+      "require_caller_metadata": false,
+      "expected": "MANIFEST_INVALID"
+    },
+    {
+      "name": "manifest_short_digest",
+      "comment": "entry sha256 is not 32 bytes.",
+      "stage_data_hash": "0ec34d65b447b5565f1de194a6ed767ae1a06537dd7240708987905e5f556a8d",
+      "manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "note",
+            "contentType": "text/plain",
+            "size": 28,
+            "salt": "",
+            "sha256": "a75b5012937ff4cfdac1fad784cd9151fca1d9b17ed207df836646765a876a"
+          },
+          {
+            "key": "photo",
+            "contentType": "image/jpeg",
+            "size": 64,
+            "salt": "83a2c1e0ff1e3d5c7b9ab9d8f7163554",
+            "sha256": "186f6b5a041ca2acd3cc3a454f4c8d4ca180229b7d5c11223d8d19dcd0d4a264"
+          },
+          {
+            "key": "receipt",
+            "contentType": "application/pdf",
+            "size": 300,
+            "salt": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7",
+            "sha256": "8487500cd21babe7a5dbaa0546d41214bfb8134022a8c1518ce528a799e61c07"
+          }
+        ]
+      },
+      "content": {},
+      "require_content": [],
+      "require_caller_metadata": false,
+      "expected": "MANIFEST_INVALID"
+    },
+    {
+      "name": "manifest_unknown_field",
+      "comment": "An entry field the format does not define (here an inline value).",
+      "stage_data_hash": "0ec34d65b447b5565f1de194a6ed767ae1a06537dd7240708987905e5f556a8d",
+      "manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "note",
+            "contentType": "text/plain",
+            "size": 28,
+            "salt": "",
+            "sha256": "a75b5012937ff4cfdac1fad784cd9151fca1d9b17ed207df836646765a876a5a",
+            "value": "hello"
+          },
+          {
+            "key": "photo",
+            "contentType": "image/jpeg",
+            "size": 64,
+            "salt": "83a2c1e0ff1e3d5c7b9ab9d8f7163554",
+            "sha256": "186f6b5a041ca2acd3cc3a454f4c8d4ca180229b7d5c11223d8d19dcd0d4a264"
+          },
+          {
+            "key": "receipt",
+            "contentType": "application/pdf",
+            "size": 300,
+            "salt": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7",
+            "sha256": "8487500cd21babe7a5dbaa0546d41214bfb8134022a8c1518ce528a799e61c07"
+          }
+        ]
+      },
+      "content": {},
+      "require_content": [],
+      "require_caller_metadata": false,
+      "expected": "MANIFEST_INVALID"
+    },
+    {
+      "name": "manifest_missing_salt",
+      "comment": "salt is required; an unsalted entry carries an empty string.",
+      "stage_data_hash": "0ec34d65b447b5565f1de194a6ed767ae1a06537dd7240708987905e5f556a8d",
+      "manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "note",
+            "contentType": "text/plain",
+            "size": 28,
+            "sha256": "a75b5012937ff4cfdac1fad784cd9151fca1d9b17ed207df836646765a876a5a"
+          },
+          {
+            "key": "photo",
+            "contentType": "image/jpeg",
+            "size": 64,
+            "salt": "83a2c1e0ff1e3d5c7b9ab9d8f7163554",
+            "sha256": "186f6b5a041ca2acd3cc3a454f4c8d4ca180229b7d5c11223d8d19dcd0d4a264"
+          },
+          {
+            "key": "receipt",
+            "contentType": "application/pdf",
+            "size": 300,
+            "salt": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7",
+            "sha256": "8487500cd21babe7a5dbaa0546d41214bfb8134022a8c1518ce528a799e61c07"
+          }
+        ]
+      },
+      "content": {},
+      "require_content": [],
+      "require_caller_metadata": false,
+      "expected": "MANIFEST_INVALID"
+    },
+    {
+      "name": "manifest_duplicate_key",
+      "comment": "Two entries with the same key.",
+      "stage_data_hash": "0ec34d65b447b5565f1de194a6ed767ae1a06537dd7240708987905e5f556a8d",
+      "manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "note",
+            "contentType": "text/plain",
+            "size": 28,
+            "salt": "",
+            "sha256": "a75b5012937ff4cfdac1fad784cd9151fca1d9b17ed207df836646765a876a5a"
+          },
+          {
+            "key": "note",
+            "contentType": "image/jpeg",
+            "size": 64,
+            "salt": "83a2c1e0ff1e3d5c7b9ab9d8f7163554",
+            "sha256": "186f6b5a041ca2acd3cc3a454f4c8d4ca180229b7d5c11223d8d19dcd0d4a264"
+          },
+          {
+            "key": "receipt",
+            "contentType": "application/pdf",
+            "size": 300,
+            "salt": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7",
+            "sha256": "8487500cd21babe7a5dbaa0546d41214bfb8134022a8c1518ce528a799e61c07"
+          }
+        ]
+      },
+      "content": {},
+      "require_content": [],
+      "require_caller_metadata": false,
+      "expected": "MANIFEST_INVALID"
+    },
+    {
+      "name": "manifest_salt_8_bytes",
+      "comment": "An 8-byte salt.",
+      "stage_data_hash": "0ec34d65b447b5565f1de194a6ed767ae1a06537dd7240708987905e5f556a8d",
+      "manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "note",
+            "contentType": "text/plain",
+            "size": 28,
+            "salt": "",
+            "sha256": "a75b5012937ff4cfdac1fad784cd9151fca1d9b17ed207df836646765a876a5a"
+          },
+          {
+            "key": "photo",
+            "contentType": "image/jpeg",
+            "size": 64,
+            "salt": "0c2b4a6988a7c6e5",
+            "sha256": "186f6b5a041ca2acd3cc3a454f4c8d4ca180229b7d5c11223d8d19dcd0d4a264"
+          },
+          {
+            "key": "receipt",
+            "contentType": "application/pdf",
+            "size": 300,
+            "salt": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7",
+            "sha256": "8487500cd21babe7a5dbaa0546d41214bfb8134022a8c1518ce528a799e61c07"
+          }
+        ]
+      },
+      "content": {},
+      "require_content": [],
+      "require_caller_metadata": false,
+      "expected": "MANIFEST_INVALID"
+    },
+    {
+      "name": "content_for_unknown_key",
+      "comment": "Content supplied for a key the manifest does not list.",
+      "stage_data_hash": "0ec34d65b447b5565f1de194a6ed767ae1a06537dd7240708987905e5f556a8d",
+      "manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "note",
+            "contentType": "text/plain",
+            "size": 28,
+            "salt": "",
+            "sha256": "a75b5012937ff4cfdac1fad784cd9151fca1d9b17ed207df836646765a876a5a"
+          },
+          {
+            "key": "photo",
+            "contentType": "image/jpeg",
+            "size": 64,
+            "salt": "83a2c1e0ff1e3d5c7b9ab9d8f7163554",
+            "sha256": "186f6b5a041ca2acd3cc3a454f4c8d4ca180229b7d5c11223d8d19dcd0d4a264"
+          },
+          {
+            "key": "receipt",
+            "contentType": "application/pdf",
+            "size": 300,
+            "salt": "0625446382a1c0dffe1d3c5b7a99b8d7f61534537291b0cfee0d2c4b6a89a8c7",
+            "sha256": "8487500cd21babe7a5dbaa0546d41214bfb8134022a8c1518ce528a799e61c07"
+          }
+        ]
+      },
+      "content": {
+        "video": {
+          "value_hex": "00"
+        }
+      },
+      "require_content": [],
+      "require_caller_metadata": false,
+      "expected": "MANIFEST_INVALID"
+    }
+  ]
+}

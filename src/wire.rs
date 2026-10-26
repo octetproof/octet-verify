@@ -20,7 +20,7 @@
 /// occurrence of any of these on the wire is a smuggling attempt. (Field 10,
 /// `stage_attestations`, is `repeated` and intentionally absent; reserved 9/14/15
 /// are absent — an unknown/reserved number is not flagged here.)
-const SINGULAR_FIELDS: &[u32] = &[1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 16];
+const SINGULAR_FIELDS: &[u32] = &[1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 16, 17, 18, 19];
 
 /// Human name for a singular `LocationProof` field, for a clear rejection.
 pub fn field_name(n: u32) -> &'static str {
@@ -37,6 +37,11 @@ pub fn field_name(n: u32) -> &'static str {
         12 => "sdk_version",
         13 => "platform",
         16 => "previous_token_hash",
+        17 => "location_verdict",
+        18 => "query_region",
+        // A message: a second copy is merged, not replaced, so its repeated
+        // entries would be concatenated with the first copy's.
+        19 => "caller_manifest",
         _ => "?",
     }
 }
@@ -171,6 +176,21 @@ mod tests {
             0x38, 0x02, // field 7 again
         ];
         assert_eq!(duplicate_singular_fields(&bytes), vec![7, 13]);
+    }
+
+    /// The signed inside/outside verdict (17, enum) and the bound query region
+    /// (18, message) are singular: a second copy would let one parser read a
+    /// different verdict or region than the one prost keeps.
+    #[test]
+    fn flags_duplicate_location_verdict_and_query_region() {
+        let bytes = vec![
+            0x88, 0x01, 0x01, // field 17 = 1
+            0x92, 0x01, 0x00, // field 18 = {}
+            0x88, 0x01, 0x02, // field 17 = 2
+            0x92, 0x01, 0x00, // field 18 = {} again
+        ];
+        assert_eq!(duplicate_singular_fields(&bytes), vec![17, 18]);
+        assert_eq!((field_name(17), field_name(18)), ("location_verdict", "query_region"));
     }
 
     /// A truncated length-delimited payload stops the scan without panicking.

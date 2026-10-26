@@ -96,7 +96,29 @@ OPTIONS:
                                commitment — no --session-nonce given, or no
                                sessionBinding stage. Off by default. Use it when
                                verifying a stored/relayed proof you require bound.
-    --require-schema-v2        Require schema-v2 binding material: a proof with no
+    --caller-manifest <file>   The presenter's caller-metadata manifest (JSON,
+                               {"v":1,"entries":[...]}): every entry the proof's
+                               callerMetadata stage commits, in order, with each
+                               entry's salt from the app that made the proof (the
+                               SDK salts by default and never puts the salt in
+                               the proof). Checked against the stage; requires
+                               the `caller-metadata` feature. Entries without
+                               --content are accepted on their digest alone.
+                               When the proof lists its own manifest (field 19),
+                               the two must agree entry by entry, or the result
+                               is MANIFEST_MISMATCH. A proof with field 19 always
+                               gets a caller-manifest line, with or without this
+                               flag.
+    --content <key>=<file>     Content for one manifest entry, streamed and
+                               checked against its digest and size. Repeatable.
+                               Requires --caller-manifest. A file that can't be
+                               read leaves the entry unresolved (INCONCLUSIVE).
+    --require-content <key>    Require content (not just a digest) for this entry;
+                               without it the result is INCONCLUSIVE. Repeatable.
+    --require-content-all      Require content for every entry.
+    --require-caller-metadata  FAIL (not NOT-CHECKED) if the proof carries no
+                               callerMetadata stage.
+    --require-schema-v2       Require schema-v2 binding material: a proof with no
                                semanticFields stage (and, in --envelope mode, an
                                envelope with no replay-control) FAILs instead of
                                reporting NOT-CHECKED. Off by default (back-compat:
@@ -233,7 +255,8 @@ EXIT CODES:
     1    invalid — a check actively failed
     2    usage, IO, decode, or backend error
     3    inconclusive — structurally valid but signatures not verified
-         (e.g. no hardware key); never collapses into 0
+         (e.g. no hardware key), or caller content unresolved; never
+         collapses into 0
     For automation, exit 0 is a safe authenticity gate. For range/watch the code
     reflects the worst proof seen (any 1 → 1, else any 3 → 3, else 0).
 

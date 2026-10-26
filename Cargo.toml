@@ -1,6 +1,6 @@
 [package]
 name = "octet-verify"
-version = "1.7.0"
+version = "1.8.0"
 edition = "2021"
 description = "Standalone, independent verifier for Octet LocationProof artifacts. Checks authenticity and integrity (signatures, hash-chain, freshness, region claim) without any device-side secret or proof-creation logic."
 repository = "https://github.com/octetproof/octet-verify"
@@ -55,6 +55,11 @@ playintegrity = ["net", "dep:octet-attest-verify", "octet-attest-verify/playinte
 # session chain against published keys. Needs JSON + base64url; fetching a JWKS
 # from a URL additionally needs `net` (a JWKS file works offline).
 browser = ["dep:serde_json", "dep:base64"]
+# Caller-metadata presenter manifest (`--caller-manifest`, `--content`): parses
+# the portable JSON manifest so content an integrator bound into a proof can be
+# checked against its `callerMetadata` stage. The check itself, the preimage and
+# the streaming digest are in every build; only the JSON parsing needs this.
+caller-metadata = ["dep:serde_json"]
 # H3 point-in-region containment for `--expect-region-contains` against an
 # `h3_polygon_set` proof, via the pure-Rust `h3o` crate. Off by default (h3o is
 # far heavier than the lean core); without it an h3 containment assertion FAILs

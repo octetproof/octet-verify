@@ -1,0 +1,768 @@
+{
+  "spec": "caller-metadata binding spec, phase B (LocationProof field 19)",
+  "proto": "message CallerManifest { repeated CallerManifestEntry entries = 1; } message CallerManifestEntry { string key = 1; string content_type = 2; uint64 size = 3; bytes sha256 = 4; string locator = 5; }",
+  "note": "caller_manifest_hex is the encoded CallerManifest (proto3: empty/zero fields omitted). stage_data_hash is the callerMetadata stage's data_hash, or null for a proof without the stage. presenter_manifest, when present, is handed over alongside the proof. expected is the caller-manifest result; locator_warning says whether a caller-manifest-locator WARN accompanies it. source gives each committed item's value and salt, so every sha256 can be recomputed as SHA256(salt || value).",
+  "vectors": [
+    {
+      "name": "single_unsalted",
+      "comment": "One unsalted entry.",
+      "source": [
+        {
+          "key": "photo",
+          "value_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "salt_hex": ""
+        }
+      ],
+      "field19": [
+        {
+          "key": "photo",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        }
+      ],
+      "caller_manifest_hex": "0a370a0570686f746f120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+      "stage_data_hash": "f42f58f667589d355692e6996a9c37e422735873a6720e68e36cbba33783edaf",
+      "presenter_manifest": null,
+      "expected": "PASS",
+      "locator_warning": false
+    },
+    {
+      "name": "multi_with_salted_entry",
+      "comment": "Three entries; note and doc are salted. The salts are not in field 19 and not in the preimage, so field 19 alone recomputes the stage.",
+      "source": [
+        {
+          "key": "note",
+          "value_hex": "6d65657420617420746865206e6f72746820676174652c2030393a3030",
+          "salt_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+        },
+        {
+          "key": "photo",
+          "value_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "salt_hex": ""
+        },
+        {
+          "key": "doc",
+          "value_hex": "255044462d312e37207465737420646f63756d656e74",
+          "salt_hex": "101112131415161718191a1b1c1d1e1f"
+        }
+      ],
+      "field19": [
+        {
+          "key": "note",
+          "contentType": "text/plain",
+          "size": 29,
+          "sha256": "612eb796805dfbb2b73b9b7262f085dd98617cc0b5d799694b8920faa6b52d02",
+          "locator": ""
+        },
+        {
+          "key": "photo",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        },
+        {
+          "key": "doc",
+          "contentType": "application/pdf",
+          "size": 22,
+          "sha256": "1e77292cd394edc25837e833722923987fb814a75045bc1b0004e2998ff01c02",
+          "locator": ""
+        }
+      ],
+      "caller_manifest_hex": "0a360a046e6f7465120a746578742f706c61696e181d2220612eb796805dfbb2b73b9b7262f085dd98617cc0b5d799694b8920faa6b52d020a370a0570686f746f120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d91511080a3a0a03646f63120f6170706c69636174696f6e2f706466181622201e77292cd394edc25837e833722923987fb814a75045bc1b0004e2998ff01c02",
+      "stage_data_hash": "232074f71a194880f344e3a1e2fd22891308fe30f74101dd43f95335d90e2c3a",
+      "presenter_manifest": null,
+      "expected": "PASS",
+      "locator_warning": false
+    },
+    {
+      "name": "with_locator",
+      "comment": "An opaque locator on one entry: outside the preimage, shown as a hint, no warning.",
+      "source": [
+        {
+          "key": "note",
+          "value_hex": "6d65657420617420746865206e6f72746820676174652c2030393a3030",
+          "salt_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+        },
+        {
+          "key": "photo",
+          "value_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "salt_hex": ""
+        }
+      ],
+      "field19": [
+        {
+          "key": "note",
+          "contentType": "text/plain",
+          "size": 29,
+          "sha256": "612eb796805dfbb2b73b9b7262f085dd98617cc0b5d799694b8920faa6b52d02",
+          "locator": ""
+        },
+        {
+          "key": "photo",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": "obj_01HZX4QK9T7M3"
+        }
+      ],
+      "caller_manifest_hex": "0a360a046e6f7465120a746578742f706c61696e181d2220612eb796805dfbb2b73b9b7262f085dd98617cc0b5d799694b8920faa6b52d020a4a0a0570686f746f120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d91511082a116f626a5f3031485a5834514b3954374d33",
+      "stage_data_hash": "49b4629c5be484f68f20818a7177f84d04b141e45b62c1f81c2b700d917f55c0",
+      "presenter_manifest": null,
+      "expected": "PASS",
+      "locator_warning": false
+    },
+    {
+      "name": "empty_locator_is_none",
+      "comment": "An empty locator is no locator: the field is omitted on the wire.",
+      "source": [
+        {
+          "key": "note",
+          "value_hex": "6d65657420617420746865206e6f72746820676174652c2030393a3030",
+          "salt_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+        }
+      ],
+      "field19": [
+        {
+          "key": "note",
+          "contentType": "text/plain",
+          "size": 29,
+          "sha256": "612eb796805dfbb2b73b9b7262f085dd98617cc0b5d799694b8920faa6b52d02",
+          "locator": ""
+        }
+      ],
+      "caller_manifest_hex": "0a360a046e6f7465120a746578742f706c61696e181d2220612eb796805dfbb2b73b9b7262f085dd98617cc0b5d799694b8920faa6b52d02",
+      "stage_data_hash": "839241819b784ba9a3eccf7625a12caa9673646d9561085fc5d179a4e2c3dd46",
+      "presenter_manifest": null,
+      "expected": "PASS",
+      "locator_warning": false
+    },
+    {
+      "name": "matching_presenter_manifest",
+      "comment": "A presenter manifest (with salts) that agrees with field 19 entry by entry.",
+      "source": [
+        {
+          "key": "note",
+          "value_hex": "6d65657420617420746865206e6f72746820676174652c2030393a3030",
+          "salt_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+        },
+        {
+          "key": "photo",
+          "value_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "salt_hex": ""
+        }
+      ],
+      "field19": [
+        {
+          "key": "note",
+          "contentType": "text/plain",
+          "size": 29,
+          "sha256": "612eb796805dfbb2b73b9b7262f085dd98617cc0b5d799694b8920faa6b52d02",
+          "locator": ""
+        },
+        {
+          "key": "photo",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        }
+      ],
+      "caller_manifest_hex": "0a360a046e6f7465120a746578742f706c61696e181d2220612eb796805dfbb2b73b9b7262f085dd98617cc0b5d799694b8920faa6b52d020a370a0570686f746f120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+      "stage_data_hash": "49b4629c5be484f68f20818a7177f84d04b141e45b62c1f81c2b700d917f55c0",
+      "presenter_manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "note",
+            "contentType": "text/plain",
+            "size": 29,
+            "salt": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+            "sha256": "612eb796805dfbb2b73b9b7262f085dd98617cc0b5d799694b8920faa6b52d02"
+          },
+          {
+            "key": "photo",
+            "contentType": "image/jpeg",
+            "size": 64,
+            "salt": "",
+            "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108"
+          }
+        ]
+      },
+      "expected": "PASS",
+      "locator_warning": false
+    },
+    {
+      "name": "locator_changed_still_passes",
+      "comment": "The stage was signed with no locator; field 19 now carries one. The locator is unsigned, so the result is unchanged.",
+      "source": [
+        {
+          "key": "photo",
+          "value_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "salt_hex": ""
+        }
+      ],
+      "field19": [
+        {
+          "key": "photo",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": "obj_replaced_after_signing"
+        }
+      ],
+      "caller_manifest_hex": "0a530a0570686f746f120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d91511082a1a6f626a5f7265706c616365645f61667465725f7369676e696e67",
+      "stage_data_hash": "f42f58f667589d355692e6996a9c37e422735873a6720e68e36cbba33783edaf",
+      "presenter_manifest": null,
+      "expected": "PASS",
+      "locator_warning": false
+    },
+    {
+      "name": "locator_url_with_query",
+      "comment": "A pre-signed-URL-shaped locator: PASS, plus a caller-manifest-locator WARN.",
+      "source": [
+        {
+          "key": "photo",
+          "value_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "salt_hex": ""
+        }
+      ],
+      "field19": [
+        {
+          "key": "photo",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": "https://files.example/photo.jpg?X-Amz-Signature=deadbeef"
+        }
+      ],
+      "caller_manifest_hex": "0a710a0570686f746f120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d91511082a3868747470733a2f2f66696c65732e6578616d706c652f70686f746f2e6a70673f582d416d7a2d5369676e61747572653d6465616462656566",
+      "stage_data_hash": "f42f58f667589d355692e6996a9c37e422735873a6720e68e36cbba33783edaf",
+      "presenter_manifest": null,
+      "expected": "PASS",
+      "locator_warning": true
+    },
+    {
+      "name": "locator_url_with_userinfo",
+      "comment": "A URL carrying userinfo: PASS, plus a WARN.",
+      "source": [
+        {
+          "key": "photo",
+          "value_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "salt_hex": ""
+        }
+      ],
+      "field19": [
+        {
+          "key": "photo",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": "https://user:secret@files.example/photo.jpg"
+        }
+      ],
+      "caller_manifest_hex": "0a640a0570686f746f120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d91511082a2b68747470733a2f2f757365723a7365637265744066696c65732e6578616d706c652f70686f746f2e6a7067",
+      "stage_data_hash": "f42f58f667589d355692e6996a9c37e422735873a6720e68e36cbba33783edaf",
+      "presenter_manifest": null,
+      "expected": "PASS",
+      "locator_warning": true
+    },
+    {
+      "name": "locator_257_bytes",
+      "comment": "A locator over 256 bytes: PASS, plus a WARN.",
+      "source": [
+        {
+          "key": "photo",
+          "value_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "salt_hex": ""
+        }
+      ],
+      "field19": [
+        {
+          "key": "photo",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        }
+      ],
+      "caller_manifest_hex": "0abb020a0570686f746f120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d91511082a81027878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878",
+      "stage_data_hash": "f42f58f667589d355692e6996a9c37e422735873a6720e68e36cbba33783edaf",
+      "presenter_manifest": null,
+      "expected": "PASS",
+      "locator_warning": true
+    },
+    {
+      "name": "digest_changed",
+      "comment": "One field-19 digest differs from what the stage commits.",
+      "source": [
+        {
+          "key": "note",
+          "value_hex": "6d65657420617420746865206e6f72746820676174652c2030393a3030",
+          "salt_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+        },
+        {
+          "key": "photo",
+          "value_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "salt_hex": ""
+        }
+      ],
+      "field19": [
+        {
+          "key": "note",
+          "contentType": "text/plain",
+          "size": 29,
+          "sha256": "612eb796805dfbb2b73b9b7262f085dd98617cc0b5d799694b8920faa6b52d02",
+          "locator": ""
+        },
+        {
+          "key": "photo",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "00eab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        }
+      ],
+      "caller_manifest_hex": "0a360a046e6f7465120a746578742f706c61696e181d2220612eb796805dfbb2b73b9b7262f085dd98617cc0b5d799694b8920faa6b52d020a370a0570686f746f120a696d6167652f6a7065671840222000eab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+      "stage_data_hash": "49b4629c5be484f68f20818a7177f84d04b141e45b62c1f81c2b700d917f55c0",
+      "presenter_manifest": null,
+      "expected": "MANIFEST_MISMATCH",
+      "locator_warning": false
+    },
+    {
+      "name": "entries_reordered",
+      "comment": "Field 19 lists the committed entries in another order.",
+      "source": [
+        {
+          "key": "note",
+          "value_hex": "6d65657420617420746865206e6f72746820676174652c2030393a3030",
+          "salt_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+        },
+        {
+          "key": "photo",
+          "value_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "salt_hex": ""
+        }
+      ],
+      "field19": [
+        {
+          "key": "photo",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        },
+        {
+          "key": "note",
+          "contentType": "text/plain",
+          "size": 29,
+          "sha256": "612eb796805dfbb2b73b9b7262f085dd98617cc0b5d799694b8920faa6b52d02",
+          "locator": ""
+        }
+      ],
+      "caller_manifest_hex": "0a370a0570686f746f120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d91511080a360a046e6f7465120a746578742f706c61696e181d2220612eb796805dfbb2b73b9b7262f085dd98617cc0b5d799694b8920faa6b52d02",
+      "stage_data_hash": "49b4629c5be484f68f20818a7177f84d04b141e45b62c1f81c2b700d917f55c0",
+      "presenter_manifest": null,
+      "expected": "MANIFEST_MISMATCH",
+      "locator_warning": false
+    },
+    {
+      "name": "entry_dropped",
+      "comment": "Field 19 omits a committed entry.",
+      "source": [
+        {
+          "key": "note",
+          "value_hex": "6d65657420617420746865206e6f72746820676174652c2030393a3030",
+          "salt_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+        },
+        {
+          "key": "photo",
+          "value_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "salt_hex": ""
+        }
+      ],
+      "field19": [
+        {
+          "key": "note",
+          "contentType": "text/plain",
+          "size": 29,
+          "sha256": "612eb796805dfbb2b73b9b7262f085dd98617cc0b5d799694b8920faa6b52d02",
+          "locator": ""
+        }
+      ],
+      "caller_manifest_hex": "0a360a046e6f7465120a746578742f706c61696e181d2220612eb796805dfbb2b73b9b7262f085dd98617cc0b5d799694b8920faa6b52d02",
+      "stage_data_hash": "49b4629c5be484f68f20818a7177f84d04b141e45b62c1f81c2b700d917f55c0",
+      "presenter_manifest": null,
+      "expected": "MANIFEST_MISMATCH",
+      "locator_warning": false
+    },
+    {
+      "name": "size_changed",
+      "comment": "A field-19 size differs from the committed size.",
+      "source": [
+        {
+          "key": "photo",
+          "value_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "salt_hex": ""
+        }
+      ],
+      "field19": [
+        {
+          "key": "photo",
+          "contentType": "image/jpeg",
+          "size": 65,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        }
+      ],
+      "caller_manifest_hex": "0a370a0570686f746f120a696d6167652f6a70656718412220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+      "stage_data_hash": "f42f58f667589d355692e6996a9c37e422735873a6720e68e36cbba33783edaf",
+      "presenter_manifest": null,
+      "expected": "MANIFEST_MISMATCH",
+      "locator_warning": false
+    },
+    {
+      "name": "content_type_relabelled",
+      "comment": "A field-19 contentType differs from the committed one.",
+      "source": [
+        {
+          "key": "photo",
+          "value_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "salt_hex": ""
+        }
+      ],
+      "field19": [
+        {
+          "key": "photo",
+          "contentType": "image/png",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        }
+      ],
+      "caller_manifest_hex": "0a360a0570686f746f1209696d6167652f706e6718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+      "stage_data_hash": "f42f58f667589d355692e6996a9c37e422735873a6720e68e36cbba33783edaf",
+      "presenter_manifest": null,
+      "expected": "MANIFEST_MISMATCH",
+      "locator_warning": false
+    },
+    {
+      "name": "presenter_manifest_differs",
+      "comment": "Field 19 matches the stage, but the presenter manifest disagrees with it (a size).",
+      "source": [
+        {
+          "key": "note",
+          "value_hex": "6d65657420617420746865206e6f72746820676174652c2030393a3030",
+          "salt_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+        },
+        {
+          "key": "photo",
+          "value_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "salt_hex": ""
+        }
+      ],
+      "field19": [
+        {
+          "key": "note",
+          "contentType": "text/plain",
+          "size": 29,
+          "sha256": "612eb796805dfbb2b73b9b7262f085dd98617cc0b5d799694b8920faa6b52d02",
+          "locator": ""
+        },
+        {
+          "key": "photo",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        }
+      ],
+      "caller_manifest_hex": "0a360a046e6f7465120a746578742f706c61696e181d2220612eb796805dfbb2b73b9b7262f085dd98617cc0b5d799694b8920faa6b52d020a370a0570686f746f120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+      "stage_data_hash": "49b4629c5be484f68f20818a7177f84d04b141e45b62c1f81c2b700d917f55c0",
+      "presenter_manifest": {
+        "v": 1,
+        "entries": [
+          {
+            "key": "note",
+            "contentType": "text/plain",
+            "size": 29,
+            "salt": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+            "sha256": "612eb796805dfbb2b73b9b7262f085dd98617cc0b5d799694b8920faa6b52d02"
+          },
+          {
+            "key": "photo",
+            "contentType": "image/jpeg",
+            "size": 65,
+            "salt": "",
+            "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108"
+          }
+        ]
+      },
+      "expected": "MANIFEST_MISMATCH",
+      "locator_warning": false
+    },
+    {
+      "name": "field19_without_stage",
+      "comment": "Field 19 is present but the proof has no callerMetadata stage.",
+      "source": [
+        {
+          "key": "photo",
+          "value_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "salt_hex": ""
+        }
+      ],
+      "field19": [
+        {
+          "key": "photo",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        }
+      ],
+      "caller_manifest_hex": "0a370a0570686f746f120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+      "stage_data_hash": null,
+      "presenter_manifest": null,
+      "expected": "MANIFEST_MISMATCH",
+      "locator_warning": false
+    },
+    {
+      "name": "sha256_31_bytes",
+      "comment": "A field-19 digest of 31 bytes.",
+      "source": [
+        {
+          "key": "photo",
+          "value_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "salt_hex": ""
+        }
+      ],
+      "field19": [
+        {
+          "key": "photo",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d91511",
+          "locator": ""
+        }
+      ],
+      "caller_manifest_hex": "0a360a0570686f746f120a696d6167652f6a7065671840221ffdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d91511",
+      "stage_data_hash": "f42f58f667589d355692e6996a9c37e422735873a6720e68e36cbba33783edaf",
+      "presenter_manifest": null,
+      "expected": "MANIFEST_INVALID",
+      "locator_warning": false
+    },
+    {
+      "name": "duplicate_key",
+      "comment": "Two field-19 entries share a key.",
+      "source": [
+        {
+          "key": "photo",
+          "value_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "salt_hex": ""
+        }
+      ],
+      "field19": [
+        {
+          "key": "photo",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        },
+        {
+          "key": "photo",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        }
+      ],
+      "caller_manifest_hex": "0a370a0570686f746f120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d91511080a370a0570686f746f120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+      "stage_data_hash": "f42f58f667589d355692e6996a9c37e422735873a6720e68e36cbba33783edaf",
+      "presenter_manifest": null,
+      "expected": "MANIFEST_INVALID",
+      "locator_warning": false
+    },
+    {
+      "name": "content_type_with_parameters",
+      "comment": "A contentType with parameters breaks the strict type/subtype rule.",
+      "source": [
+        {
+          "key": "note",
+          "value_hex": "6d65657420617420746865206e6f72746820676174652c2030393a3030",
+          "salt_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+        }
+      ],
+      "field19": [
+        {
+          "key": "note",
+          "contentType": "text/plain; charset=utf-8",
+          "size": 29,
+          "sha256": "612eb796805dfbb2b73b9b7262f085dd98617cc0b5d799694b8920faa6b52d02",
+          "locator": ""
+        }
+      ],
+      "caller_manifest_hex": "0a450a046e6f74651219746578742f706c61696e3b20636861727365743d7574662d38181d2220612eb796805dfbb2b73b9b7262f085dd98617cc0b5d799694b8920faa6b52d02",
+      "stage_data_hash": "839241819b784ba9a3eccf7625a12caa9673646d9561085fc5d179a4e2c3dd46",
+      "presenter_manifest": null,
+      "expected": "MANIFEST_INVALID",
+      "locator_warning": false
+    },
+    {
+      "name": "seventeen_entries",
+      "comment": "17 entries: over the 16-entry limit.",
+      "source": [
+        {
+          "key": "photo",
+          "value_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "salt_hex": ""
+        }
+      ],
+      "field19": [
+        {
+          "key": "k00",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        },
+        {
+          "key": "k01",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        },
+        {
+          "key": "k02",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        },
+        {
+          "key": "k03",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        },
+        {
+          "key": "k04",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        },
+        {
+          "key": "k05",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        },
+        {
+          "key": "k06",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        },
+        {
+          "key": "k07",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        },
+        {
+          "key": "k08",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        },
+        {
+          "key": "k09",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        },
+        {
+          "key": "k10",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        },
+        {
+          "key": "k11",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        },
+        {
+          "key": "k12",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        },
+        {
+          "key": "k13",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        },
+        {
+          "key": "k14",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        },
+        {
+          "key": "k15",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        },
+        {
+          "key": "k16",
+          "contentType": "image/jpeg",
+          "size": 64,
+          "sha256": "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+          "locator": ""
+        }
+      ],
+      "caller_manifest_hex": "0a350a036b3030120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d91511080a350a036b3031120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d91511080a350a036b3032120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d91511080a350a036b3033120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d91511080a350a036b3034120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d91511080a350a036b3035120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d91511080a350a036b3036120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d91511080a350a036b3037120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d91511080a350a036b3038120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d91511080a350a036b3039120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d91511080a350a036b3130120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d91511080a350a036b3131120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d91511080a350a036b3132120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d91511080a350a036b3133120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d91511080a350a036b3134120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d91511080a350a036b3135120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d91511080a350a036b3136120a696d6167652f6a70656718402220fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+      "stage_data_hash": "f42f58f667589d355692e6996a9c37e422735873a6720e68e36cbba33783edaf",
+      "presenter_manifest": null,
+      "expected": "MANIFEST_INVALID",
+      "locator_warning": false
+    },
+    {
+      "name": "empty_field19",
+      "comment": "Field 19 present with zero entries.",
+      "source": [
+        {
+          "key": "photo",
+          "value_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "salt_hex": ""
+        }
+      ],
+      "field19": [],
+      "caller_manifest_hex": "",
+      "stage_data_hash": "f42f58f667589d355692e6996a9c37e422735873a6720e68e36cbba33783edaf",
+      "presenter_manifest": null,
+      "expected": "MANIFEST_INVALID",
+      "locator_warning": false
+    }
+  ]
+}
