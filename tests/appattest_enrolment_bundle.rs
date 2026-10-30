@@ -21,7 +21,7 @@
 #![cfg(feature = "appattest")]
 
 use octet_verify::appattest_layer::{
-    appattest_check, appattest_enroll, bundle_from_json, verify_attested_cached, AcceptEnvironment,
+    appattest_check, appattest_enroll, bundle_from_json, verify_attested_cached, AssertionPolicy, AcceptEnvironment,
     Expectation,
 };
 use octet_verify::crypto::P256VerifyingKey;
@@ -61,10 +61,12 @@ fn opts<'a>(hw: &'a P256VerifyingKey) -> VerifyOptions<'a> {
         expect_region: None,
         expect_region_type: None,
         expect_region_contains: None,
+        expect_region_contains_height_m: None,
         session_nonce: None,
         require_session_binding: false,
         require_schema_v2: false,
         require_attestation: false,
+        allow_unbound_app_attest: false,
         require_verdict: None,
         validation_window: None,
     }
@@ -96,7 +98,7 @@ fn cached_key_path_yields_app_attest_pass_and_object_path_does_not() {
     // stateless enrolment does, so the same-window assertion isn't a replay.
     let proof = full_proof();
     let hw = se_key(&proof);
-    let (obj_check, recovered) = appattest_check(&proof, &expectation(), None, Some(&hw.to_sec1_bytes()), false);
+    let (obj_check, recovered) = appattest_check(&proof, &expectation(), None, Some(&hw.to_sec1_bytes()), AssertionPolicy::RequireBound);
     assert_eq!(obj_check.status, Status::Pass, "object path: {}", obj_check.detail);
     let mut key = recovered.expect("object path recovers the attested key");
     key.last_counter = 0;

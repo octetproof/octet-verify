@@ -61,10 +61,12 @@ fn opts<'a>(hw: &'a P256VerifyingKey, now_ms: i64, require_attestation: bool) ->
         expect_region: None,
         expect_region_type: None,
         expect_region_contains: None,
+        expect_region_contains_height_m: None,
         session_nonce: None,
         require_session_binding: false,
         require_schema_v2: false,
         require_attestation,
+        allow_unbound_app_attest: false,
         require_verdict: None,
         validation_window: None,
     }

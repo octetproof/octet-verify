@@ -35,7 +35,7 @@ struct Args {
     nullifier_store: Option<String>,
     expect_region: Option<String>,
     expect_region_type: Option<String>,
-    expect_region_contains: Option<(f64, f64)>,
+    expect_region_contains: Option<(f64, f64, Option<f64>)>,
     /// Expected **queried region**: assert the proof's bound `query_region`
     /// equals the reference for this region, so its signed verdict answers
     /// `within(this region)`. Uses the one canonical digest ([`query_region_ref`]).
@@ -55,6 +55,8 @@ struct Args {
     require_caller_metadata: bool,
     require_schema_v2: bool,
     require_attestation: bool,
+    /// `--allow-unbound-app-attest`: accept a legacy nonce-only iOS assertion as WARN.
+    allow_unbound_app_attest: bool,
     /// `--require-verdict verified|plausible`: minimum signed spoofing-verdict tier.
     require_verdict: Option<verify_mod::RequiredVerdict>,
     app_attest_config: Option<String>,
@@ -153,13 +155,15 @@ fn run(args: &Args) -> anyhow::Result<Report> {
         hw_key_source: &hw_source,
         expect_region: args.expect_region.as_deref(),
         expect_region_type: args.expect_region_type.as_deref(),
-        expect_region_contains: args.expect_region_contains,
+        expect_region_contains: args.expect_region_contains.map(|(lat, lon, _)| (lat, lon)),
+        expect_region_contains_height_m: args.expect_region_contains.and_then(|p| p.2),
         session_nonce: args.session_nonce.as_deref(),
         require_session_binding: args.require_session_binding,
         require_schema_v2: args.require_schema_v2,
         // Cleared for the core call: the CLI appends the attestation checks below
         // and re-applies --require-attestation once, afterward.
         require_attestation: false,
+        allow_unbound_app_attest: args.allow_unbound_app_attest,
         require_verdict: args.require_verdict,
         validation_window: args.validation_window,
     };
@@ -221,7 +225,7 @@ fn run(args: &Args) -> anyhow::Result<Report> {
                 cfg_path,
                 args.app_attest_enrolment_bundle.as_deref(),
                 hw_key.as_ref().map(|vk| vk.to_sec1_bytes()).as_deref(),
-                args.require_attestation,
+                assertion_policy(args.require_attestation, args.allow_unbound_app_attest),
                 args.app_attest_window,
             )?);
             #[cfg(not(feature = "appattest"))]
@@ -445,6 +449,14 @@ fn query_region_match_check(spec: &str, report: &Report) -> verify_mod::Check {
     }
 }
 
+/// The assertion policy for the CLI flags: legacy unbound assertions only
+/// under --allow-unbound-app-attest, and never with --require-attestation.
+#[cfg(feature = "appattest")]
+fn assertion_policy(require_attestation: bool, allow_unbound: bool) -> octet_verify::appattest_layer::AssertionPolicy {
+    use octet_verify::appattest_layer::AssertionPolicy;
+    if allow_unbound && !require_attestation { AssertionPolicy::AllowUnbound } else { AssertionPolicy::RequireBound }
+}
+
 /// Load the shared App Attest config and verify the proof's evidence against it.
 /// Returns the `app-attest` check, followed on a PASS by the
 /// `app-attest-validity` NOT-CHECKED line, as the library's `verify_attested` does.
@@ -454,7 +466,7 @@ fn appattest_from_config(
     cfg_path: &str,
     enrolment_bundle: Option<&str>,
     signing_key_sec1: Option<&[u8]>,
-    require_binding: bool,
+    policy: octet_verify::appattest_layer::AssertionPolicy,
     window: Option<(Option<i64>, i64)>,
 ) -> anyhow::Result<Vec<verify_mod::Check>> {
     use octet_attest_verify::config::Config;
@@ -474,14 +486,14 @@ fn appattest_from_config(
     // (it needs the attestation object or a cached key). With a bundle we
     // recover the attested key out of band, so the assertion-only steady state
     // reaches PASS via the cached-key path.
-    //: the live assertion is bound to the SE signing key (certificate_chain[0])
-    // — PreferBound by default, RequireBound under --require-attestation.
+    //: the live assertion must be bound to the SE signing key
+    // (certificate_chain[0]); --allow-unbound-app-attest accepts a legacy one as WARN.
     let enrolled = match enrolment_bundle {
         Some(path) => Some(resolve_enrolment_key(path, &expect)?),
         None => None,
     };
     let cached = enrolled.as_ref().map(|(key, _)| key);
-    let (check, _key) = appattest_check(proof, &expect, cached, signing_key_sec1, require_binding);
+    let (check, _key) = appattest_check(proof, &expect, cached, signing_key_sec1, policy);
     let passed = check.status == Status::Pass;
     let mut checks = vec![check];
     if passed {
@@ -958,6 +970,7 @@ fn parse_args() -> Result<Args, String> {
             "--require-caller-metadata" => args.require_caller_metadata = true,
             "--require-schema-v2" => args.require_schema_v2 = true,
             "--require-attestation" => args.require_attestation = true,
+            "--allow-unbound-app-attest" => args.allow_unbound_app_attest = true,
             "--require-verdict" => {
                 let v = need_value(&mut iter, &a)?;
                 args.require_verdict = Some(parse_required_verdict(&v)?);
@@ -1163,10 +1176,14 @@ fn parse_hex_nonce(s: &str) -> Result<Vec<u8>, String> {
 
 /// Parse `--expect-region-contains "<lat>,<lon>"` into decimal degrees, with
 /// range validation so a transposed or out-of-range point fails loud.
-fn parse_latlon(s: &str) -> Result<(f64, f64), String> {
-    let (a, b) = s
+fn parse_latlon(s: &str) -> Result<(f64, f64, Option<f64>), String> {
+    let (a, rest) = s
         .split_once(',')
-        .ok_or_else(|| format!("--expect-region-contains: expected \"<lat>,<lon>\", got {s:?}"))?;
+        .ok_or_else(|| format!("--expect-region-contains: expected \"<lat>,<lon>[,<h>]\", got {s:?}"))?;
+    let (b, h) = match rest.split_once(',') {
+        Some((b, h)) => (b, Some(h)),
+        None => (rest, None),
+    };
     let lat: f64 = a
         .trim()
         .parse()
@@ -1181,7 +1198,20 @@ fn parse_latlon(s: &str) -> Result<(f64, f64), String> {
     if !(-180.0..=180.0).contains(&lon) {
         return Err(format!("--expect-region-contains: longitude {lon} out of range [-180, 180]"));
     }
-    Ok((lat, lon))
+    let h = match h {
+        None => None,
+        Some(h) => {
+            let v: f64 = h
+                .trim()
+                .parse()
+                .map_err(|_| format!("--expect-region-contains: height {:?} is not a number", h.trim()))?;
+            if !v.is_finite() {
+                return Err(format!("--expect-region-contains: height {v} is not finite"));
+            }
+            Some(v)
+        }
+    };
+    Ok((lat, lon, h))
 }
 
 /// Parse `--require-verdict verified|plausible`.
@@ -1298,11 +1328,12 @@ mod backend {
         hardware_pubkey: Option<String>,
         expect_region: Option<String>,
         expect_region_type: Option<String>,
-        expect_region_contains: Option<(f64, f64)>,
+        expect_region_contains: Option<(f64, f64, Option<f64>)>,
         session_nonce: Option<Vec<u8>>,
         require_session_binding: bool,
         require_schema_v2: bool,
         require_attestation: bool,
+        allow_unbound_app_attest: bool,
         require_verdict: Option<octet_verify::verify::RequiredVerdict>,
         max_age_s: Option<i64>,
         at_ms: Option<i64>,
@@ -1485,13 +1516,15 @@ mod backend {
             hw_key_source: &hw_source,
             expect_region: args.expect_region.as_deref(),
             expect_region_type: args.expect_region_type.as_deref(),
-            expect_region_contains: args.expect_region_contains,
+            expect_region_contains: args.expect_region_contains.map(|(lat, lon, _)| (lat, lon)),
+            expect_region_contains_height_m: args.expect_region_contains.and_then(|p| p.2),
             session_nonce: args.session_nonce.as_deref(),
             require_session_binding: args.require_session_binding,
             require_schema_v2: args.require_schema_v2,
             // Cleared for the core call; re-applied once after the attestation
             // checks below.
             require_attestation: false,
+            allow_unbound_app_attest: args.allow_unbound_app_attest,
             require_verdict: args.require_verdict,
             validation_window: args.validation_window,
         };
@@ -1510,7 +1543,7 @@ mod backend {
                     cfg_path,
                     args.app_attest_enrolment_bundle.as_deref(),
                     hw_key.as_ref().map(|vk| vk.to_sec1_bytes()).as_deref(),
-                    args.require_attestation,
+                    super::assertion_policy(args.require_attestation, args.allow_unbound_app_attest),
                     args.app_attest_window,
                 )?);
             }
@@ -1785,6 +1818,7 @@ mod backend {
         let mut require_session_binding = false;
         let mut require_schema_v2 = false;
         let mut require_attestation = false;
+        let mut allow_unbound_app_attest = false;
         let mut require_verdict = None;
         let mut max_age_s = None;
         let mut at_ms = None;
@@ -1831,6 +1865,7 @@ mod backend {
                 "--require-session-binding" => require_session_binding = true,
                 "--require-schema-v2" => require_schema_v2 = true,
                 "--require-attestation" => require_attestation = true,
+                "--allow-unbound-app-attest" => allow_unbound_app_attest = true,
                 "--require-verdict" => {
                     require_verdict =
                         Some(parse_required_verdict(&need(&mut it, a)?).map_err(|e| anyhow!("{e}"))?);
@@ -1940,6 +1975,7 @@ mod backend {
             require_session_binding,
             require_schema_v2,
             require_attestation,
+            allow_unbound_app_attest,
             require_verdict,
             max_age_s,
             at_ms,
@@ -2425,8 +2461,12 @@ mod tests {
     #[test]
     fn parse_latlon_accepts_valid_rejects_malformed_and_out_of_range() {
         use super::parse_latlon;
-        assert_eq!(parse_latlon("37.7749,-122.4194").unwrap(), (37.7749, -122.4194));
-        assert_eq!(parse_latlon("  37.77 , -122.42 ").unwrap(), (37.77, -122.42));
+        assert_eq!(parse_latlon("37.7749,-122.4194").unwrap(), (37.7749, -122.4194, None));
+        assert_eq!(parse_latlon("  37.77 , -122.42 ").unwrap(), (37.77, -122.42, None));
+        assert_eq!(parse_latlon("51.5,-0.12,-45.5").unwrap(), (51.5, -0.12, Some(-45.5)));
+        assert!(parse_latlon("51.5,-0.12,high").is_err()); // non-number height
+        assert!(parse_latlon("51.5,-0.12,inf").is_err()); // non-finite height
+        assert!(parse_latlon("51.5,-0.12,1,2").is_err()); // too many parts
         assert!(parse_latlon("37.77").is_err()); // no comma
         assert!(parse_latlon("north,-122.4").is_err()); // non-number
         assert!(parse_latlon("91.0,0.0").is_err()); // lat out of range

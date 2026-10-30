@@ -5,7 +5,7 @@
 //!
 //!   [3] before enrol → NOT-CHECKED  (an empty key cache can't establish the key)
 //!   [4] enrol        → key recovered from the attestation object in the bundle
-//!   [5] after enrol  → PASS         (the same proof now verifies against the key)
+//!   [5] after enrol  → WARN         (verifies against the key; legacy unbound form)
 //!
 //! Requires the `appattest` feature:
 //!
@@ -18,7 +18,7 @@
 //! own to match the app that produced the bundle.
 
 use octet_attest_verify::appattest::AcceptEnvironment;
-use octet_verify::appattest_layer::{appattest_check, appattest_enroll, bundle_from_json, Expectation};
+use octet_verify::appattest_layer::{appattest_check, appattest_enroll, bundle_from_json, AssertionPolicy, Expectation};
 use octet_verify::navigate::LocationProof;
 use octet_verify::prost::Message;
 
@@ -38,8 +38,9 @@ fn main() -> anyhow::Result<()> {
     let proof = LocationProof::decode(&*std::fs::read(&proof_path)?)?;
 
     // [3] Empty cache: nothing has established the key yet → NOT-CHECKED.
-    // (nonce-only fixtures: no SE signing key, binding not required —.)
-    let (before, _) = appattest_check(&proof, &expect, None, None, false);
+    // (Nonce-only fixtures with no SE signing key, so legacy unbound assertions
+    // must be allowed —.)
+    let (before, _) = appattest_check(&proof, &expect, None, None, AssertionPolicy::AllowUnbound);
     println!("[3] before enrol: {:<11} {}", before.status.tag(), before.detail);
 
     // [4] Enrol from the out-of-band JSON bundle: verify its attestation object
@@ -48,8 +49,9 @@ fn main() -> anyhow::Result<()> {
     let key = appattest_enroll(&da, &expect)?;
     println!("[4] enrolled:     key recovered (counter {})", key.last_counter);
 
-    // [5] Same proof, now against the cached key → PASS.
-    let (after, _) = appattest_check(&proof, &expect, Some(&key), None, false);
+    // [5] Same proof, now against the cached key → WARN: the assertion verifies,
+    //     but in the legacy form that isn't bound to a signing key.
+    let (after, _) = appattest_check(&proof, &expect, Some(&key), None, AssertionPolicy::AllowUnbound);
     println!("[5] after enrol:  {:<11} {}", after.status.tag(), after.detail);
 
     Ok(())

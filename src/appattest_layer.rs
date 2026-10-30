@@ -186,6 +186,81 @@ fn chk(status: Status, detail: impl Into<String>) -> Check {
     Check { name: "app-attest", status, detail: detail.into() }
 }
 
+/// How a live iOS App Attest assertion must commit to the key that signs the
+/// proof. Since SDK 2.0.0 the assertion's `clientDataHash` is
+/// `SHA256(nonce ‖ signing_key)`, so a genuine `(nonce, assertion)` pair can't be
+/// replayed under a different signing key. Earlier SDKs signed `SHA256(nonce)`
+/// only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssertionPolicy {
+    /// Accept only the bound form. The default: no device on an SDK before
+    /// 2.0.0 has been active since 2026-10-07.
+    RequireBound,
+    /// Also accept the legacy nonce-only form, for verifying proofs archived
+    /// from SDKs before 2.0.0. Such an assertion is reported as WARN, not PASS:
+    /// it is genuine but not bound to the signing key, so the proof does not
+    /// count as attested.
+    AllowUnbound,
+}
+
+impl AssertionPolicy {
+    /// The policy for these options: unbound assertions are allowed only when
+    /// the caller opts in and does not also require attestation.
+    pub fn from_options(opts: &VerifyOptions) -> Self {
+        if opts.allow_unbound_app_attest && !opts.require_attestation {
+            AssertionPolicy::AllowUnbound
+        } else {
+            AssertionPolicy::RequireBound
+        }
+    }
+}
+
+/// How [`appattest_check_da`] checks the assertion: the one-time enrolment
+/// snapshot (always nonce-only), or a live proof's assertion.
+#[derive(Clone, Copy)]
+enum AssertionMode<'a> {
+    Enrolment,
+    Live { signing_key_sec1: Option<&'a [u8]>, policy: AssertionPolicy },
+}
+
+/// Verify `assertion` against `key` under `mode`. `Ok((counter, bound))`, where
+/// `bound` is false only for a legacy nonce-only assertion that
+/// [`AssertionPolicy::AllowUnbound`] accepted.
+fn check_assertion(
+    assertion: &[u8],
+    nonce: &[u8],
+    expect: &Expectation,
+    key: &AttestedKey,
+    mode: AssertionMode,
+) -> Result<(u32, bool), String> {
+    let verify = |binding| verify_assertion_with_binding(assertion, nonce, &expect.app_id, key, binding);
+    match mode {
+        AssertionMode::Enrolment => verify(AssertionBinding::NonceOnly).map(|c| (c, true)).map_err(|e| e.to_string()),
+        AssertionMode::Live { signing_key_sec1: Some(sk), policy } => match verify(AssertionBinding::RequireBound { signing_key_sec1: sk }) {
+            Ok(c) => Ok((c, true)),
+            Err(e) if policy == AssertionPolicy::AllowUnbound => {
+                verify(AssertionBinding::NonceOnly).map(|c| (c, false)).map_err(|_| e.to_string())
+            }
+            Err(e) => Err(e.to_string()),
+        },
+        AssertionMode::Live { signing_key_sec1: None, .. } => {
+            verify(AssertionBinding::NonceOnly).map(|c| (c, false)).map_err(|e| e.to_string())
+        }
+    }
+}
+
+/// The `app-attest` result for a verified assertion: PASS when bound, WARN when
+/// a legacy unbound assertion was accepted.
+fn assertion_verified(what: String, bound: bool) -> Check {
+    if bound {
+        chk(Status::Pass, what)
+    } else {
+        chk(Status::Warn, format!(
+            "{what}, in the legacy nonce-only form (SDK before 2.0.0): NOT bound to the proof's signing key, \
+             accepted only because unbound assertions are allowed (--allow-unbound-app-attest)"))
+    }
+}
+
 /// Verify the App Attest evidence carried on `proof`.
 ///
 /// `cached` is a key recovered from a previous proof's attestation object, for
@@ -198,21 +273,20 @@ fn chk(status: Status, detail: impl Into<String>) -> Check {
 /// cache (keyed by `key_id`) for subsequent proofs.
 ///
 /// `signing_key_sec1` is the proof's Secure-Enclave signing key
-/// (`certificate_chain[0]`, resolved by the caller) — folded into the live
-/// assertion's `clientDataHash` for the binding. `require_binding` (the
-/// `--require-attestation` flag) enforces the bound form: with a signing key it
-/// selects `RequireBound` (a pre- nonce-only assertion is rejected), else
-/// `PreferBound` (rollout: accept either). `None` signing key with
-/// `require_binding` fails closed.
+/// (`certificate_chain[0]`, resolved by the caller), which the live assertion's
+/// `clientDataHash` must commit to. Under [`AssertionPolicy::RequireBound`]
+/// (the default) a legacy nonce-only assertion FAILs, and so does a proof with no
+/// signing key to bind to. [`AssertionPolicy::AllowUnbound`] accepts a legacy
+/// assertion as WARN.
 pub fn appattest_check(
     proof: &LocationProof,
     expect: &Expectation,
     cached: Option<&AttestedKey>,
     signing_key_sec1: Option<&[u8]>,
-    require_binding: bool,
+    policy: AssertionPolicy,
 ) -> (Check, Option<AttestedKey>) {
     match &proof.device_attestation {
-        Some(da) => appattest_check_da(da, expect, cached, signing_key_sec1, require_binding),
+        Some(da) => appattest_check_da(da, expect, cached, AssertionMode::Live { signing_key_sec1, policy }),
         None => (chk(Status::NotChecked, "no device attestation on proof"), None),
     }
 }
@@ -278,16 +352,15 @@ pub fn verify_attested_cached(
     let signing_key_sec1 = opts.hardware_pubkey.map(|vk| vk.to_sec1_bytes());
 
     // iOS App Attest against the cache (Android → NOT-CHECKED, no App Attest
-    // fields). folds `signing_key_sec1` into the live assertion's
-    // clientDataHash; `opts.require_attestation` selects RequireBound (enforce)
-    // vs PreferBound (rollout). The returned key (if any) carries the advanced
-    // counter for the caller to persist.
+    // fields).: the live assertion's clientDataHash must commit to
+    // `signing_key_sec1`, unless the caller allows legacy unbound assertions. The
+    // returned key (if any) carries the advanced counter for the caller to persist.
     let (app_attest, updated_key) = appattest_check(
         proof,
         expect,
         cached,
         signing_key_sec1.as_deref(),
-        opts.require_attestation,
+        AssertionPolicy::from_options(opts),
     );
     let app_attest_passed = app_attest.status == Status::Pass;
     report.checks.push(app_attest);
@@ -336,9 +409,9 @@ fn sec1_keys_equal(a: &[u8], b: &[u8]) -> bool {
 // cannot sign arbitrary data, so we do NOT require them to be equal (that would
 // reject every genuine iOS proof). Instead the SDK commits the SE signing
 // key into the live assertion's `clientDataHash` (`SHA256(nonce ‖ SE_pubkey)`)
-// and this layer reconstructs that binding via the `AssertionBinding` passed to
-// `appattest_check` (PreferBound during rollout, RequireBound under
-// `--require-attestation`). Android's signing-key binding is separate and lives
+// and this layer requires that binding ([`AssertionPolicy::RequireBound`], the
+// default; [`AssertionPolicy::AllowUnbound`] accepts a legacy assertion as WARN
+// for archived proofs). Android's signing-key binding is separate and lives
 // in `attestation_root_check` (its StrongBox leaf both signs and is attested).
 
 /// Core of [`appattest_check`] operating directly on a [`DeviceAttestation`],
@@ -349,8 +422,7 @@ fn appattest_check_da(
     da: &DeviceAttestation,
     expect: &Expectation,
     cached: Option<&AttestedKey>,
-    signing_key_sec1: Option<&[u8]>,
-    require_binding: bool,
+    mode: AssertionMode,
 ) -> (Check, Option<AttestedKey>) {
     let (nonce, assertion) = match (da.attestation_nonce.as_deref(), da.app_attest_assertion.as_deref()) {
         (Some(n), Some(a)) if !n.is_empty() && !a.is_empty() => (n, a),
@@ -362,27 +434,19 @@ fn appattest_check_da(
         }
     };
 
-    //: how the live assertion's clientDataHash is reconstructed. The enrol /
-    // attestation-object path and pre- SDKs are nonce-only; a live proof
-    // folds the Secure-Enclave signing key in. PreferBound accepts either during
-    // rollout; RequireBound (the `--require-attestation` flag) enforces the bound
-    // form. Binding required but no signing key resolved ⇒ fail closed, never a
-    // silent downgrade to nonce-only.
-    let binding = match (signing_key_sec1, require_binding) {
-        (Some(sk), true) => AssertionBinding::RequireBound { signing_key_sec1: sk },
-        (Some(sk), false) => AssertionBinding::PreferBound { signing_key_sec1: sk },
-        (None, false) => AssertionBinding::NonceOnly,
-        (None, true) => {
-            return (
-                chk(
-                    Status::Fail,
-                    "iOS assertion binding required (--require-attestation) but no device \
-                     signing key is available to bind the assertion to",
-                ),
-                None,
-            )
-        }
-    };
+    //: a live assertion must be bound to the Secure-Enclave signing key. With
+    // no signing key resolved there is nothing to bind to: fail closed, never a
+    // silent downgrade to nonce-only, unless legacy assertions are allowed.
+    if let AssertionMode::Live { signing_key_sec1: None, policy: AssertionPolicy::RequireBound } = mode {
+        return (
+            chk(
+                Status::Fail,
+                "the iOS assertion must be bound to the proof's signing key, but no device \
+                 signing key is available to bind it to",
+            ),
+            None,
+        );
+    }
 
     // Apple's key identifier rides as a base64 string on the wire.
     let key_id = match base64::engine::general_purpose::STANDARD.decode(&da.key_id) {
@@ -394,10 +458,12 @@ fn appattest_check_da(
         // First proof of a key: verify the chain to Apple's root, recover the
         // key, then verify the assertion against it.
         Some(obj) => match verify_attestation(obj, nonce, &expect.app_id, &key_id, expect.accept_env) {
-            Ok(key) => match verify_assertion_with_binding(assertion, nonce, &expect.app_id, &key, binding) {
-                Ok(counter) => (
-                    chk(Status::Pass,
-                        format!("attestation chained to Apple App Attest root; assertion verified (counter {counter})")),
+            Ok(key) => match check_assertion(assertion, nonce, expect, &key, mode) {
+                Ok((counter, bound)) => (
+                    assertion_verified(
+                        format!("attestation chained to Apple App Attest root; assertion verified (counter {counter})"),
+                        bound,
+                    ),
                     Some(AttestedKey { last_counter: counter, ..key }),
                 ),
                 Err(e) => (chk(Status::Fail, format!("attestation valid but assertion failed: {e}")), None),
@@ -427,9 +493,9 @@ fn appattest_check_da(
                         None,
                     );
                 }
-                match verify_assertion_with_binding(assertion, nonce, &expect.app_id, key, binding) {
-                    Ok(counter) => (
-                        chk(Status::Pass, format!("assertion verified against cached key (counter {counter})")),
+                match check_assertion(assertion, nonce, expect, key, mode) {
+                    Ok((counter, bound)) => (
+                        assertion_verified(format!("assertion verified against cached key (counter {counter})"), bound),
                         Some(AttestedKey { last_counter: counter, public_key_sec1: key.public_key_sec1.clone() }),
                     ),
                     Err(e) => (chk(Status::Fail, format!("assertion failed: {e}")), None),
@@ -497,7 +563,7 @@ pub fn appattest_enroll(
     }
     // The enrolment snapshot assertion is always nonce-only (a one-time bootstrap,
     // not a per-proof replay vector) — no signing-key binding here.
-    let (check, key) = appattest_check_da(da, expect, None, None, false);
+    let (check, key) = appattest_check_da(da, expect, None, AssertionMode::Enrolment);
     key.ok_or_else(|| anyhow::anyhow!("enrolment bundle failed verification: {}", check.detail))
 }
 
@@ -814,7 +880,7 @@ mod tests {
 
     #[test]
     fn no_device_attestation_is_not_checked() {
-        let (c, key) = appattest_check(&proof_with(None), &expectation(), None, None, false);
+        let (c, key) = appattest_check(&proof_with(None), &expectation(), None, None, AssertionPolicy::AllowUnbound);
         assert_eq!(c.status, Status::NotChecked);
         assert!(key.is_none());
     }
@@ -823,7 +889,7 @@ mod tests {
     fn no_app_attest_fields_is_not_checked() {
         // An Android proof: device attestation present, but no App Attest fields.
         let da = DeviceAttestation { key_id: "abc".into(), ..Default::default() };
-        let (c, _) = appattest_check(&proof_with(Some(da)), &expectation(), None, None, false);
+        let (c, _) = appattest_check(&proof_with(Some(da)), &expectation(), None, None, AssertionPolicy::AllowUnbound);
         assert_eq!(c.status, Status::NotChecked);
     }
 
@@ -842,14 +908,116 @@ mod tests {
         };
         // require_binding = true, no signing key → fail closed.
         let (fail, key) =
-            appattest_check(&proof_with(Some(da.clone())), &expectation(), None, None, true);
+            appattest_check(&proof_with(Some(da.clone())), &expectation(), None, None, AssertionPolicy::RequireBound);
         assert_eq!(fail.status, Status::Fail, "{}", fail.detail);
         assert!(fail.detail.contains("no device signing key"), "{}", fail.detail);
         assert!(key.is_none());
         // Same proof, binding NOT required → proceeds (NOT-CHECKED: no cached key).
         let (relaxed, _) =
-            appattest_check(&proof_with(Some(da)), &expectation(), None, None, false);
+            appattest_check(&proof_with(Some(da)), &expectation(), None, None, AssertionPolicy::AllowUnbound);
         assert_eq!(relaxed.status, Status::NotChecked);
+    }
+
+    /// A synthetic App Attest assertion (CBOR `{signature, authenticatorData}`)
+    /// signed by `sk` over `SHA256(authData ‖ clientDataHash)`, as a device makes
+    /// it. `signing_key_sec1` selects the bound form; `None` the legacy form.
+    fn synthetic_assertion(
+        sk: &p256::ecdsa::SigningKey,
+        nonce: &[u8],
+        signing_key_sec1: Option<&[u8]>,
+        counter: u32,
+    ) -> Vec<u8> {
+        use p256::ecdsa::signature::Signer;
+        let mut auth_data = expectation().app_id.0.to_vec();
+        auth_data.push(0x40);
+        auth_data.extend_from_slice(&counter.to_be_bytes());
+        let mut cdh_input = nonce.to_vec();
+        cdh_input.extend_from_slice(signing_key_sec1.unwrap_or_default());
+        let client_data_hash = Sha256::digest(&cdh_input);
+        let to_sign = Sha256::digest([auth_data.as_slice(), &client_data_hash[..]].concat());
+        let sig: p256::ecdsa::Signature = sk.sign(&to_sign);
+        let der = sig.to_der();
+        let bytes = |out: &mut Vec<u8>, b: &[u8]| {
+            out.extend_from_slice(&[0x58, b.len() as u8]);
+            out.extend_from_slice(b);
+        };
+        let mut cbor = vec![0xA2, 0x69];
+        cbor.extend_from_slice(b"signature");
+        bytes(&mut cbor, der.as_bytes());
+        cbor.push(0x71);
+        cbor.extend_from_slice(b"authenticatorData");
+        bytes(&mut cbor, &auth_data);
+        cbor
+    }
+
+    ///: the bound form PASSes under both policies; the legacy nonce-only form
+    /// FAILs by default and is a WARN (not attested) only when unbound
+    /// assertions are allowed.
+    #[test]
+    fn legacy_assertions_fail_by_default_and_warn_when_allowed() {
+        let attest_sk = p256::ecdsa::SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let attest_pub = attest_sk.verifying_key().to_encoded_point(false).as_bytes().to_vec();
+        let cached = AttestedKey { public_key_sec1: attest_pub.clone(), last_counter: 0 };
+        let se_pub = p256::ecdsa::SigningKey::from_slice(&[8u8; 32])
+            .unwrap()
+            .verifying_key()
+            .to_encoded_point(false)
+            .as_bytes()
+            .to_vec();
+        let nonce = [9u8; 32];
+        let da = |assertion: Vec<u8>| DeviceAttestation {
+            key_id: base64::engine::general_purpose::STANDARD.encode(Sha256::digest(&attest_pub)),
+            app_attest_assertion: Some(assertion),
+            attestation_nonce: Some(nonce.to_vec()),
+            ..Default::default()
+        };
+        let run = |assertion: Vec<u8>, sk: Option<&[u8]>, policy| {
+            appattest_check(&proof_with(Some(da(assertion))), &expectation(), Some(&cached), sk, policy)
+        };
+        let bound = synthetic_assertion(&attest_sk, &nonce, Some(&se_pub), 5);
+        let legacy = synthetic_assertion(&attest_sk, &nonce, None, 5);
+
+        for policy in [AssertionPolicy::RequireBound, AssertionPolicy::AllowUnbound] {
+            let (c, key) = run(bound.clone(), Some(&se_pub), policy);
+            assert_eq!(c.status, Status::Pass, "{policy:?}: {}", c.detail);
+            assert_eq!(key.unwrap().last_counter, 5);
+        }
+
+        let (c, key) = run(legacy.clone(), Some(&se_pub), AssertionPolicy::RequireBound);
+        assert_eq!(c.status, Status::Fail, "{}", c.detail);
+        assert!(key.is_none());
+
+        let (c, key) = run(legacy.clone(), Some(&se_pub), AssertionPolicy::AllowUnbound);
+        assert_eq!(c.status, Status::Warn, "{}", c.detail);
+        assert!(c.detail.contains("NOT bound"), "{}", c.detail);
+        assert_eq!(key.unwrap().last_counter, 5, "the counter still advances");
+
+        // Bound to a different signing key: no policy accepts it.
+        let other = synthetic_assertion(&attest_sk, &nonce, Some(&[4u8; 65]), 5);
+        for policy in [AssertionPolicy::RequireBound, AssertionPolicy::AllowUnbound] {
+            assert_eq!(run(other.clone(), Some(&se_pub), policy).0.status, Status::Fail, "{policy:?}");
+        }
+
+        // No signing key: FAIL by default, WARN when allowed.
+        assert_eq!(run(legacy.clone(), None, AssertionPolicy::RequireBound).0.status, Status::Fail);
+        assert_eq!(run(legacy, None, AssertionPolicy::AllowUnbound).0.status, Status::Warn);
+    }
+
+    /// Unbound assertions are allowed only on request, and never together with
+    /// `require_attestation`.
+    #[test]
+    fn assertion_policy_from_options() {
+        let opts = |allow, require| VerifyOptions {
+            now_ms: 0, max_age_s: 0, hardware_pubkey: None, hw_key_source: "test",
+            expect_region: None, expect_region_type: None, expect_region_contains: None,
+            expect_region_contains_height_m: None, session_nonce: None, require_session_binding: false,
+            require_schema_v2: false, require_attestation: require, allow_unbound_app_attest: allow,
+            require_verdict: None, validation_window: None,
+        };
+        assert_eq!(AssertionPolicy::from_options(&opts(false, false)), AssertionPolicy::RequireBound);
+        assert_eq!(AssertionPolicy::from_options(&opts(true, false)), AssertionPolicy::AllowUnbound);
+        assert_eq!(AssertionPolicy::from_options(&opts(true, true)), AssertionPolicy::RequireBound);
+        assert_eq!(AssertionPolicy::from_options(&opts(false, true)), AssertionPolicy::RequireBound);
     }
 
     #[test]
@@ -861,7 +1029,7 @@ mod tests {
             attestation_nonce: Some(vec![9; 32]),
             ..Default::default()
         };
-        let (c, key) = appattest_check(&proof_with(Some(da)), &expectation(), None, None, false);
+        let (c, key) = appattest_check(&proof_with(Some(da)), &expectation(), None, None, AssertionPolicy::AllowUnbound);
         assert_eq!(c.status, Status::NotChecked);
         assert!(key.is_none());
     }
@@ -883,7 +1051,7 @@ mod tests {
             ..Default::default()
         };
         let (c, k) =
-            appattest_check(&proof_with(Some(mismatched)), &expectation(), Some(&cached), None, false);
+            appattest_check(&proof_with(Some(mismatched)), &expectation(), Some(&cached), None, AssertionPolicy::AllowUnbound);
         assert_eq!(c.status, Status::Fail, "{}", c.detail);
         assert!(c.detail.contains("key_id does not match"), "{}", c.detail);
         assert!(k.is_none());
@@ -897,7 +1065,7 @@ mod tests {
             ..Default::default()
         };
         let (c2, _) =
-            appattest_check(&proof_with(Some(matching)), &expectation(), Some(&cached), None, false);
+            appattest_check(&proof_with(Some(matching)), &expectation(), Some(&cached), None, AssertionPolicy::AllowUnbound);
         assert_eq!(c2.status, Status::Fail, "{}", c2.detail);
         assert!(!c2.detail.contains("key_id does not match"), "gate should pass: {}", c2.detail);
         assert!(c2.detail.contains("assertion failed"), "{}", c2.detail);
@@ -912,7 +1080,7 @@ mod tests {
             app_attest_attestation: Some(vec![0xCB, 0x0B]),
             ..Default::default()
         };
-        let (c, _) = appattest_check(&proof_with(Some(da)), &expectation(), None, None, false);
+        let (c, _) = appattest_check(&proof_with(Some(da)), &expectation(), None, None, AssertionPolicy::AllowUnbound);
         assert_eq!(c.status, Status::Fail);
         assert!(c.detail.contains("base64"));
     }
@@ -927,7 +1095,7 @@ mod tests {
             app_attest_attestation: Some(vec![0, 1, 2, 3]), // not a valid CBOR attestation
             ..Default::default()
         };
-        let (c, key) = appattest_check(&proof_with(Some(da)), &expectation(), None, None, false);
+        let (c, key) = appattest_check(&proof_with(Some(da)), &expectation(), None, None, AssertionPolicy::AllowUnbound);
         assert_eq!(c.status, Status::Fail);
         assert!(key.is_none());
     }
@@ -1080,10 +1248,10 @@ mod tests {
             max_age_s: 300,
             hardware_pubkey: None,
             hw_key_source: "test",
-            expect_region: None, expect_region_type: None, expect_region_contains: None,
+            expect_region: None, expect_region_type: None, expect_region_contains: None, expect_region_contains_height_m: None,
             session_nonce: None,
             require_session_binding: false,
-            require_schema_v2: false, require_attestation: false, require_verdict: None, validation_window: None,
+            require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None,
         };
 
         let report = verify_attested(&proof, &opts, &expectation());
@@ -1109,10 +1277,10 @@ mod tests {
             max_age_s: 300,
             hardware_pubkey: None,
             hw_key_source: "test",
-            expect_region: None, expect_region_type: None, expect_region_contains: None,
+            expect_region: None, expect_region_type: None, expect_region_contains: None, expect_region_contains_height_m: None,
             session_nonce: None,
             require_session_binding: false,
-            require_schema_v2: false, require_attestation: false, require_verdict: None, validation_window: None,
+            require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None,
         };
 
         // Cached variant returns (Report, Option<AttestedKey>); a bare proof

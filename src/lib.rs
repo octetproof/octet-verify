@@ -36,7 +36,9 @@ pub mod caller_metadata;
 pub mod crypto;
 pub mod keys;
 pub mod replay;
+pub mod s2;
 pub mod session;
+pub mod uncertainty;
 pub mod verify;
 #[cfg(feature = "browser")]
 pub mod browser;

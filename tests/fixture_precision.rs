@@ -100,6 +100,18 @@ fn shipped_fixtures_disclose_no_precise_position() {
                  resolution bound before shipping it",
                 f.display()
             ),
+            // Same for S2 cell sets: a leaf cell is about 1 cm across, so a
+            // fixture would need a level bound.
+            Region::CellSet(_) => panic!(
+                "{}: S2 cell-set region in a shipped fixture — extend this guard with \
+                 an S2 level bound before shipping it",
+                f.display()
+            ),
+            Region::VoxelSet(_) => panic!(
+                "{}: S2 voxel-set region in a shipped fixture — extend this guard with \
+                 an S2 level and height-zoom bound before shipping it",
+                f.display()
+            ),
         }
     }
 

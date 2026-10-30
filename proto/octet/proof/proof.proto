@@ -62,6 +62,8 @@ message ProofRegion {
     H3PolygonSet h3_polygon_set = 5;
     BoundingBox3DRegion bounding_box_3d = 6;
     SubdivisionRegion subdivision = 7;  // ISO 3166-2 (e.g. "US-CA", "FR-75")
+    S2CellSet cell_set = 8;             // union of S2 cells, canonical form
+    S2VoxelSet voxel_set = 9;           // S2 cells × height ranges, canonical form
   }
 }
 
@@ -104,6 +106,35 @@ message H3PolygonSet {
   repeated fixed64 cell_ids = 1;
 }
 
+// Union of S2 cells (https://s2geometry.io) at mixed levels, each a standard
+// 64-bit S2 CellId. Must be canonical: exactly its own S2 normalisation (sorted
+// ascending, pairwise disjoint, no 4 siblings left unmerged), non-empty, and at
+// most 16,384 cells. A non-canonical set is rejected, never normalised.
+message S2CellSet {
+  repeated fixed64 cell_ids = 1;
+}
+
+// One S2 cell × one height interval: [f_min · b, (f_max + 1) · b) metres of
+// WGS84 ellipsoidal height, with bin b = 2^(25 − f_zoom) m as in Spatial ID.
+// 0 ≤ f_zoom ≤ 32 and −2^f_zoom ≤ f_min ≤ f_max ≤ 2^f_zoom − 1.
+message S2Voxel {
+  fixed64 cell_id = 1;
+  uint32 f_zoom = 2;
+  sint64 f_min = 3;  // inclusive
+  sint64 f_max = 4;  // inclusive
+}
+
+// A 3D region: S2 cells, each with one or more height intervals. Must be
+// canonical: entries sorted by (cell_id, lower bound), each interval at its
+// coarsest zoom, intervals of one cell neither overlapping nor touching, cells
+// pairwise disjoint, no 4 siblings with identical intervals left unmerged, at
+// most 16,384 entries, and at least one entry bounded in height (a set that
+// covers all heights everywhere is a cell_set). A non-canonical set is
+// rejected, never normalised.
+message S2VoxelSet {
+  repeated S2Voxel voxels = 1;
+}
+
 message LatLon {
   double latitude = 1;
   double longitude = 2;
@@ -116,6 +147,46 @@ message BoundingBox3DRegion {
   double max_longitude = 4;
   double min_altitude = 5;
   double max_altitude = 6;
+}
+
+// --- Location uncertainty ---
+
+// Calibration state of a nominal uncertainty region. Separate from
+// LocationProofVerdict: accuracy calibration and adversarial trust answer
+// different questions.
+enum UncertaintyCalibrationStatus {
+  UNCERTAINTY_CALIBRATION_UNSPECIFIED = 0;
+  UNCERTAINTY_UNCALIBRATED = 1;
+  UNCERTAINTY_NOMINAL_CALIBRATED = 2;
+  UNCERTAINTY_PROTECTION_CALIBRATED = 3;
+}
+
+// Vertical uncertainty relative to an ellipsoidal-altitude estimate. Horizontal
+// and vertical coverage are independent; two marginal 95% bounds are not one
+// joint 95% volume.
+message VerticalUncertaintyInterval {
+  double center_altitude_meters = 1;
+  double below_meters = 2;
+  double above_meters = 3;
+  uint32 coverage_ppm = 4;
+}
+
+// Statistical uncertainty of the location estimate behind a proof.
+// `nominal_region` is the estimator's statistical region; claimed_region stays
+// the single region predicates use. Signed via the uncertaintyFields stage
+// (octet-uncertainty-binding-v1).
+message LocationUncertainty {
+  ProofRegion nominal_region = 1;
+  // 950000 = nominal 95% coverage. Zero = percentile not declared, never 0%.
+  uint32 nominal_coverage_ppm = 2;
+  optional VerticalUncertaintyInterval vertical_interval = 3;
+  // SHA-256 of the frozen calibration profile. Empty when uncalibrated.
+  bytes calibration_profile_sha256 = 4;
+  UncertaintyCalibrationStatus calibration_status = 5;
+  // Upper bound on P(error outside claimed_region), in parts per million.
+  // Present only for UNCERTAINTY_PROTECTION_CALIBRATED.
+  optional uint32 protection_failure_risk_ppm = 6;
+  int64 estimate_timestamp_ms = 7;
 }
 
 // --- ZK Proof ---
@@ -232,6 +303,11 @@ message LocationProof {
   // no content.
   CallerManifest caller_manifest = 19;
 
+  // Statistical uncertainty of the estimate (highres proofs). Signed via the
+  // uncertaintyFields stage. An early highres build carried this at tag 18, which
+  // is query_region here; such a proof fails to decode rather than being misread.
+  optional LocationUncertainty uncertainty = 20;
+
   reserved 9, 14, 15;
 }
 
@@ -254,7 +330,7 @@ message CallerManifestEntry {
 }
 
 // Reference to a region by its v2 claim-table encoding (, semantic-binding
-// v3). region_type is the ProofRegion oneof field number (1..7); region_id is the
+// v3). region_type is the ProofRegion oneof field number (1..9); region_id is the
 // same bytes semantic-binding folds for that region's claimed_region (ISO code,
 // f64-be altitude, or a 32-byte geometry digest). It names a region without
 // revealing its geometry beyond a digest.

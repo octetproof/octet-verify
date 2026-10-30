@@ -58,21 +58,29 @@ OPTIONS:
                                matches type and value; the bare form (US-CA) is a
                                country/subdivision ISO-code alias. FAILS (not
                                skipped) if the proof's region has no identifier to
-                               match (earth/ellipse/h3/bbox) or no region at all.
+                               match (earth/ellipse/h3/bbox/cellset/voxelset) or no
+                               region at all.
     --expect-region-type <t>   Assert the claimed region is of this type: one of
                                earth, country, subdivision, city, ellipse, h3,
-                               bbox. The positive counterpart to --expect-region —
-                               use it to affirmatively accept a geometric or
-                               earth-region proof. FAILS on a type mismatch or no
-                               region.
-    --expect-region-contains <lat>,<lon>
+                               bbox, cellset, voxelset. The positive counterpart to
+                               --expect-region — use it to affirmatively accept a
+                               geometric or earth-region proof. FAILS on a type
+                               mismatch or no region.
+    --expect-region-contains <lat>,<lon>[,<h>]
                                Assert the claimed region CONTAINS this point
-                               (decimal degrees). Positively asserts a geometric
-                               proof by location: earth (always), city (disc),
+                               (decimal degrees; h = WGS84 ellipsoidal height in
+                               metres, used only by a voxelset). Positively
+                               asserts a geometric proof by location: earth
+                               (always), city (disc),
                                ellipse, and bbox are evaluated, and h3 on a build
                                with --features h3 (inside iff some listed cell
                                contains the point at that cell's resolution; an
-                               empty or invalid cell set FAILS). FAILS for a named
+                               empty or invalid cell set FAILS), and an S2
+                               cellset in every build (inside iff the point's
+                               leaf cell is in a listed cell; a non-canonical set
+                               FAILS), and an S2 voxelset in every build (the leaf
+                               is in a listed cell and h in one of its height
+                               ranges; FAILS without h). FAILS for a named
                                country/subdivision (no geometry — use
                                --expect-region), for h3 without the `h3` feature,
                                and on no region.
@@ -159,6 +167,12 @@ OPTIONS:
                                `appattest` feature. A stateless CLI does not
                                enforce cross-proof assertion-counter monotonicity
                                (use the library + a persisted key for that).
+    --allow-unbound-app-attest Accept an iOS App Attest assertion in the legacy
+                               nonce-only form (SDKs before 2.0.0) as WARN instead
+                               of FAIL. By default the assertion must commit to the
+                               proof's signing key. Use it only for proofs archived
+                               from those SDKs: such a proof is valid but not
+                               attested. Ignored with --require-attestation.
     --app-attest-window <lower|leaf>/<upper>
                                Date-check the App Attest certificate chain: after
                                an app-attest PASS, app-attest-validity PASSes when
@@ -236,7 +250,7 @@ BACKEND FETCH MODE (subcommands; requires a build with --features net):
     --hardware-pubkey, --expect-region, --expect-region-type,
     --expect-region-contains, --expect-query-region, --session-nonce,
     --require-session-binding, --require-schema-v2, --require-attestation,
-    --require-verdict,
+    --allow-unbound-app-attest, --require-verdict,
     --max-age-seconds, --at, --window,
     --json, --app-attest-config, --app-attest-enrolment-bundle, --app-attest-window,
     --android-app-identity, --skip-hardware-attestation,

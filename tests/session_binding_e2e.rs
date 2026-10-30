@@ -84,10 +84,12 @@ fn verify_bound(proof: &LocationProof, nonce: &[u8], expect_at: bool) -> Report 
         expect_region: expect_at.then_some("AT"),
         expect_region_type: expect_at.then_some("country"),
         expect_region_contains: None,
+        expect_region_contains_height_m: None,
         session_nonce: Some(nonce),
         require_session_binding: true,
         require_schema_v2: false,
         require_attestation: false,
+        allow_unbound_app_attest: false,
         require_verdict: None,
         validation_window: None,
     };

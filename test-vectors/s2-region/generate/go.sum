@@ -1,0 +1,4 @@
+github.com/golang/geo v0.0.0-20261026081726-9e1e803a26c2 h1:mn9CrGOm+I97JqS7x6kqbI0AK09oFkHozXSKN4nxgoQ=
+github.com/golang/geo v0.0.0-20261026081726-9e1e803a26c2/go.mod h1:bJozU6ZRa8d29WpXkTQZ42lWCOJ+SC3XA8sXnLqA5IU=
+github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
+github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=

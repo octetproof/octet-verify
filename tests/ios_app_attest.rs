@@ -64,10 +64,12 @@ fn opts(hw: &octet_verify::crypto::P256VerifyingKey, require_attestation: bool) 
         expect_region: None,
         expect_region_type: None,
         expect_region_contains: None,
+        expect_region_contains_height_m: None,
         session_nonce: None,
         require_session_binding: false,
         require_schema_v2: false,
         require_attestation,
+        allow_unbound_app_attest: false,
         require_verdict: None,
         validation_window: None,
     }
@@ -103,15 +105,19 @@ fn real_ios_bound_proof_verifies_under_require_attestation() {
     assert!(report.is_authentic(), "a genuine iOS proof must be authentic");
 }
 
-/// Rollout posture: the same proof also verifies under PreferBound (no
-/// `--require-attestation`) — the bound form is accepted, and `is_attested` holds.
+/// The default policy (no `--require-attestation`) also requires the bound
+/// form, and the genuine bound proof PASSes under it, and under
+/// `allow_unbound_app_attest` too: that only relaxes legacy assertions.
 #[test]
-fn real_ios_bound_proof_also_verifies_under_prefer_bound() {
+fn real_ios_bound_proof_verifies_under_the_default_and_allow_unbound() {
     let hw = se_signing_key();
-    let report = verify_attested(&proof(), &opts(&hw, false), &expectation());
-    assert_eq!(status(&report, "app-attest"), Some(Status::Pass));
-    assert!(report.is_attested());
-    assert!(report.is_authentic());
+    for allow in [false, true] {
+        let o = VerifyOptions { allow_unbound_app_attest: allow, ..opts(&hw, false) };
+        let report = verify_attested(&proof(), &o, &expectation());
+        assert_eq!(status(&report, "app-attest"), Some(Status::Pass), "allow_unbound {allow}");
+        assert!(report.is_attested());
+        assert!(report.is_authentic());
+    }
 }
 
 /// The binding must be to *this* proof's signing key: verifying the genuine

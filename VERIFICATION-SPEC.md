@@ -41,6 +41,18 @@ that the signing key is genuine secure hardware, on both platforms:
   Android-style `attestation-root` line is `NOT-CHECKED` on iOS — App Attest is
   the iOS hardware root, and the two are told apart by key *shape*, not the
   editable `platform` field.
+
+  The App Attest key can't sign the proof itself, so the live assertion must
+  commit to the Secure Enclave key that does: its `clientDataHash` is
+  `SHA256(nonce ‖ certificate_chain[0])`. Otherwise a genuine
+  `(nonce, assertion)` pair could be replayed under any other key. An assertion
+  in the legacy form `SHA256(nonce)`, from SDKs before 2.0.0, FAILs `app-attest`,
+  and so does an assertion with no signing key to bind to. To verify proofs
+  archived from those SDKs, `--allow-unbound-app-attest`
+  (`VerifyOptions::allow_unbound_app_attest`) accepts the legacy form as a WARN:
+  the assertion is genuine but unbound, so the proof is valid but not attested.
+  `--require-attestation` overrides it. The one-time enrolment bundle's
+  assertion is always in the legacy form, which is expected.
 - **Android — key attestation** (the `attestation-root` check). The
   `device_attestation.certificate_chain` is validated leaf → … → an embedded,
   fingerprint-pinned Google hardware-attestation root (both the RSA-4096 root and
@@ -136,6 +148,141 @@ trusts city coordinates fails closed. Binding city/earth geometry is the later
 `octet-semantic-binding-v2` pass (verifier + both SDK signers, in lockstep).
 
 A proof carrying no `semanticFields` stage reports NOT-CHECKED for this binding.
+
+### 2.1a S2 cell sets (region tag 8)
+
+A `cell_set` region (`ProofRegion` field 8, `S2CellSet{repeated fixed64
+cell_ids = 1}`) is a union of [S2](https://s2geometry.io) cells at mixed levels,
+each a standard 64-bit S2 `CellId`.
+
+**Canonical form.** The set must be exactly its own S2 normalisation, so one
+region has one encoding:
+
+- non-empty, and at most 16,384 cells;
+- every id valid: face (`id >> 61`) below 6, and the lowest set bit at an even
+  position (level 0–30);
+- sorted ascending (unsigned) and pairwise disjoint, so no cell lies inside
+  another;
+- no 4 children of one cell left unmerged.
+
+A `cell-set` check reports it: PASS when canonical, FAIL otherwise. The verifier
+never normalises a set itself.
+
+**Digest.** The region's 32-byte id, used both in the semantic preimage and as
+a `query_region` id (`region_type` 8):
+
+```
+SHA256( "octet-region-cellset-v1" || u32be(n) || u64be(cell_id) for each of the n cells, in order )
+```
+
+No new semantic-binding version is needed: v1, v2 and v3 key the region by its
+type, and tag 8 adds one arm.
+
+**Containment** (`--expect-region-contains`, every build). The point maps to its
+S2 leaf cell (the quadratic projection and the Hilbert curve, as in the reference
+library), and it is inside iff that leaf lies in some cell's leaf range: a binary
+search over the canonical list. A non-canonical set, or a non-finite point,
+FAILs. `sin` and `cos` are not correctly rounded, so another implementation may
+put a point within about 1e-15 of a cell edge in the neighbouring leaf. This
+verifier uses the same pure-Rust `libm` on every target, and its answer is the
+authoritative one for such points. The step from the unit vector onward is exact.
+
+A verifier older than tag 8 sees a `cell_set` proof as having no region. Its
+semantic binding then fails, so the proof is rejected, never wrongly accepted.
+
+Golden vectors from the reference Go library are in `test-vectors/s2-region/`.
+
+### 2.1b S2 voxel sets (region tag 9)
+
+A `voxel_set` region (`ProofRegion` field 9, `S2VoxelSet{repeated S2Voxel
+voxels = 1}`) is a 3D region: S2 cells, each with one or more height intervals.
+An entry `S2Voxel{fixed64 cell_id = 1; uint32 f_zoom = 2; sint64 f_min = 3;
+sint64 f_max = 4}` covers the cell × the half-open interval
+
+```
+[ f_min · b, (f_max + 1) · b )  metres,   b = 2^(25 − f_zoom)
+```
+
+of **WGS84 ellipsoidal height**, with `0 ≤ f_zoom ≤ 32` and
+`−2^f_zoom ≤ f_min ≤ f_max ≤ 2^f_zoom − 1`. The bins are Spatial ID's, but
+Spatial ID's `f` is orthometric: an imported Spatial ID is converted to
+ellipsoidal height before it becomes an entry, never copied across.
+
+In zoom-32 bins, an entry's bounds are, defined by multiplication (not a shift,
+so a negative `f_min` reads the same in every language):
+
+```
+lo = f_min · 2^(32 − f_zoom)          hi = (f_max + 1) · 2^(32 − f_zoom)      (i64)
+```
+
+**Canonical form.** A voxel set is canonical iff:
+
+1. it is non-empty, has at most 16,384 entries, and every `cell_id` is valid;
+2. each interval is at its coarsest zoom: not (`f_zoom > 0`, `f_min` even and
+   `f_max` odd);
+3. entries are sorted by `(cell_id unsigned, lo)`;
+4. entries of one cell neither overlap nor touch: `next.lo > prev.hi`;
+5. distinct cells are pairwise disjoint;
+6. no 4 children of one cell have identical entry lists (compared as
+   `(f_zoom, f_min, f_max)` sequences);
+7. at least one entry is not full-height (`lo = −2^32, hi = 2^32`); a set that
+   covers all heights everywhere is sent as a `cell_set`.
+
+Rules 5 and 6 make the cells the maximal S2 cells over which the height set is
+constant, and rules 2–4 make each cell's intervals maximal, each at the one zoom
+that writes it, so a region has one spelling. A `voxel-set` check reports it:
+PASS when canonical, FAIL otherwise. The verifier never normalises.
+
+**Digest** (`region_type` 9, also the `query_region` id):
+
+```
+SHA256( "octet-region-voxelset-v1" || u32be(n)
+        || { u64be(cell_id) || u32be(f_zoom) || i64be(f_min) || i64be(f_max) } for each entry, in order )
+```
+
+**Containment** needs a point and a height `h` (WGS84 ellipsoidal metres,
+`--expect-region-contains <lat>,<lon>,<h>`). It is inside iff the point's leaf
+lies in a listed cell and `floor(h · 2^(f_zoom − 25))` lies in `[f_min, f_max]`
+for one of that cell's entries. No height, a height that is NaN or has
+`|h| ≥ 2^25`, or a non-canonical set FAILs. For other region types the height is
+ignored.
+
+As with tag 8, a verifier older than tag 9 sees no region, and the proof fails
+its semantic binding.
+
+### 2.1c Location uncertainty (`uncertaintyFields` stage)
+
+A highres proof may carry `LocationProof.uncertainty` (field 20): the
+estimator's statistical region (`nominal_region`, an ellipse, H3 set or 3D box),
+its nominal coverage, an optional vertical interval, the calibration status and
+profile hash, an optional protection failure risk, and the estimate time. It is
+signed by an `uncertaintyFields` stage whose `data_hash` is
+`SHA256(preimage)`:
+
+```
+"octet-uncertainty-binding-v1"
+‖ u32be(region case: 4 ellipse | 5 H3 | 6 3D box) ‖ u32be(32) ‖ region_digest
+‖ u32be(nominal_coverage_ppm)
+‖ u32be(1) ‖ f64be(center) ‖ f64be(below) ‖ f64be(above) ‖ u32be(coverage_ppm)   — or u32be(0) without a vertical interval
+‖ u32be(len(profile)) ‖ profile
+‖ u32be(calibration_status)
+‖ u32be(1) ‖ u32be(protection_failure_risk_ppm)                                — or u32be(0) without a risk
+‖ i64be(estimate_timestamp_ms)
+```
+
+`region_digest` is SHA-256 over an ellipse's centre lat, lon, semi-major,
+semi-minor and heading (f64be); an H3 set's cell ids sorted unsigned (u64be); or
+a box's min/max latitude, longitude and altitude (f64be). A value the SDK would
+refuse to sign has no preimage: coverage or risk above 1,000,000 ppm, a profile
+that isn't 32 bytes, a calibration status that disagrees with the profile, the
+coverage or the risk, an unspecified status, or an out-of-range region.
+
+The `uncertainty-binding` check PASSes when the field matches exactly one
+`uncertaintyFields` stage. It FAILs when the field has no stage, the stage has
+no field (stripped), there is more than one stage, the value has no preimage, or
+the hash differs. A proof with neither reports nothing. An early highres build
+carried the uncertainty at tag 18, which is `query_region` here; such a proof
+fails to decode.
 
 ### 2.2 Caller metadata (`callerMetadata` stage)
 

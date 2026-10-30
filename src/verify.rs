@@ -379,9 +379,14 @@ pub struct VerifyOptions<'a> {
     /// point, `Fail` otherwise (including a named country/subdivision region,
     /// which carries no embedded geometry — use `--expect-region` for those).
     /// Supported geometrically: `earth`, `city` (disc), `ellipse`, `bbox`, and
-    /// `h3` under the `h3` feature (an h3 region FAILs closed without it).
+    /// `h3` under the `h3` feature (an h3 region FAILs closed without it), and
+    /// the S2 `cellset` and `voxelset`.
     /// `None` ⇒ the check is not added.
     pub expect_region_contains: Option<(f64, f64)>,
+    /// Height for [`Self::expect_region_contains`], in metres of WGS84
+    /// ellipsoidal height. Evaluated only for an S2 `voxelset`, which FAILs
+    /// without it; ignored for every other region type.
+    pub expect_region_contains_height_m: Option<f64>,
     /// Per-login session nonce the relying party issued, checked against the
     /// proof's `sessionBinding` stage. `None` ⇒ the binding is NOT-CHECKED
     /// unless `require_session_binding` is set (then absent/unsupplied ⇒ FAIL).
@@ -415,9 +420,16 @@ pub struct VerifyOptions<'a> {
     /// [`crate::appattest_layer::verify_attested`] and the CLI clear it for their
     /// internal `verify` call and re-apply it after appending the real attestation
     /// checks. A build without the `appattest` feature cannot verify attestation,
-    /// so it always FAILs there. It does not yet require the *bound* assertion
-    /// form — that gate lands once the bound-binding rev is in (see).
+    /// so it always FAILs there. The *bound* assertion form is required in
+    /// every mode unless [`Self::allow_unbound_app_attest`] relaxes it.
     pub require_attestation: bool,
+    /// Accept an iOS App Attest assertion in the legacy nonce-only form, from
+    /// SDKs before 2.0.0, as WARN rather than FAIL. Off by default: the live
+    /// assertion must commit to the proof's signing key. Turn it on only to
+    /// verify proofs archived from those SDKs. Such a proof is not attested, and
+    /// [`Self::require_attestation`] overrides this. Used by
+    /// [`crate::appattest_layer::verify_attested`]; core [`verify`] ignores it.
+    pub allow_unbound_app_attest: bool,
     /// Require the **signed** spoofing verdict to be at least this tier. When
     /// set, a `verdict-required` check FAILs unless `semantic-binding` passed and
     /// the bound verdict meets the tier. It fails closed on an unbound proof,
@@ -631,7 +643,7 @@ pub fn verify(proof: &LocationProof, opts: &VerifyOptions) -> Report {
     // FAIL, per's rule that an expectation which cannot be evaluated is not
     // satisfied.
     if let Some((lat, lon)) = opts.expect_region_contains {
-        let (status, detail) = region_contains(proof, lat, lon);
+        let (status, detail) = region_contains(proof, lat, lon, opts.expect_region_contains_height_m);
         r.add("region-contains", status, detail);
     }
 
@@ -646,6 +658,8 @@ pub fn verify(proof: &LocationProof, opts: &VerifyOptions) -> Report {
     r.add("device-attestation-sig", Status::NotChecked,
         "DeviceAttestation.signature not verified in the default build (build --features appattest to verify field 2)");
     r.add_semantic_binding(proof, opts.require_schema_v2);
+    r.add_uncertainty_binding(proof);
+    r.add_cell_set_shape(proof);
     r.add_spoofing_verdict(proof, opts.require_verdict);
     // Per-login session binding — checked against the nonce the relying party
     // supplies. NOT-CHECKED (the default) when no nonce is given; when
@@ -852,6 +866,68 @@ impl Report {
         }
     }
 
+    /// A claimed S2 cell set (tag 8) or voxel set (tag 9) must be canonical:
+    /// exactly its own normalisation, non-empty and within the entry cap. Its
+    /// digest is signed as sent, so a non-canonical set can still match
+    /// `semantic-binding`; the `cell-set` / `voxel-set` check FAILs it so one
+    /// region never has two accepted spellings. Adds nothing for other region
+    /// types.
+    /// `uncertainty` (field 20) against its `uncertaintyFields` stage. Nothing is
+    /// reported for a proof with neither. The field without the stage, the
+    /// stage without the field (stripped), more than one stage, a value with no
+    /// valid preimage, or a hash mismatch all FAIL.
+    fn add_uncertainty_binding(&mut self, proof: &LocationProof) {
+        use crate::uncertainty::{binding_preimage, UNCERTAINTY_FIELDS_STAGE};
+        const NAME: &str = "uncertainty-binding";
+        let stages: Vec<&StageAttestation> =
+            proof.stage_attestations.iter().filter(|s| s.stage == UNCERTAINTY_FIELDS_STAGE).collect();
+        let Some(u) = &proof.uncertainty else {
+            if !stages.is_empty() {
+                self.add(NAME, Status::Fail,
+                    "an uncertaintyFields stage is signed but the proof carries no uncertainty (field 20 stripped)");
+            }
+            return;
+        };
+        let [stage] = stages.as_slice() else {
+            self.add(NAME, Status::Fail, format!(
+                "uncertainty present but {} uncertaintyFields stages sign it (need exactly 1)", stages.len()));
+            return;
+        };
+        match binding_preimage(u) {
+            Err(e) => self.add(NAME, Status::Fail, format!("uncertainty is not a signable value: {e}")),
+            Ok(pre) if crypto::sha256(&pre).as_slice() != stage.data_hash.as_slice() => {
+                self.add(NAME, Status::Fail, "uncertainty does not match its signed uncertaintyFields stage hash")
+            }
+            Ok(_) => self.add(NAME, Status::Pass, format!(
+                "uncertainty bound to the signed uncertaintyFields stage: {}, nominal coverage {} ppm{}",
+                uncertainty_status_label(u.calibration_status),
+                u.nominal_coverage_ppm,
+                u.protection_failure_risk_ppm
+                    .map(|r| format!(", protection failure risk ≤ {r} ppm"))
+                    .unwrap_or_default(),
+            )),
+        }
+    }
+
+    fn add_cell_set_shape(&mut self, proof: &LocationProof) {
+        use crate::navigate::proof_region::Region::{CellSet, VoxelSet};
+        match proof.claimed_region.as_ref().and_then(|r| r.region.as_ref()) {
+            Some(CellSet(s)) => match crate::s2::check_canonical(&s.cell_ids) {
+                Ok(()) => self.add("cell-set", Status::Pass,
+                    format!("claimed S2 cell set is canonical ({} cells)", s.cell_ids.len())),
+                Err(why) => self.add("cell-set", Status::Fail,
+                    format!("claimed S2 cell set is not canonical: {why}")),
+            },
+            Some(VoxelSet(s)) => match crate::s2::check_voxel_canonical(&s.voxels) {
+                Ok(()) => self.add("voxel-set", Status::Pass,
+                    format!("claimed S2 voxel set is canonical ({} entries)", s.voxels.len())),
+                Err(why) => self.add("voxel-set", Status::Fail,
+                    format!("claimed S2 voxel set is not canonical: {why}")),
+            },
+            _ => {}
+        }
+    }
+
     /// Record the signed spoofing verdict (only when `semantic-binding` passed),
     /// label a disc answer's tier, and enforce [`VerifyOptions::require_verdict`].
     /// Runs after [`Self::add_semantic_binding`], so the binding result and the
@@ -923,7 +999,7 @@ impl Report {
             Some(qr) if !query_region_id_shape_ok(qr.region_type, &qr.region_id) => self.add(
                 NAME, Status::Fail,
                 format!("query_region type {} / {}-byte region_id is not a supported, well-formed reference \
-                         (a present query must be country/subdivision/earth/ellipse/h3/bbox with a matching id)",
+                         (a present query must be country/subdivision/earth/ellipse/h3/bbox/cell_set/voxel_set with a matching id)",
                         qr.region_type, qr.region_id.len())),
             // One-way presence rule: a bound query with no answer is incoherent.
             Some(_) if self.location_verdict.is_none() => self.add(NAME, Status::Fail,
@@ -946,6 +1022,16 @@ const SEMANTIC_DOMAIN: &[u8] = b"octet-semantic-binding-v1";
 /// Stage whose `data_hash` is `SHA256(SEMANTIC_PREIMAGE)`.
 const SEMANTIC_FIELDS_STAGE: &str = "semanticFields";
 
+fn uncertainty_status_label(status: i32) -> &'static str {
+    use crate::navigate::UncertaintyCalibrationStatus as S;
+    match S::try_from(status) {
+        Ok(S::UncertaintyUncalibrated) => "uncalibrated",
+        Ok(S::UncertaintyNominalCalibrated) => "nominal-calibrated",
+        Ok(S::UncertaintyProtectionCalibrated) => "protection-calibrated",
+        _ => "unspecified",
+    }
+}
+
 /// Under preimage v1, is the claimed region's **geometry** fully covered by the
 /// semantic binding? True for regions whose identity *is* the region
 /// (country/subdivision), the geometric digests that fold every scalar
@@ -966,7 +1052,9 @@ fn region_geometry_bound_v1(proof: &LocationProof) -> bool {
         | Some(Subdivision(_))
         | Some(Ellipse(_))
         | Some(H3PolygonSet(_))
-        | Some(BoundingBox3d(_)) => true,
+        | Some(BoundingBox3d(_))
+        | Some(CellSet(_))
+        | Some(VoxelSet(_)) => true,
         // v1 preimage omits city centre/radius and earth max_altitude.
         Some(Earth(_)) | Some(City(_)) => false,
     }
@@ -987,6 +1075,8 @@ fn semantic_region(proof: &LocationProof) -> (u32, Vec<u8>) {
         Some(H3PolygonSet(h)) => (5, h3_digest(h)),
         Some(BoundingBox3d(b)) => (6, bbox_digest(b)),
         Some(Subdivision(s)) => (7, s.iso_code.clone().into_bytes()),
+        Some(CellSet(s)) => (8, crate::s2::cell_set_digest(&s.cell_ids).to_vec()),
+        Some(VoxelSet(s)) => (9, crate::s2::voxel_set_digest(&s.voxels).to_vec()),
     }
 }
 
@@ -1166,20 +1256,23 @@ pub fn query_region_ref(region: &crate::navigate::ProofRegion) -> Option<QueryRe
         H3PolygonSet(h) => (5, h3_digest(h)),
         BoundingBox3d(b) => (6, bbox_digest(b)),
         Subdivision(s) => (7, s.iso_code.clone().into_bytes()),
+        CellSet(s) => (8, crate::s2::cell_set_digest(&s.cell_ids).to_vec()),
+        VoxelSet(s) => (9, crate::s2::voxel_set_digest(&s.voxels).to_vec()),
     };
     Some(QueryRegion { region_type, region_id })
 }
 
 /// Does a bound `query_region`'s `region_id` have the shape its `region_type`
 /// implies? country = 2 bytes (ISO 3166-1 alpha-2), earth = 8 bytes
-/// (f64-be altitude), ellipse/h3/bbox = a 32-byte digest, subdivision = a
-/// non-empty ISO 3166-2 form (`"US-NY"`). `region_type` outside {1,2,4,5,6,7}
+/// (f64-be altitude), ellipse/h3/bbox/cell_set/voxel_set = a 32-byte digest,
+/// subdivision = a non-empty ISO 3166-2 form (`"US-NY"`). `region_type` outside
+/// {1,2,4,5,6,7,8,9}
 /// (notably 0 or 3/city, which must never appear as a *present* query) is invalid.
 fn query_region_id_shape_ok(region_type: u32, region_id: &[u8]) -> bool {
     match region_type {
         1 => region_id.len() == 8,
         2 => region_id.len() == 2,
-        4..=6 => region_id.len() == 32,
+        4..=6 | 8 | 9 => region_id.len() == 32,
         7 => !region_id.is_empty()
             && region_id.iter().all(|b| b.is_ascii())
             && region_id.contains(&b'-'),
@@ -1295,13 +1388,15 @@ fn region_type_tag(proof: &LocationProof) -> Option<&'static str> {
         Ellipse(_) => "ellipse",
         H3PolygonSet(_) => "h3",
         BoundingBox3d(_) => "bbox",
+        CellSet(_) => "cellset",
+        VoxelSet(_) => "voxelset",
     })
 }
 
 /// The `--expect-region-type` values a caller may supply. Exposed so the CLI can
 /// reject a typo with a usage error rather than a silent mismatch.
-pub const REGION_TYPES: [&str; 7] =
-    ["earth", "country", "subdivision", "city", "ellipse", "h3", "bbox"];
+pub const REGION_TYPES: [&str; 9] =
+    ["earth", "country", "subdivision", "city", "ellipse", "h3", "bbox", "cellset", "voxelset"];
 
 /// True iff `s` names a known region type (case-insensitive).
 pub fn is_known_region_type(s: &str) -> bool {
@@ -1319,8 +1414,12 @@ pub fn is_known_region_type(s: &str) -> bool {
 /// Regions with no embedded geometry cannot be evaluated and FAIL (per's
 /// "unevaluable ⇒ not satisfied"): `country`/`subdivision` carry only an ISO code
 /// (use `--expect-region`). `h3` is evaluated per cell with `h3o` under the `h3`
-/// feature (see [`h3_contains`]) and FAILs closed without it.
-fn region_contains(proof: &LocationProof, lat: f64, lon: f64) -> (Status, String) {
+/// feature (see [`h3_contains`]) and FAILs closed without it. An S2 `cellset`
+/// is evaluated in every build: the point's leaf cell must fall in one of the
+/// cells' leaf ranges. A non-canonical cell set FAILs. An S2 `voxelset` also
+/// needs the height `h` (WGS84 ellipsoidal metres) and FAILs without it; `h` is
+/// not used for any other region type.
+fn region_contains(proof: &LocationProof, lat: f64, lon: f64, h: Option<f64>) -> (Status, String) {
     use crate::navigate::proof_region::Region::*;
     let at = format!("({lat:.5}, {lon:.5})");
     let yn = |inside: bool, what: &str| {
@@ -1362,6 +1461,22 @@ fn region_contains(proof: &LocationProof, lat: f64, lon: f64) -> (Status, String
             Ok(inside) => yn(inside, &format!("h3 cell set ({} cells)", h.cell_ids.len())),
             Err(why) => (Status::Fail, format!("cannot evaluate h3 containment of {at}: {why}")),
         },
+        Some(CellSet(s)) => match cell_set_contains(&s.cell_ids, lat, lon) {
+            Ok(inside) => yn(inside, &format!("S2 cell set ({} cells)", s.cell_ids.len())),
+            Err(why) => (Status::Fail, format!("cannot evaluate S2 containment of {at}: {why}")),
+        },
+        Some(VoxelSet(s)) => match voxel_set_contains(&s.voxels, lat, lon, h) {
+            Ok(inside) => {
+                let at = format!("({lat:.5}, {lon:.5}, {} m)", h.unwrap_or_default());
+                let what = format!("S2 voxel set ({} entries)", s.voxels.len());
+                if inside {
+                    (Status::Pass, format!("claimed {what} contains {at}"))
+                } else {
+                    (Status::Fail, format!("claimed {what} does not contain {at}"))
+                }
+            }
+            Err(why) => (Status::Fail, format!("cannot evaluate S2 voxel containment of {at}: {why}")),
+        },
     }
 }
 
@@ -1395,6 +1510,25 @@ fn h3_contains(_: &crate::navigate::H3PolygonSet, _: f64, _: f64) -> Result<bool
     Err("h3 point-containment needs the `h3` feature (build --features h3); \
          use --expect-region-type h3 to accept the region type alone"
         .into())
+}
+
+/// Point-in-S2-cell-set: the set must be canonical, and the point is inside iff
+/// its leaf cell lies in some cell's leaf range. S2 cells are closed, so a point
+/// on a shared edge goes to one deterministic side, as in the reference library.
+fn cell_set_contains(ids: &[u64], lat: f64, lon: f64) -> Result<bool, String> {
+    crate::s2::check_canonical(ids).map_err(|why| format!("the cell set is not canonical: {why}"))?;
+    let leaf = crate::s2::leaf_from_lat_lng(lat, lon).ok_or("invalid point")?;
+    Ok(crate::s2::cell_set_contains_leaf(ids, leaf))
+}
+
+/// Point-in-S2-voxel-set: the set must be canonical and a height given, and the
+/// point is inside iff its leaf lies in a listed cell and the height's bin at
+/// one of that cell's entries lies in the entry's `[f_min, f_max]`.
+fn voxel_set_contains(vs: &[crate::navigate::S2Voxel], lat: f64, lon: f64, h: Option<f64>) -> Result<bool, String> {
+    crate::s2::check_voxel_canonical(vs).map_err(|why| format!("the voxel set is not canonical: {why}"))?;
+    let h = h.ok_or("a voxel set needs a height (WGS84 ellipsoidal metres) to evaluate containment")?;
+    let leaf = crate::s2::leaf_from_lat_lng(lat, lon).ok_or("invalid point")?;
+    crate::s2::voxel_set_contains(vs, leaf, h).ok_or_else(|| format!("height {h} m is outside ±2^25 m"))
 }
 
 /// Great-circle distance in metres (spherical earth).
@@ -1439,6 +1573,8 @@ fn region_label(proof: &LocationProof) -> String {
         Some(Ellipse(_)) => "ellipse".into(),
         Some(H3PolygonSet(_)) => "h3_polygon_set".into(),
         Some(BoundingBox3d(_)) => "bounding_box_3d".into(),
+        Some(CellSet(s)) => format!("cell_set ({} cells)", s.cell_ids.len()),
+        Some(VoxelSet(s)) => format!("voxel_set ({} entries)", s.voxels.len()),
     }
 }
 
@@ -1738,10 +1874,10 @@ mod tests {
                 max_age_s: 300,
                 hardware_pubkey: Some(&vk),
                 hw_key_source: "test",
-                expect_region: None, expect_region_type: None, expect_region_contains: None,
+                expect_region: None, expect_region_type: None, expect_region_contains: None, expect_region_contains_height_m: None,
                 session_nonce: None,
                 require_session_binding: false,
-                require_schema_v2: false, require_attestation: false, require_verdict: None, validation_window: None,
+                require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None,
             })
         };
 
@@ -1771,8 +1907,8 @@ mod tests {
         let wrong = *SigningKey::from_slice(&[9u8; 32]).unwrap().verifying_key();
         let r3 = verify(&good, &VerifyOptions {
             now_ms: ts, max_age_s: 300, hardware_pubkey: Some(&wrong),
-            hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, session_nonce: None,
-            require_session_binding: false, require_schema_v2: false, require_attestation: false, require_verdict: None, validation_window: None,
+            hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, expect_region_contains_height_m: None, session_nonce: None,
+            require_session_binding: false, require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None,
         });
         assert!(!r3.is_valid());
         assert_eq!(status_of(&r3, "stage-signatures"), Status::Fail);
@@ -1782,6 +1918,94 @@ mod tests {
     /// pass because *other* fields happen to be bound. Renaming the `commitment`
     /// binding stage leaves `position_commitment` present and unverifiable — the
     /// verifier must refuse to vouch for it.
+    /// `build_proof` plus a signed uncertaintyFields stage over `stage_value`
+    /// (inserted before proofAssembly) and `field` as the uncertainty.
+    fn proof_with_uncertainty(
+        sk: &SigningKey,
+        ts: i64,
+        stage_value: Option<&crate::navigate::LocationUncertainty>,
+        field: Option<crate::navigate::LocationUncertainty>,
+    ) -> LocationProof {
+        let mut proof = build_proof(sk, ts);
+        let mut stages: Vec<StageAttestation> = proof.stage_attestations[..4].to_vec();
+        if let Some(u) = stage_value {
+            let pre = crate::uncertainty::binding_preimage(u).unwrap();
+            let prev = stages.last().unwrap().data_hash.clone();
+            stages.push(signed_stage(sk, crate::uncertainty::UNCERTAINTY_FIELDS_STAGE, &pre, ts, Some(prev)));
+        }
+        let concat: Vec<u8> = stages.iter().flat_map(|s| s.signature.clone()).collect();
+        let prev = stages.last().unwrap().data_hash.clone();
+        stages.push(signed_stage(sk, "proofAssembly", &concat, ts, Some(prev)));
+        proof.stage_attestations = stages;
+        proof.uncertainty = field;
+        proof
+    }
+
+    fn opts_at(ts: i64) -> VerifyOptions<'static> {
+        VerifyOptions {
+            now_ms: ts, max_age_s: 300, hardware_pubkey: None,
+            hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, expect_region_contains_height_m: None, session_nonce: None,
+            require_session_binding: false, require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None,
+        }
+    }
+
+    #[test]
+    fn uncertainty_binding() {
+        let sk = SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let ts = 1_700_000_000_000;
+        let u = crate::uncertainty::tests::golden();
+        let has = |r: &Report| r.checks.iter().any(|c| c.name == "uncertainty-binding");
+        let lines = |r: &Report| r.checks.iter().map(|c| format!("{} {:?} {}", c.name, c.status, c.detail)).collect::<Vec<_>>().join("\n");
+
+        // Neither field nor stage: no line, still valid.
+        let r = verify(&proof_with_uncertainty(&sk, ts, None, None), &opts_at(ts));
+        assert!(!has(&r) && r.is_valid());
+
+        // Bound: PASS, and the chain (now one stage longer) still verifies.
+        let r = verify(&proof_with_uncertainty(&sk, ts, Some(&u), Some(u.clone())), &opts_at(ts));
+        assert_eq!(status_of(&r, "uncertainty-binding"), Status::Pass, "{}", lines(&r));
+        assert!(r.is_valid(), "{}", lines(&r));
+
+        // Edited after signing.
+        let mut edited = u.clone();
+        edited.protection_failure_risk_ppm = Some(1);
+        let r = verify(&proof_with_uncertainty(&sk, ts, Some(&u), Some(edited)), &opts_at(ts));
+        assert_eq!(status_of(&r, "uncertainty-binding"), Status::Fail);
+        assert!(!r.is_valid());
+
+        // Stripped: stage signed, field gone.
+        let r = verify(&proof_with_uncertainty(&sk, ts, Some(&u), None), &opts_at(ts));
+        assert_eq!(status_of(&r, "uncertainty-binding"), Status::Fail);
+        assert!(!r.is_valid());
+
+        // Injected: field present, nothing signs it.
+        let r = verify(&proof_with_uncertainty(&sk, ts, None, Some(u.clone())), &opts_at(ts));
+        assert_eq!(status_of(&r, "uncertainty-binding"), Status::Fail);
+        assert!(!r.is_valid());
+    }
+
+    /// An early highres build put LocationUncertainty at tag 18, which is
+    /// query_region here. Such a proof must not decode (and so never verify),
+    /// rather than have its uncertainty misread as a queried region.
+    #[test]
+    fn uncertainty_at_tag_18_does_not_decode() {
+        use prost::Message;
+        let sk = SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let proof = build_proof(&sk, 1_700_000_000_000);
+        let mut bytes = proof.encode_to_vec();
+        let u = crate::uncertainty::tests::golden().encode_to_vec();
+        bytes.extend_from_slice(&[(18 << 3 | 2) as u8 | 0x80, 0x01]); // tag 18, wire type 2
+        prost::encoding::encode_varint(u.len() as u64, &mut bytes);
+        bytes.extend_from_slice(&u);
+        assert!(LocationProof::decode(bytes.as_slice()).is_err());
+
+        // The same value at tag 20 decodes as the uncertainty.
+        let mut ok = proof.clone();
+        ok.uncertainty = Some(crate::uncertainty::tests::golden());
+        let back = LocationProof::decode(ok.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(back.uncertainty, ok.uncertainty);
+    }
+
     #[test]
     fn present_field_with_no_binding_stage_fails() {
         let sk = SigningKey::from_slice(&[7u8; 32]).unwrap();
@@ -1796,8 +2020,8 @@ mod tests {
 
         let r = verify(&proof, &VerifyOptions {
             now_ms: ts, max_age_s: 300, hardware_pubkey: None,
-            hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, session_nonce: None,
-            require_session_binding: false, require_schema_v2: false, require_attestation: false, require_verdict: None, validation_window: None,
+            hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, expect_region_contains_height_m: None, session_nonce: None,
+            require_session_binding: false, require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None,
         });
         // nullifier + zkProof are still bound, but the unbound commitment must
         // not be papered over.
@@ -1818,8 +2042,8 @@ mod tests {
 
         let r = verify(&proof, &VerifyOptions {
             now_ms: now, max_age_s: 300, hardware_pubkey: None,
-            hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, session_nonce: None,
-            require_session_binding: false, require_schema_v2: false, require_attestation: false, require_verdict: None, validation_window: None,
+            hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, expect_region_contains_height_m: None, session_nonce: None,
+            require_session_binding: false, require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None,
         });
         assert_eq!(status_of(&r, "freshness"), Status::Fail, "signed time is stale");
         // The edit of the unbound field is surfaced, not ignored.
@@ -1838,8 +2062,8 @@ mod tests {
         let freshness = |window: Option<ValidationWindow>| {
             let r = verify(&proof, &VerifyOptions {
                 now_ms: years_later, max_age_s: 300, hardware_pubkey: None,
-                hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, session_nonce: None,
-                require_session_binding: false, require_schema_v2: false, require_attestation: false, require_verdict: None,
+                hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, expect_region_contains_height_m: None, session_nonce: None,
+                require_session_binding: false, require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None,
                 validation_window: window,
             });
             status_of(&r, "freshness")
@@ -1876,8 +2100,8 @@ mod tests {
 
         let r = verify(&proof, &VerifyOptions {
             now_ms: now, max_age_s: 300, hardware_pubkey: None,
-            hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, session_nonce: None,
-            require_session_binding: false, require_schema_v2: false, require_attestation: false, require_verdict: None, validation_window: None,
+            hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, expect_region_contains_height_m: None, session_nonce: None,
+            require_session_binding: false, require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None,
         });
         assert_eq!(status_of(&r, "freshness"), Status::Fail);
     }
@@ -2056,11 +2280,12 @@ mod tests {
             hardware_pubkey: None,
             hw_key_source: "test",
             expect_region: None,
-            expect_region_type: None, expect_region_contains: None,
+            expect_region_type: None, expect_region_contains: None, expect_region_contains_height_m: None,
             session_nonce: None,
             require_session_binding: false,
             require_schema_v2: false,
             require_attestation: true,
+            allow_unbound_app_attest: false,
             require_verdict: None,
             validation_window: None,
         };
@@ -2071,7 +2296,7 @@ mod tests {
         );
         assert!(!r.is_valid());
         // Disarmed: no attestation-required check at all.
-        let opts_off = VerifyOptions { require_attestation: false, ..opts };
+        let opts_off = VerifyOptions { require_attestation: false, allow_unbound_app_attest: false, ..opts };
         assert!(verify(&proof, &opts_off).checks.iter().all(|c| c.name != "attestation-required"));
     }
 
@@ -2149,10 +2374,12 @@ mod tests {
             expect_region: None,
             expect_region_type: None,
             expect_region_contains: None,
+            expect_region_contains_height_m: None,
             session_nonce: None,
             require_session_binding: false,
             require_schema_v2: false,
             require_attestation: false,
+            allow_unbound_app_attest: false,
             require_verdict: None,
             validation_window: None,
         };
@@ -2473,6 +2700,105 @@ mod tests {
         let rinj = report(&v2_injected);
         assert_eq!(status_of(&rinj, "semantic-binding"), Status::Fail, "injected Q on a v2 proof must FAIL");
         assert_eq!(rinj.query_region(), None, "no Q exposed for a non-v3 proof");
+    }
+
+    /// S2 cell sets (tag 8) under semantic binding v3: a cell-set claim and a
+    /// cell-set query fold the `octet-region-cellset-v1` digest, and
+    /// `query_region_ref` returns that digest. The preimage comes from the
+    /// independent Go generator in `test-vectors/s2-region/generate/`.
+    #[test]
+    fn semantic_binding_v3_cell_set_vector() {
+        use crate::navigate::{proof_region::Region, DeviceIntegrityVerdict, ProofRegion, RegionRef, S2CellSet};
+        let raw = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/test-vectors/s2-region/vectors.json"));
+        let doc: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let cells = |v: &serde_json::Value| -> Vec<u64> {
+            v.as_array().unwrap().iter().map(|h| u64::from_str_radix(h.as_str().unwrap(), 16).unwrap()).collect()
+        };
+        let vectors = doc["preimage_v3"].as_array().unwrap();
+        assert!(!vectors.is_empty());
+        for v in vectors {
+            let name = v["name"].as_str().unwrap();
+            let region = |key: &str| ProofRegion { region: Some(Region::CellSet(S2CellSet { cell_ids: cells(&v[key]) })) };
+            let q = query_region_ref(&region("query_cells_hex")).expect("a cell set is a bindable query");
+            assert_eq!(q.region_type, 8, "{name}");
+            assert_eq!(hex::encode(&q.region_id), v["query_region_id_hex"].as_str().unwrap(), "{name}: query_region_ref");
+            assert!(query_region_id_shape_ok(8, &q.region_id), "{name}: a 32-byte cell-set id is well-formed");
+            assert!(!query_region_id_shape_ok(8, &q.region_id[..31]), "{name}: a short cell-set id is not");
+
+            let proof = LocationProof {
+                spoofing_verdict: v["spoofing_verdict"].as_i64().unwrap() as i32,
+                level: v["level"].as_i64().unwrap() as i32,
+                position_commitment: hex::decode(v["commitment_hex"].as_str().unwrap()).unwrap(),
+                claimed_region: Some(region("claimed_cells_hex")),
+                location_verdict: v["location_verdict"].as_i64().unwrap() as i32,
+                query_region: Some(RegionRef { region_type: q.region_type, region_id: q.region_id.clone() }),
+                device_attestation: Some(DeviceAttestation {
+                    integrity_verdict: Some(DeviceIntegrityVerdict {
+                        status: v["integrity_status"].as_i64().unwrap() as i32,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let pre = semantic_preimage_v3(&proof);
+            assert_eq!(hex::encode(&pre), v["preimage_hex"].as_str().unwrap(), "{name}: v3 preimage");
+            assert_eq!(hex::encode(crypto::sha256(&pre)), v["stage_hash_hex"].as_str().unwrap(), "{name}: stage hash");
+            assert!(region_geometry_bound_v1(&proof), "{name}: a cell set's digest folds its whole geometry");
+        }
+    }
+
+    /// S2 voxel sets (tag 9) under semantic binding v3, as for tag 8: a voxel-set
+    /// claim and query fold the `octet-region-voxelset-v1` digest.
+    #[test]
+    fn semantic_binding_v3_voxel_set_vector() {
+        use crate::navigate::{proof_region::Region, DeviceIntegrityVerdict, ProofRegion, RegionRef, S2Voxel, S2VoxelSet};
+        let raw = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/test-vectors/s2-region/vectors.json"));
+        let doc: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let voxels = |v: &serde_json::Value| -> Vec<S2Voxel> {
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|e| S2Voxel {
+                    cell_id: u64::from_str_radix(e["cell_hex"].as_str().unwrap(), 16).unwrap(),
+                    f_zoom: e["f_zoom"].as_u64().unwrap() as u32,
+                    f_min: e["f_min"].as_i64().unwrap(),
+                    f_max: e["f_max"].as_i64().unwrap(),
+                })
+                .collect()
+        };
+        let vectors = doc["voxel_set"]["preimage_v3"].as_array().unwrap();
+        assert!(!vectors.is_empty());
+        for v in vectors {
+            let name = v["name"].as_str().unwrap();
+            let region = |key: &str| ProofRegion { region: Some(Region::VoxelSet(S2VoxelSet { voxels: voxels(&v[key]) })) };
+            let q = query_region_ref(&region("query_entries")).expect("a voxel set is a bindable query");
+            assert_eq!(q.region_type, 9, "{name}");
+            assert_eq!(hex::encode(&q.region_id), v["query_region_id_hex"].as_str().unwrap(), "{name}: query_region_ref");
+            assert!(query_region_id_shape_ok(9, &q.region_id), "{name}: a 32-byte voxel-set id is well-formed");
+            assert!(!query_region_id_shape_ok(9, &q.region_id[..31]), "{name}: a short voxel-set id is not");
+
+            let proof = LocationProof {
+                spoofing_verdict: v["spoofing_verdict"].as_i64().unwrap() as i32,
+                level: v["level"].as_i64().unwrap() as i32,
+                position_commitment: hex::decode(v["commitment_hex"].as_str().unwrap()).unwrap(),
+                claimed_region: Some(region("claimed_entries")),
+                location_verdict: v["location_verdict"].as_i64().unwrap() as i32,
+                query_region: Some(RegionRef { region_type: q.region_type, region_id: q.region_id.clone() }),
+                device_attestation: Some(DeviceAttestation {
+                    integrity_verdict: Some(DeviceIntegrityVerdict {
+                        status: v["integrity_status"].as_i64().unwrap() as i32,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let pre = semantic_preimage_v3(&proof);
+            assert_eq!(hex::encode(&pre), v["preimage_hex"].as_str().unwrap(), "{name}: v3 preimage");
+            assert_eq!(hex::encode(crypto::sha256(&pre)), v["stage_hash_hex"].as_str().unwrap(), "{name}: stage hash");
+            assert!(region_geometry_bound_v1(&proof), "{name}: a voxel set's digest folds its whole geometry");
+        }
     }
 
     /// Cross-repo golden vectors: the v3 preimage this verifier derives must
@@ -2812,10 +3138,12 @@ mod tests {
             expect_region: None,
             expect_region_type: None,
             expect_region_contains: None,
+            expect_region_contains_height_m: None,
             session_nonce: None,
             require_session_binding: false,
             require_schema_v2: false,
             require_attestation: false,
+            allow_unbound_app_attest: false,
             require_verdict: None,
             validation_window: None,
         };
@@ -3003,7 +3331,7 @@ mod tests {
             claimed_region: Some(ProofRegion { region: Some(region) }),
             ..Default::default()
         };
-        let st = |r: Region, lat: f64, lon: f64| region_contains(&proof(r), lat, lon).0;
+        let st = |r: Region, lat: f64, lon: f64| region_contains(&proof(r), lat, lon, None).0;
         let (sf_lat, sf_lon) = (37.7749, -122.4194); // San Francisco
         let (ny_lat, ny_lon) = (40.7128, -74.0060); // New York (far away)
 
@@ -3053,7 +3381,7 @@ mod tests {
 
         // No region at all → FAIL.
         let no_region = LocationProof { claimed_region: None, ..Default::default() };
-        assert_eq!(region_contains(&no_region, sf_lat, sf_lon).0, Status::Fail);
+        assert_eq!(region_contains(&no_region, sf_lat, sf_lon, None).0, Status::Fail);
     }
 
     ///: `--expect-region-type` is a positive type assertion — the
@@ -3082,10 +3410,12 @@ mod tests {
                 expect_region: None,
                 expect_region_type: want_ty,
                 expect_region_contains: None,
+                expect_region_contains_height_m: None,
                 session_nonce: None,
                 require_session_binding: false,
                 require_schema_v2: false,
                 require_attestation: false,
+                allow_unbound_app_attest: false,
                 require_verdict: None,
                 validation_window: None,
             }
@@ -3156,10 +3486,12 @@ mod tests {
             expect_region: None,
             expect_region_type: None,
             expect_region_contains: contains,
+            expect_region_contains_height_m: None,
             session_nonce: None,
             require_session_binding: false,
             require_schema_v2: false,
             require_attestation: false,
+            allow_unbound_app_attest: false,
             require_verdict: None,
             validation_window: None,
         };
@@ -3215,8 +3547,8 @@ mod tests {
         let run = |sn: Option<&[u8]>| {
             verify(&proof, &VerifyOptions {
                 now_ms: 1, max_age_s: 300, hardware_pubkey: None,
-                hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, session_nonce: sn,
-                require_session_binding: false, require_schema_v2: false, require_attestation: false, require_verdict: None, validation_window: None,
+                hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, expect_region_contains_height_m: None, session_nonce: sn,
+                require_session_binding: false, require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None,
             })
         };
         assert_eq!(status_of(&run(None), "session-binding"), Status::NotChecked);
@@ -3240,8 +3572,8 @@ mod tests {
         });
         let r = verify(&proof, &VerifyOptions {
             now_ms: now, max_age_s: 300, hardware_pubkey: None,
-            hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, session_nonce: None,
-            require_session_binding: false, require_schema_v2: false, require_attestation: false, require_verdict: None, validation_window: None,
+            hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, expect_region_contains_height_m: None, session_nonce: None,
+            require_session_binding: false, require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None,
         });
         // Uses proofAssembly's timestamp (fresh), not the trailing stage's.
         assert_eq!(status_of(&r, "freshness"), Status::Pass);

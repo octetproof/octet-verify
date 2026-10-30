@@ -4,6 +4,64 @@ All notable changes to `octet-verify` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [1.9.0] - 2026-10-30
+
+S2 grid regions (tags 8 and 9), the signed highres location uncertainty, and
+iOS App Attest assertions bound to the signing key by default.
+
+### Changed
+- **iOS App Attest assertions must be bound to the signing key by default.** A
+  live assertion's `clientDataHash` must be `SHA256(nonce ‖
+  certificate_chain[0])`, which SDKs have emitted since 2.0.0. The legacy
+  nonce-only form now FAILs `app-attest` in every mode, not only under
+  `--require-attestation`, so a genuine assertion can't be replayed under
+  another signing key. No device on an older SDK has been active on production
+  since 2026-10-07. For proofs archived from those SDKs,
+  `--allow-unbound-app-attest` (`VerifyOptions::allow_unbound_app_attest`)
+  accepts the legacy form as a WARN: valid, but not attested.
+  `appattest_check` now takes an `AssertionPolicy` in place of its
+  `require_binding` flag.
+
+### Added
+- **Location uncertainty (field 20).** Highres proofs carry a signed
+  `LocationUncertainty`: the estimator's statistical region and coverage, an
+  optional vertical interval, the calibration status, and an optional
+  protection failure risk. A new `uncertainty-binding` check recomputes its
+  `octet-uncertainty-binding-v1` preimage and compares it with the signed
+  `uncertaintyFields` stage; an edited, stripped or unsigned uncertainty FAILs
+  (VERIFICATION-SPEC §2.1c). The `uncertainty` module exposes the preimage. A
+  proof from an early highres build that put the uncertainty at tag 18 (now
+  `query_region`) fails to decode, so it is never misread.
+- **S2 cell sets (region tag 8).** A `cell_set` region is a union of S2 cells at
+  mixed levels. It must be canonical (exactly its own S2 normalisation:
+  non-empty, at most 16,384 cells, valid ids, sorted, disjoint, no 4 siblings
+  left unmerged), which a new `cell-set` check reports. Its digest,
+  `SHA256("octet-region-cellset-v1" ‖ u32be(n) ‖ u64be(id)ⁿ)`, joins the
+  semantic binding and `query_region_ref` (`region_type` 8), and
+  `--expect-region-contains` evaluates it in every build.
+  `--expect-region-type cellset` accepts it. The new `s2` module exposes the
+  cell-id helpers, the point → leaf-cell mapping, `check_canonical`,
+  `normalize`, `cell_set_digest` and the Spatial ID height-bin index
+  `f_index`. Golden vectors from the reference Go S2 library are in
+  `test-vectors/s2-region/`.
+- **S2 voxel sets (region tag 9).** A `voxel_set` region is S2 cells, each with
+  one or more ranges of WGS84 ellipsoidal height in Spatial ID bins
+  (`S2Voxel{cell_id, f_zoom, f_min, f_max}`, the interval
+  `[f_min·2^(25−f_zoom), (f_max+1)·2^(25−f_zoom))` metres, `f_zoom` 0–32). It
+  must be canonical (at most 16,384 entries, sorted by cell and then height,
+  each interval at its coarsest zoom, one cell's intervals neither overlapping
+  nor touching, cells disjoint, no 4 siblings with identical heights left
+  unmerged, and at least one entry bounded in height, since all heights
+  everywhere is a cell set), which a new `voxel-set` check reports. Its digest,
+  `SHA256("octet-region-voxelset-v1" ‖ u32be(n) ‖ {u64be cell ‖ u32be f_zoom ‖
+  i64be f_min ‖ i64be f_max}ⁿ)`, joins the semantic binding and
+  `query_region_ref` (`region_type` 9). `--expect-region-contains` takes an
+  optional height (`<lat>,<lon>,<h>`) and a voxel set FAILs without one;
+  `VerifyOptions` gains `expect_region_contains_height_m` for it.
+  `--expect-region-type voxelset` accepts it. The `s2` module adds
+  `check_voxel_canonical`, `normalize_voxels`, `voxel_set_digest` and
+  `voxel_set_contains`.
+
 ## [1.8.0] - 2026-10-26
 
 ### Added

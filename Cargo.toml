@@ -1,6 +1,6 @@
 [package]
 name = "octet-verify"
-version = "1.8.0"
+version = "1.9.0"
 edition = "2021"
 description = "Standalone, independent verifier for Octet LocationProof artifacts. Checks authenticity and integrity (signatures, hash-chain, freshness, region claim) without any device-side secret or proof-creation logic."
 repository = "https://github.com/octetproof/octet-verify"
@@ -70,6 +70,7 @@ h3 = ["dep:h3o"]
 prost = "0.13"
 h3o = { version = "0.11", optional = true, default-features = false } # feature `h3` only
 sha2 = "0.10"
+libm = "0.2"            # S2 point → cell: one sin/cos on every target (CLI, server, wasm)
 p256 = "0.13"            # ECDSA P-256 verify (DER + raw), SEC1 public keys
 ed25519-dalek = "2"     # Ed25519 transport-signature verify
 anyhow = "1"
