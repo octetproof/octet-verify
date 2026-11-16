@@ -1,0 +1,18 @@
+{
+  "case": "wrong-index",
+  "type": "inclusion",
+  "description": "leaf 3's bundle claiming index 2",
+  "expect_error": "the proof does not verify: the inclusion proof does not lead to the checkpoint root",
+  "bundle": {
+    "v": 1,
+    "index": 2,
+    "size": 7,
+    "entry": "b2N0ZXQtdGxvZy92MQpyZWxlYXNlCnsiY29tbWl0IjoiNzk0OTUzOGJkNWVkYmQ4NjYwMGNhZTY5MDEzYjk4MWQ3ZGNlNWY5MyIsImZpbGVzIjp7IlNIQTI1NlNVTVMiOiI0MDY3MjlhMjZiNjY4ZmJmZmRjZmI2M2I0NTg2OTc4YmYyMWI3YTFhM2JmNjk1NGM3YWQxYzg0MWVkYjA4MDZhIiwib2N0ZXQtY29sbGVjdG9yLmpzIjoiNDQ2ZDA0MTg5ZWIyZTI4NTEwYjgzMDU5ODEyYzhiMjliNWUwNTU0Y2QxYWI0YjZlYjI3NGNhZTBiMzc3NWQ2MSIsIm9jdGV0LWNvbGxlY3Rvci5qcy5zcmkiOiJjYjQwMjRiZmViNWNmZDA2MWRlZWUwMDljYTA5ODNjY2U4YTY2OWQ1ZDk2ODhjODk2MDIwMmJiYmZiYjU5Mjg5Iiwib2N0ZXQtY29sbGVjdG9yLm1qcyI6IjAwOTIxZmEwMTllNTY4NjRlNDk1NmJiMDA5MzQwNTA5MTE0ZWM3Mjg5ZjM3MzQwYzM1NDc0ZWMzZTU4Yzg1YzMiLCJvY3RldC1lZGdlLWxpbnV4LWFtZDY0IjoiZmY0M2UxZWEwNTU4MjhkOGFlMjY5ZDQ0MTkwYjAwOWU2YTY4OGUyM2E3MzA3OTQ2MTRhODdhNWRkNjA4MTBiYyIsIm9jdGV0LWVkZ2UtbGludXgtYXJtNjQiOiIyMWQxNGZlNTMwNDI0MWE4YTVmY2EwNjEwNDBmMGI5MDY5ZjViMWM0NTQ4NTg0MjA1MjVjYzc4MWE0YjMzZjBjIiwib2N0ZXRwcm9vZi1jb2xsZWN0b3ItMS43LjAudGd6IjoiOTcwZjM4MmFlYTIwNjUzY2UyNWJjYzRlYTc3OTFhYTBkMDc0ZjQ2YmMzYWIyOGMxMDE4ODdhZjVhNTEzMDU4ZCIsInNlcnZlciI6ImI0ZDBjMzVmOWNmNWY3ZTJjMzcxZjliZjYxNTJlM2ZkNDdlYzkzOWI5MGEzNjdjY2Y5MTlhY2M4NjFhNDA0MzkifSwidGFnIjoidjEuNy4wIn0",
+    "path": [
+      "TC_m56kbEw8kyV25gB3H4gJhroJmmtmaSSMv2FcyivE",
+      "odjYoksVCBwbi8Jhk-tXu-kRkS_o3OMb2PnfYOy0iRc",
+      "qCcFpf5RIKQWgmBWw6I4s-2yyY0eEqD7m0cP_8_4AAY"
+    ],
+    "checkpoint": "log.octetproof.com/browser\n7\nvgC2zqVLlqf/Z3/theDaMVwkPODG9uFrTFvyz/epLMI=\n\n— log.octetproof.com/browser fLv43GPIipn13/YprIc5xC2W8+IVz8iaLv2VeVp1PJCqjuLqdi8wbHMWTc8JXpF07gUshkKVX4GVLRv5Cze7joJ+fQE=\n— witness.octetproof.com/octet-verify MxYbrwAAAABq7E2Ugu9HLYMEox630PrYNyMrF6NpEEIIZt5RmWGT351cmTaPeAsVafO9mHiA+RqdvW2DdbE8/WB2KKNWCUO9g3nkDA==\n"
+  }
+}

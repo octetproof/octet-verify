@@ -1,10 +1,13 @@
 [package]
 name = "octet-verify"
-version = "1.9.0"
+version = "1.10.0"
 edition = "2021"
 description = "Standalone, independent verifier for Octet LocationProof artifacts. Checks authenticity and integrity (signatures, hash-chain, freshness, region claim) without any device-side secret or proof-creation logic."
 repository = "https://github.com/octetproof/octet-verify"
 readme = "README.md"
+# The README banner is served from the repository (crates.io resolves relative
+# image paths there), so the crate does not carry it.
+exclude = ["assets/"]
 license = "Apache-2.0"
 # GitHub-only release for now; `publish = false` guards against an accidental
 # `cargo publish` to crates.io.

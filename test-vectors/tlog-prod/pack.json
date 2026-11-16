@@ -1,0 +1,39 @@
+{
+  "origin": "log.octetproof.com/browser",
+  "log_key": {
+    "kid": "tlog-7cbbf8dc",
+    "vkey": "log.octetproof.com/browser+7cbbf8dc+AY+W5wQKXobt/BXgqsq9u2NFLZbHdW/BUeS/lqu3DFHm",
+    "file": "log-key.json"
+  },
+  "size": 7,
+  "root": "vgC2zqVLlqf/Z3/theDaMVwkPODG9uFrTFvyz/epLMI=",
+  "files": [
+    "bad/bad-signature.json",
+    "bad/consistency-tampered-proof.json",
+    "bad/consistency-tampered-second-root.json",
+    "bad/consistency-wrong-first-root.json",
+    "bad/tampered-entry.json",
+    "bad/tampered-path.json",
+    "bad/wrong-index.json",
+    "bad/wrong-origin-renamed.json",
+    "bad/wrong-origin.json",
+    "bad/wrong-size.json",
+    "checkpoint",
+    "consistency/1-7.json",
+    "consistency/2-7.json",
+    "consistency/3-7.json",
+    "consistency/4-7.json",
+    "consistency/5-7.json",
+    "consistency/6-7.json",
+    "entries.json",
+    "inclusion/leaf-0.json",
+    "inclusion/leaf-1.json",
+    "inclusion/leaf-2.json",
+    "inclusion/leaf-3.json",
+    "inclusion/leaf-4.json",
+    "inclusion/leaf-5.json",
+    "inclusion/leaf-6.json",
+    "log-key.json",
+    "tree-heads.json"
+  ]
+}

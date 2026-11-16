@@ -96,6 +96,7 @@ fn main() -> ExitCode {
     match argv.get(1).map(String::as_str) {
         Some("fetch") | Some("watch") | Some("range") => return backend_dispatch(&argv[1..]),
         Some("browser-verdict") => return browser_dispatch(&argv[2..]),
+        Some("tlog") => return tlog_dispatch(&argv[2..]),
         _ => {}
     }
     local_main()
@@ -2106,7 +2107,7 @@ Exit codes: 0 verified (no check failed), 1 a check failed, 2 usage/IO error,
         }
     }
 
-    fn load_text(src: &str) -> Result<String, String> {
+    pub(super) fn load_text(src: &str) -> Result<String, String> {
         if src.starts_with("https://") || src.starts_with("http://") {
             fetch(src)
         } else {
@@ -2341,6 +2342,356 @@ Exit codes: 0 verified (no check failed), 1 a check failed, 2 usage/IO error,
             "manifest_seq": r.manifest_seq,
             "client_net_match": r.client_net_match(),
             "claims": r.claims,
+            "checks": checks,
+        }))
+        .expect("serialisable")
+    }
+}
+
+// ===========================================================================
+// `octet-verify tlog`: an entry is in octet's transparency log (offline).
+// See VERIFICATION-SPEC.md, "Transparency log inclusion".
+// ===========================================================================
+
+#[cfg(not(feature = "browser"))]
+fn tlog_dispatch(_argv: &[String]) -> ExitCode {
+    eprintln!("error: the `tlog` subcommand requires a build with the `browser` feature.\n\n    cargo build --features browser");
+    ExitCode::from(2)
+}
+
+#[cfg(feature = "browser")]
+fn tlog_dispatch(argv: &[String]) -> ExitCode {
+    match tlog_cli::run(argv) {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("error: {e}\n\nrun `octet-verify tlog --help` for usage");
+            ExitCode::from(2)
+        }
+    }
+}
+
+#[cfg(feature = "browser")]
+mod tlog_cli {
+    use octet_verify::browser::{parse_roots, BrowserCheck, BrowserStatus, PINNED_ROOTS_JSON};
+    use octet_verify::tlog::*;
+    use serde_json::{json, Value};
+    use std::process::ExitCode;
+    use BrowserStatus::*;
+
+    const HELP: &str = "\
+octet-verify tlog — check offline that an entry is in octet's transparency log
+
+USAGE:
+    octet-verify tlog <bundle.json|-> [options]
+
+The bundle is the log's offline proof, {v, index, size, entry, path, checkpoint}.
+The check: the checkpoint is signed by the log key and cosigned by a witness
+quorum (by default, the log's witness), the entry's leaf hash leads through path to
+the checkpoint's root, and the entry is a canonical manifest or release entry.
+
+OPTIONS:
+    --manifest <url|file>      A root manifest JWS: take the log key from its
+                               logKeys, after checking it with the pinned roots.
+                               A manifest that lists no logKeys falls back to the
+                               key built into this binary.
+    --roots <file>             octet's pinned offline roots ({\"roots\":[...]}).
+                               Default: the roots built into this binary.
+    --log-vkey <vkey>          Use this log key (C2SP vkey) instead. Repeatable.
+                               Default: the key built into this binary,
+                               log.octetproof.com/browser+7cbbf8dc.
+    --witness <vkey>           A witness key (cosignature type 0x04). Repeatable.
+                               Default: the log's witness built into this binary,
+                               witness.octetproof.com/octet-verify+33161baf.
+    --quorum <n>               How many of the witnesses must have cosigned.
+                               Default 1. --quorum 0 requires no cosignature
+                               (offline or test use; reported NOT-CHECKED).
+    --state <file>             The tree head kept from before, {origin, size, root}.
+                               A checkpoint of another size is accepted only with
+                               --consistency; the file is created on first use and
+                               moved forward after each verified check.
+    --consistency <file>       An RFC 9162 consistency proof between the kept
+                               tree head and the bundle's checkpoint,
+                               {first, second, first_root, second_root, proof}.
+    --sha256 <hex>             The entry must record this SHA-256: a file of a
+                               release entry, or a manifest entry's JWS.
+    --artifact <file>          As --sha256, hashing this file (a manifest JWS is
+                               hashed trimmed, as the log records it).
+    --name <file name>         With --sha256/--artifact: the release file name.
+    --now <unix-seconds>       Verification time (default: now); a cosignature
+                               more than 5 minutes later is refused.
+    --json                     Machine-readable output.
+
+Exit codes: 0 verified, 1 a check failed, 2 usage/IO error.
+";
+
+    pub fn run(argv: &[String]) -> Result<ExitCode, String> {
+        let (mut bundle_src, mut manifest_src, mut roots_file) = (None, None, None);
+        let (mut vkeys, mut witnesses, mut quorum) = (Vec::new(), Vec::new(), None::<usize>);
+        let (mut state_file, mut consistency_file, mut want_sha, mut artifact, mut want_name) = (None, None, None, None, None);
+        let (mut now, mut json) = (None, false);
+        let mut it = argv.iter();
+        while let Some(a) = it.next() {
+            let mut val = || it.next().cloned().ok_or_else(|| format!("{a} needs a value"));
+            match a.as_str() {
+                "-h" | "--help" => {
+                    print!("{HELP}");
+                    return Ok(ExitCode::SUCCESS);
+                }
+                "--manifest" => manifest_src = Some(val()?),
+                "--roots" => roots_file = Some(val()?),
+                "--log-vkey" => vkeys.push(NoteKey::from_vkey(&val()?).map_err(|e| format!("--log-vkey: {e}"))?),
+                "--witness" => witnesses.push(NoteKey::from_vkey(&val()?).map_err(|e| format!("--witness: {e}"))?),
+                "--quorum" => quorum = Some(val()?.parse().map_err(|e| format!("bad --quorum: {e}"))?),
+                "--state" => state_file = Some(val()?),
+                "--consistency" => consistency_file = Some(val()?),
+                "--sha256" => want_sha = Some(val()?.to_ascii_lowercase()),
+                "--artifact" => artifact = Some(val()?),
+                "--name" => want_name = Some(val()?),
+                "--now" => now = Some(val()?.parse::<u64>().map_err(|e| format!("bad --now: {e}"))?),
+                "--json" => json = true,
+                s if s.starts_with("--") => return Err(format!("unknown flag: {s}")),
+                s if bundle_src.is_none() => bundle_src = Some(s.to_owned()),
+                s => return Err(format!("unexpected argument: {s}")),
+            }
+        }
+        let bundle_src = bundle_src.ok_or("missing <bundle.json>")?;
+        if manifest_src.is_some() && !vkeys.is_empty() {
+            return Err("pass --manifest or --log-vkey, not both".into());
+        }
+        if witnesses.iter().any(|w| w.sig_type != 4) || vkeys.iter().any(|k| k.sig_type != 1) {
+            return Err("a --witness key is a cosignature key (0x04), a --log-vkey a log key (0x01)".into());
+        }
+        // The log requires its witness's cosignature: so does this check, unless
+        // --quorum 0 says otherwise.
+        let quorum = quorum.unwrap_or(1);
+        if witnesses.is_empty() && quorum > 0 {
+            witnesses.push(NoteKey::from_vkey(PROD_WITNESS_VKEY).expect("the built-in witness vkey parses"));
+        }
+        if quorum > witnesses.len() {
+            return Err(format!("--quorum {quorum} is more than the {} witness keys", witnesses.len()));
+        }
+        if consistency_file.is_some() && state_file.is_none() {
+            return Err("--consistency needs --state (the tree head it starts from)".into());
+        }
+        if want_sha.is_some() && artifact.is_some() {
+            return Err("pass --sha256 or --artifact, not both".into());
+        }
+        if want_name.is_some() && want_sha.is_none() && artifact.is_none() {
+            return Err("--name needs --sha256 or --artifact".into());
+        }
+        if want_sha.as_deref().is_some_and(|h| h.len() != 64 || !h.bytes().all(|c| c.is_ascii_hexdigit())) {
+            return Err("--sha256 must be 64 hex digits".into());
+        }
+        let bundle_text = if bundle_src == "-" {
+            let mut s = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut s).map_err(|e| format!("stdin: {e}"))?;
+            s
+        } else {
+            std::fs::read_to_string(&bundle_src).map_err(|e| format!("{bundle_src}: {e}"))?
+        };
+        let artifact_bytes = match &artifact {
+            Some(f) => Some(std::fs::read(f).map_err(|e| format!("{f}: {e}"))?),
+            None => None,
+        };
+        let consistency = match &consistency_file {
+            Some(f) => Some(parse_consistency(&std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?).map_err(|e| format!("{f}: {e}"))?),
+            None => None,
+        };
+        let kept = match &state_file {
+            Some(f) => match std::fs::read_to_string(f) {
+                Ok(t) => Some(read_state(&t).map_err(|e| format!("{f}: {e}"))?),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(format!("{f}: {e}")),
+            },
+            None => None,
+        };
+        let now = now.unwrap_or_else(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()));
+
+        let mut checks = Vec::new();
+        let mut check = |name, status, detail: String| checks.push(BrowserCheck { name, status, detail });
+        if quorum == 0 {
+            check("witness", NotChecked, "--quorum 0: no witness cosignature is required".into());
+        }
+
+        // The log key.
+        let logs = if !vkeys.is_empty() {
+            check("log-key", NotChecked, format!("given with --log-vkey, not vouched for by a root manifest: {}", list_vkeys(&vkeys)));
+            vkeys
+        } else {
+            let pinned = NoteKey::from_vkey(PROD_LOG_VKEY).expect("the built-in vkey parses");
+            match &manifest_src {
+                None => {
+                    check("log-key", NotChecked, format!("built into this binary, no --manifest: {PROD_LOG_VKEY}"));
+                    vec![pinned]
+                }
+                Some(src) => {
+                    let roots_json = match &roots_file {
+                        Some(f) => std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?,
+                        None => PINNED_ROOTS_JSON.to_string(),
+                    };
+                    let roots = parse_roots(&roots_json).map_err(|e| format!("roots: {e}"))?;
+                    let jws = super::browser_cli::load_text(src)?;
+                    match log_keys_from_manifest(&jws, &roots) {
+                        Ok((m, keys)) if keys.is_empty() => {
+                            check("log-key", NotChecked, format!(
+                                "the root manifest (seq {}) lists no logKeys; using the key built into this binary: {PROD_LOG_VKEY}", m.seq));
+                            vec![pinned]
+                        }
+                        Ok((m, keys)) => {
+                            check("log-key", Verified, format!("from the root manifest seq {} (signed by {}): {}", m.seq, m.root_kid, list_vkeys(&keys)));
+                            keys
+                        }
+                        Err(e) => {
+                            check("log-key", Failed, format!("root manifest: {e}"));
+                            Vec::new()
+                        }
+                    }
+                }
+            }
+        };
+
+        // The bundle: checkpoint, inclusion, entry.
+        let policy = CheckpointPolicy { logs, witnesses, quorum, now_unix: Some(now) };
+        let verified = match parse_bundle(&bundle_text) {
+            Err(e) => {
+                check("inclusion", Failed, e);
+                None
+            }
+            Ok(_) if policy.logs.is_empty() => {
+                check("inclusion", NotChecked, "no log key to check the checkpoint with".into());
+                None
+            }
+            Ok(b) => match verify_bundle(&b, &policy) {
+                Ok(v) => {
+                    let h = &v.checkpoint.head;
+                    let cos = if policy.witnesses.is_empty() {
+                        "no witnesses pinned".to_string()
+                    } else {
+                        let names: Vec<&str> = v.checkpoint.cosigned.iter().map(|(n, _)| n.as_str()).collect();
+                        format!("cosigned by {} of {} witnesses (quorum {}): {}", names.len(), policy.witnesses.len(), quorum, names.join(", "))
+                    };
+                    check("checkpoint", Verified, format!("{} size {} root {}; {cos}", h.origin, h.size, h.root_b64()));
+                    check("inclusion", Verified, format!("leaf {} of {}: {} entry", v.index, h.size, v.entry.kind()));
+                    Some(v)
+                }
+                Err(e) => {
+                    check("inclusion", Failed, e);
+                    None
+                }
+            },
+        };
+
+        // What the entry records.
+        if let Some(v) = &verified {
+            let want = want_sha.clone().or_else(|| {
+                artifact_bytes.as_ref().map(|b| match (&v.entry, std::str::from_utf8(b)) {
+                    (Entry::Manifest { .. }, Ok(text)) => manifest_sha256(text),
+                    _ => to_hex(&<sha2::Sha256 as sha2::Digest>::digest(b)),
+                })
+            });
+            if let Some(want) = want {
+                match (&v.entry, &want_name) {
+                    (Entry::Manifest { sha256, seq, .. }, None) if *sha256 == want => {
+                        check("artifact", Verified, format!("the root manifest seq {seq}, sha256 {want}"))
+                    }
+                    (Entry::Manifest { .. }, Some(_)) => check("artifact", Failed, "--name applies to a release entry; this is a manifest entry".into()),
+                    (Entry::Release { tag, files, .. }, name) => {
+                        match files.iter().find(|(n, h)| **h == want && name.as_ref().is_none_or(|w| w == *n)) {
+                            Some((n, _)) => check("artifact", Verified, format!("{n} of release {tag}, sha256 {want}")),
+                            None => check("artifact", Failed, format!(
+                                "sha256 {want} is not {} in release {tag}",
+                                name.as_ref().map_or("a file".to_string(), |n| format!("the file {n:?}")))),
+                        }
+                    }
+                    (Entry::Manifest { seq, .. }, None) => {
+                        check("artifact", Failed, format!("the entry records root manifest seq {seq} with another sha256"))
+                    }
+                }
+            }
+        }
+
+        // Consistency with the tree head kept from before.
+        let mut new_state = None;
+        if let Some(v) = &verified {
+            let head = &v.checkpoint.head;
+            match (&state_file, &kept) {
+                (None, _) => check("consistency", NotChecked, "no --state: a checkpoint that forks from one seen before is not detected".into()),
+                (Some(_), None) => {
+                    check("consistency", NotChecked, format!("first use: keeping size {} as the tree head to check later ones against", head.size));
+                    new_state = Some(head.clone());
+                }
+                (Some(_), Some(k)) => match check_consistency(k, head, consistency.as_ref()) {
+                    Ok(()) if head.size > k.size => {
+                        check("consistency", Verified, format!("size {} extends the kept size {}", head.size, k.size));
+                        new_state = Some(head.clone());
+                    }
+                    Ok(()) if head.size < k.size => {
+                        check("consistency", Verified, format!("size {} is a prefix of the kept size {}", head.size, k.size))
+                    }
+                    Ok(()) => check("consistency", Verified, format!("the kept tree head, size {}", k.size)),
+                    Err(e) => check("consistency", Failed, e),
+                },
+            }
+        }
+
+        let ok = verified.is_some() && !checks.iter().any(|c| c.status == Failed);
+        if let (true, Some(f), Some(h)) = (ok, &state_file, &new_state) {
+            let text = serde_json::to_string_pretty(&json!({ "origin": h.origin, "size": h.size, "root": h.root_b64() })).expect("serialisable");
+            std::fs::write(f, format!("{text}\n")).map_err(|e| format!("{f}: {e}"))?;
+        }
+        if json {
+            println!("{}", to_json(ok, &checks, verified.as_ref()));
+        } else {
+            println!("tlog: {}", if ok { "VERIFIED" } else { "FAILED" });
+            if let Some(v) = &verified {
+                println!("  {}", super::sanitize_terminal(&describe(&v.entry)));
+            }
+            for c in &checks {
+                println!("    [{:>11}] {:<12} {}", c.status.tag(), c.name, super::sanitize_terminal(&c.detail));
+            }
+        }
+        Ok(if ok { ExitCode::SUCCESS } else { ExitCode::from(1) })
+    }
+
+    fn list_vkeys(keys: &[NoteKey]) -> String {
+        keys.iter().map(NoteKey::vkey).collect::<Vec<_>>().join(", ")
+    }
+
+    fn read_state(text: &str) -> Result<TreeHead, String> {
+        let v: Value = serde_json::from_str(text).map_err(|_| "not a tree head {origin, size, root}")?;
+        let bad = || "not a tree head {origin, size, root}".to_string();
+        let origin = v.get("origin").and_then(Value::as_str).ok_or_else(bad)?;
+        let size = v.get("size").and_then(Value::as_u64).ok_or_else(bad)?;
+        let root = v.get("root").and_then(Value::as_str).ok_or_else(bad)?;
+        let root = parse_checkpoint_text(&format!("{origin}\n{size}\n{root}\n"))?.root;
+        Ok(TreeHead { origin: origin.to_owned(), size, root })
+    }
+
+    fn describe(e: &Entry) -> String {
+        match e {
+            Entry::Manifest { seq, iat, kid, sha256 } => format!("root manifest seq {seq}, iat {iat}, signed by {kid}, sha256 {sha256}"),
+            Entry::Release { tag, commit, files } => format!("release {tag}, commit {commit}, {} files", files.len()),
+        }
+    }
+
+    fn entry_json(e: &Entry) -> Value {
+        match e {
+            Entry::Manifest { seq, iat, kid, sha256 } => json!({ "kind": "manifest", "seq": seq, "iat": iat, "kid": kid, "sha256": sha256 }),
+            Entry::Release { tag, commit, files } => json!({ "kind": "release", "tag": tag, "commit": commit, "files": files }),
+        }
+    }
+
+    fn to_json(ok: bool, checks: &[BrowserCheck], v: Option<&VerifiedBundle>) -> String {
+        let checks: Vec<_> = checks.iter().map(|c| json!({ "name": c.name, "status": c.status.tag(), "detail": c.detail })).collect();
+        serde_json::to_string_pretty(&json!({
+            "valid": ok,
+            "index": v.map(|v| v.index),
+            "checkpoint": v.map(|v| json!({
+                "origin": v.checkpoint.head.origin, "size": v.checkpoint.head.size, "root": v.checkpoint.head.root_b64(),
+                "log_vkey": v.checkpoint.log_vkey,
+                "cosigned": v.checkpoint.cosigned.iter().map(|(n, t)| json!({ "witness": n, "time": t })).collect::<Vec<_>>(),
+            })),
+            "entry": v.map(|v| entry_json(&v.entry)),
             "checks": checks,
         }))
         .expect("serialisable")

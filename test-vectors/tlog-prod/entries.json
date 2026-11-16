@@ -1,0 +1,145 @@
+[
+  {
+    "index": 0,
+    "kind": "manifest",
+    "entry_bytes": 154,
+    "entry_sha256": "7a4d0ba468fa3b007753c0af97d1279364b540fde6d194fd2b20d98957b485a8",
+    "leaf_hash": "86c9d1074f6425c911805d0d0ebcb407952a93627b894eb46c585cdc12ee0288",
+    "seq": 1,
+    "root_kid": "octet-root-a-2026-10",
+    "iat": 1791798127,
+    "manifest_jws_sha256": "a3dd8c373876d55edaf163d44da520863f43a76163dc8d23bc870950342c2dcb",
+    "body": {
+      "iat": 1791798127,
+      "kid": "octet-root-a-2026-10",
+      "seq": 1,
+      "sha256": "a3dd8c373876d55edaf163d44da520863f43a76163dc8d23bc870950342c2dcb"
+    }
+  },
+  {
+    "index": 1,
+    "kind": "manifest",
+    "entry_bytes": 154,
+    "entry_sha256": "42db2c2d58f35d2e02b9c9c6303aa5fac34248e0f079eeef5c6cc9256cf21234",
+    "leaf_hash": "7aabae9ed2d562a4f02bb56044a733fb015ea52f5d9ca126099e17892758b177",
+    "seq": 2,
+    "root_kid": "octet-root-a-2026-10",
+    "iat": 1792151776,
+    "manifest_jws_sha256": "3efc95a9d93000341ad17313799d6361990b0d570ff519232eaa3de057c6ccda",
+    "body": {
+      "iat": 1792151776,
+      "kid": "octet-root-a-2026-10",
+      "seq": 2,
+      "sha256": "3efc95a9d93000341ad17313799d6361990b0d570ff519232eaa3de057c6ccda"
+    }
+  },
+  {
+    "index": 2,
+    "kind": "manifest",
+    "entry_bytes": 154,
+    "entry_sha256": "61cadb15041b2febb9b12c77cf3b01c2f16a37cb7d2c1cefcc003e41859e8fbe",
+    "leaf_hash": "4c2fe6e7a91b130f24c95db9801dc7e20261ae82669ad99a49232fd857328af1",
+    "seq": 3,
+    "root_kid": "octet-root-a-2026-10",
+    "iat": 1792401911,
+    "manifest_jws_sha256": "371d729f1fe63eda9466101f2e750cd72bb45e5444cf6e9e3904a58325b94cab",
+    "body": {
+      "iat": 1792401911,
+      "kid": "octet-root-a-2026-10",
+      "seq": 3,
+      "sha256": "371d729f1fe63eda9466101f2e750cd72bb45e5444cf6e9e3904a58325b94cab"
+    }
+  },
+  {
+    "index": 3,
+    "kind": "release",
+    "entry_bytes": 809,
+    "entry_sha256": "09cf690061f1a2b6ae6571bb83dd87d19cd5679ab040711b2d7b1cfdf79a8f7b",
+    "leaf_hash": "1fe6df6d2f138db6ca8d17e7b8aecef4403cdc64a9a1fff79a9941392926d9ad",
+    "tag": "v1.7.0",
+    "commit": "7949538bd5edbd86600cae69013b981d7dce5f93",
+    "body": {
+      "commit": "7949538bd5edbd86600cae69013b981d7dce5f93",
+      "files": {
+        "SHA256SUMS": "406729a26b668fbffdcfb63b4586978bf21b7a1a3bf6954c7ad1c841edb0806a",
+        "octet-collector.js": "446d04189eb2e28510b83059812c8b29b5e0554cd1ab4b6eb274cae0b3775d61",
+        "octet-collector.js.sri": "cb4024bfeb5cfd061deee009ca0983cce8a669d5d9688c8960202bbbfbb59289",
+        "octet-collector.mjs": "00921fa019e56864e4956bb009340509114ec7289f37340c35474ec3e58c85c3",
+        "octet-edge-linux-amd64": "ff43e1ea055828d8ae269d44190b009e6a688e23a730794614a87a5dd60810bc",
+        "octet-edge-linux-arm64": "21d14fe5304241a8a5fca061040f0b9069f5b1c454858420525cc781a4b33f0c",
+        "octetproof-collector-1.7.0.tgz": "970f382aea20653ce25bcc4ea7791aa0d074f46bc3ab28c101887af5a513058d",
+        "server": "b4d0c35f9cf5f7e2c371f9bf6152e3fd47ec939b90a367ccf919acc861a40439"
+      },
+      "tag": "v1.7.0"
+    }
+  },
+  {
+    "index": 4,
+    "kind": "release",
+    "entry_bytes": 809,
+    "entry_sha256": "977dfcb6c06cb0c95352dd1b4fd98ec566f0eb77fa4086bbe067e3a81120d1dc",
+    "leaf_hash": "52ec81671537024f0ef4e3e3e0197a422930b3af8bfce97fda2f3a831068c4a7",
+    "tag": "v1.8.0",
+    "commit": "e9f6343f276b2ec48382c34d3e59794264533580",
+    "body": {
+      "commit": "e9f6343f276b2ec48382c34d3e59794264533580",
+      "files": {
+        "SHA256SUMS": "8f6e6ee79d03130770cc6b7d72851d5aded9e90658a9368802d75d46930cba00",
+        "octet-collector.js": "faf7a17b555aeb74ff78d77740da1af7a05a2b20081cd1de4ac6d5f2090c7361",
+        "octet-collector.js.sri": "aff7f75c255a7517ae68d124ef870db9a59230b5c4f0f12c440ecbea7d954940",
+        "octet-collector.mjs": "0828f4b48197cf697c08ff7ed2b007842c981e55fc31c16a5b3dfaf95cc90f8e",
+        "octet-edge-linux-amd64": "83dc84aeff5283abe8a39fe1171ac3961f4f9cfe72b8aac494ceb0e0cd78be88",
+        "octet-edge-linux-arm64": "0f4acb8194ed0625ec8d74920c417744d5f891abba408314966a22b882451d38",
+        "octetproof-collector-1.8.0.tgz": "fabadbfb7e3be80220b8408e81d7e92e8ab23ba4e6710e4f3a98872958cef475",
+        "server": "bcccfce7bb8593010303c87d97f9c3a4ae581f4cec8b7d0bb2669550c5f82b00"
+      },
+      "tag": "v1.8.0"
+    }
+  },
+  {
+    "index": 5,
+    "kind": "release",
+    "entry_bytes": 809,
+    "entry_sha256": "da78647f3808f49b7772cb679a98f3cd2329ea97d6b47c189241bee549fa5bdf",
+    "leaf_hash": "b840b544743f70f60221356331da711e31a18c473bc531b81caac78650e46953",
+    "tag": "v1.8.1",
+    "commit": "f33a72ce492b7c2a2498dab9558d6fcd805be7b4",
+    "body": {
+      "commit": "f33a72ce492b7c2a2498dab9558d6fcd805be7b4",
+      "files": {
+        "SHA256SUMS": "7e07165b0bda25294c19fc1e237897775a45843e77a673e6938132e2a2ab0da2",
+        "octet-collector.js": "0fde395b97cd992283f92fcf9f46a718580adc5d9c4d223b6d5c978e2110667f",
+        "octet-collector.js.sri": "c079e3f6cff35e29a43a86462b65d8153b0ed4fccbb780ffa7590727d2240d71",
+        "octet-collector.mjs": "5bdf46ae73f341f8ff03a57ffc9188b0f47318c212aa1f66c8fea16ea26ef55f",
+        "octet-edge-linux-amd64": "4c9341450a9d96fb46cdbc96bc8f3195f4a67d8c4e35f808148b927503577acf",
+        "octet-edge-linux-arm64": "aace924d584f8c3b81923c42b3e8b2f9eab20df311b1738141c00120ea9387bf",
+        "octetproof-collector-1.8.1.tgz": "0610d4944f783d517d88ccddfece0cafbd8a749ed24d610d0ff3d0917938f56d",
+        "server": "65b206dd6f6119ab14202588121cb79e2d1e9a4a504202fdf85e0ee28f1060e2"
+      },
+      "tag": "v1.8.1"
+    }
+  },
+  {
+    "index": 6,
+    "kind": "release",
+    "entry_bytes": 809,
+    "entry_sha256": "5156e204b886e9ef5dfea5322949238f025ee514973b9d6e1e23c57231224fa7",
+    "leaf_hash": "66bd4c1674d5cf88dc5bb728720a8e0df09dfa1d073e50b26e86a975422948f2",
+    "tag": "v1.9.1",
+    "commit": "6180ee53d5e56cb47ac2fb8601db4b20f14d9d00",
+    "body": {
+      "commit": "6180ee53d5e56cb47ac2fb8601db4b20f14d9d00",
+      "files": {
+        "SHA256SUMS": "0cb195c195bf185762047e5d612f7310cb7aa3ccaacfa8827c0b7e0c053be3b7",
+        "octet-collector.js": "b6f699e7ba5f8d587c06633d8b709a27e167613d4e238acf4367e605067ca67f",
+        "octet-collector.js.sri": "f71f77029a4fea005f2b0f093d3d4e69054bcca07c782f173573626044eef0b6",
+        "octet-collector.mjs": "d3c489da37714f06bedc5d2a6d0b2867bfea1cd60b4afff135c1cb5fde9ff409",
+        "octet-edge-linux-amd64": "408e889ffdd821e1d5d81965de3db3c7dde280c316211c515934045307e98ca4",
+        "octet-edge-linux-arm64": "aace924d584f8c3b81923c42b3e8b2f9eab20df311b1738141c00120ea9387bf",
+        "octetproof-collector-1.9.1.tgz": "d6e33970737ef00388b34ad1bdda98d5d18b3328b76423b632a79647d66ab72d",
+        "server": "0e64e91db500668908fc1321c980172faa21c8560e7df1bc8ca17524458b6244"
+      },
+      "tag": "v1.9.1"
+    }
+  }
+]

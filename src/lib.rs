@@ -42,6 +42,8 @@ pub mod uncertainty;
 pub mod verify;
 #[cfg(feature = "browser")]
 pub mod browser;
+#[cfg(feature = "browser")]
+pub mod tlog;
 pub mod wire;
 
 /// Offline Apple App Attest verification, via the shared `octet-attest-verify`

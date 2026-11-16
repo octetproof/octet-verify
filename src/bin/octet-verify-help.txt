@@ -14,6 +14,11 @@ USAGE:
                                   chain (`browser` feature; see
                                   `octet-verify browser-verdict --help`).
 
+    octet-verify tlog <bundle.json> [OPTIONS]
+                                  Check offline that an entry is in octet's
+                                  transparency log (`browser` feature; see
+                                  `octet-verify tlog --help`).
+
 ARGUMENTS:
     <proof.bin>    Binary octet.navigate.LocationProof (or a
                    ContinuousProofEnvelope with --envelope). Reads stdin if

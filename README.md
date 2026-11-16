@@ -120,6 +120,7 @@ The full trust model is in [`SECURITY.md`](SECURITY.md) and
 | `octet-verify <proof.bin>` | a mobile `LocationProof`, from a file or stdin | default |
 | `octet-verify fetch / watch / range` | proofs pulled from Octet's API (which is untrusted: bytes go through the same checks) | `net` |
 | `octet-verify browser-verdict <token>` | a browser verdict token and its key chain up to Octet's offline roots | `browser` |
+| `octet-verify tlog <bundle.json>` | that a release or root manifest is in Octet's transparency log, cosigned by its witness | `browser` |
 
 ## Cargo features
 
@@ -128,7 +129,7 @@ The default build has no network or JSON surface. Opt in to what you need:
 | Feature | Adds |
 |---|---|
 | `appattest` | offline Apple App Attest and Android key attestation, via [`octet-attest-verify`](https://crates.io/crates/octet-attest-verify) |
-| `browser` | the `browser-verdict` command |
+| `browser` | the `browser-verdict` and `tlog` commands |
 | `caller-metadata` | `--caller-manifest` / `--content`: check what an app attached to a proof |
 | `h3` | `--expect-region-contains` for H3 regions |
 | `net` | the `fetch`, `watch` and `range` commands |

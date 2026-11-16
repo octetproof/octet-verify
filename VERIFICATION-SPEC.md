@@ -887,3 +887,111 @@ which production never trusts, with timestamps for each expiry window), and
 `verdict-v4-vectors.json` / `verdict-v3-golden.json` (the `v=4` profile's valid
 and invalid tokens, and the `v=3` token a licence not opted in keeps getting,
 signed with a test-only key; their chain digests are placeholders).
+
+## 10. Transparency log inclusion (`tlog`, `--features browser`)
+
+octet logs its public objects, the browser product's root manifests and
+releases, in a transparency log at `https://log.octetproof.com/browser`: a C2SP
+tlog-tiles log with RFC 9162 hashing, whose checkpoints are C2SP signed notes
+with Ed25519. `octet-verify tlog` checks, offline, that an entry is in that log.
+
+```
+octet-verify tlog <bundle.json|-> [--manifest <url|file> [--roots <file>] | --log-vkey <vkey>...]
+    [--witness <vkey>...] [--quorum <n>] [--state <file> [--consistency <file>]]
+    [--sha256 <hex> | --artifact <file>] [--name <file name>] [--now <unix-seconds>] [--json]
+```
+
+The library entry points are `tlog::verify_bundle`, `tlog::check_consistency`
+and `tlog::log_keys_from_manifest`.
+
+### 10.1 The proof bundle
+
+```
+{"v": 1, "index": <n>, "size": <n>, "entry": <base64url>, "path": [<base64url>, ...], "checkpoint": <signed note>}
+```
+
+`entry` is the entry's bytes, each `path` element a 32-byte hash (both base64url
+without padding), and `checkpoint` the signed note as text. Any other field is
+refused, including `verdict` (a verdict token's proof into an hour batch, which
+this verifier does not check yet). `index` and `size` are at most 2^53 − 1, and
+`path` at most 64 hashes.
+
+### 10.2 Checks
+
+1. **Log key.** With `--manifest`, the root manifest is verified with the pinned
+   roots (§9.3) and the log keys are its `logKeys`: Ed25519 public JWKs with
+   `octet_purpose` `"tlog"`, each signing as its `octet_origin`. A manifest that
+   lists no `logKeys` (every one up to `seq 3`; `seq 4`, of 11 Nov 2026, is the
+   first to list the log key), or no `--manifest`, falls back to
+   the production key built into this binary,
+   `log.octetproof.com/browser+7cbbf8dc+AY+W5wQKXobt/BXgqsq9u2NFLZbHdW/BUeS/lqu3DFHm`
+   (kid `tlog-7cbbf8dc`); `log-key` is then NOT-CHECKED, as it is for a key given
+   with `--log-vkey`. Any of the keys may have signed.
+2. **Checkpoint** (c2sp.org/signed-note, c2sp.org/tlog-checkpoint). The note is
+   `text ‖ "\n" ‖ signature lines`, each `"— " name " " base64(keyID(4) ‖ sig) "\n"`
+   in canonical standard base64, at most 64 of them; a control character other
+   than `\n` refuses it. A key's ID is `SHA-256(name ‖ 0x0A ‖ type ‖ public key)[:4]`.
+   A signature by an unknown (name, key ID) is skipped; one by a known key must
+   verify or the note is refused; the log key (type `0x01`, Ed25519 over the text,
+   verified strictly) must have signed. The text is exactly
+   `origin "\n" size "\n" base64(root) "\n"`, with no extension lines, a canonical
+   decimal size and a 32-byte root, and the origin must be the log key's name.
+   Witness keys (`--witness`, type `0x04`) cosign
+   `"cosignature/v1\ntime " T "\n" ‖ text`, the signature bytes being
+   `u64be(T) ‖ sig`; at least `--quorum` distinct witnesses must have cosigned, and
+   a cosignature more than 300 s after the verification time is refused. The log
+   requires its witness's cosignature since 10 Nov 2026, and so does this check by
+   default: without `--witness` the witness is the one built into this binary,
+   `witness.octetproof.com/octet-verify+33161baf+BCnmA+Bq5n8tdIGwP6g+tyvTFPdZNfXBU3mWhV9MYZPK`
+   (`tlog::PROD_WITNESS_VKEY`), and the quorum is 1. `--witness` replaces it.
+   `--quorum 0` requires no cosignature, for offline or test use, and reports
+   `witness` NOT-CHECKED. The log may serve a new checkpoint for a short time
+   before the witness has cosigned it; this check refuses it until then. Only the
+   checkpoint being verified needs the cosignature: a tree head kept in `--state`
+   is trusted as it is (check 6). The library's `CheckpointPolicy` has no default
+   witness; a caller passes `PROD_WITNESS_VKEY` and quorum 1 itself.
+3. **Inclusion** (RFC 9162 §2.1.3.2). The bundle's `size` must be the
+   checkpoint's, and `SHA-256(0x00 ‖ entry)` at `index` must lead through `path`
+   to the checkpoint's root, with `node = SHA-256(0x01 ‖ left ‖ right)`.
+4. **Entry.** `"octet-tlog/v1\n" ‖ kind ‖ "\n" ‖ body`, where the body is canonical
+   JSON (sorted keys, no whitespace, strings, booleans and safe integers only) with
+   exactly the kind's fields:
+
+   | Kind | Body |
+   |---|---|
+   | `manifest` | `seq`, `iat` (positive integers), `kid` (the root that signed it), `sha256` (hex SHA-256 of the manifest's compact JWS, trimmed) |
+   | `release` | `tag` (`vX.Y.Z[-pre]`), `commit` (40 hex), `files` (plain file name → hex SHA-256, at least one) |
+
+   Other kinds (`list`, `verdict-hour`) are refused for now.
+5. **Artifact** (with `--sha256` or `--artifact`). A release entry must list the
+   digest, under `--name` when given; a manifest entry must record it. `--artifact`
+   hashes the file, trimmed when the entry is a manifest's.
+6. **Consistency** (with `--state`). The state file holds the tree head kept from
+   before, `{origin, size, root}`. The checkpoint must be the same log's; at the
+   same size it must have the same root (another root is a fork); at another size
+   `--consistency` must give an RFC 9162 §2.1.4.2 proof,
+   `{first, second, first_root, second_root, proof}` (roots in standard base64,
+   proof hashes in base64url), from the smaller head to the larger. On first use the
+   head is kept and the check is NOT-CHECKED; after a verified run with a larger
+   checkpoint, the file moves forward to it. Without `--state`, a checkpoint that
+   forks from one seen before goes unnoticed.
+
+### 10.3 Output and exit codes
+
+`--json` emits `valid`, `index`, `checkpoint` (`origin`, `size`, `root`,
+`log_vkey`, `cosigned`), `entry` (its kind and fields) and `checks`
+(`name` / `status` / `detail`). Exit codes: `0` verified, `1` a check failed, `2`
+usage or IO error.
+
+Vectors in `test-vectors/tlog-prod/`: the production log at size 7, with one
+bundle per entry, consistency proofs from every earlier size, and ten cases that
+must be refused. The checkpoint is cosigned by the witness octet-verify's
+maintainers run for this log:
+
+    witness.octetproof.com/octet-verify+33161baf+BCnmA+Bq5n8tdIGwP6g+tyvTFPdZNfXBU3mWhV9MYZPK
+
+The CLI requires its cosignature by default (§10.2, check 2).
+
+`test-vectors/tlog-prod/seq4/` takes the log to size 9: root manifest `seq 4`
+(leaf 8), the first that lists the log key, and release v1.10.0 (leaf 7), with the
+cosigned size-9 checkpoint and consistency proofs from sizes 7 and 8.

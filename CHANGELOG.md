@@ -4,6 +4,39 @@ All notable changes to `octet-verify` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [1.10.0] - 2026-11-16
+
+Transparency log inclusion for root manifests and browser releases, with the
+log's witness cosignature required by default, and a rewritten README.
+
+### Added
+- **Transparency log inclusion (`octet-verify tlog`, `--features browser`).**
+  Checks offline that a root manifest or browser release is in octet's log at
+  `log.octetproof.com/browser`, from the proof bundle the log hands out: the
+  checkpoint's Ed25519 signed note (and a witness quorum, with `--witness` /
+  `--quorum`), the RFC 9162 inclusion path, and the canonical entry.
+  `--sha256` / `--artifact` check what the entry records. `--state` keeps the
+  last tree head and accepts another only through an RFC 9162 consistency proof
+  (`--consistency`). The log key comes from a root manifest's `logKeys`
+  (`--manifest`); until one lists it, the production key is built in. Library:
+  the `tlog` module. Vectors from the production log in `test-vectors/tlog-prod/`,
+  at size 7 and cosigned by the log's witness
+  `witness.octetproof.com/octet-verify+33161baf+BCnmA+Bq5n8tdIGwP6g+tyvTFPdZNfXBU3mWhV9MYZPK`,
+  and at size 9 (`seq4/`): root manifest seq 4, the first to list the log key
+  in `logKeys`, checked with the pinned roots.
+- **`octet-verify tlog` requires the log's witness by default.** The production
+  log requires its witness's cosignature (quorum 1) since 10 Nov 2026, and so does
+  the check: without `--witness`, the witness built into this binary
+  (`tlog::PROD_WITNESS_VKEY`) must have cosigned the checkpoint. `--witness`
+  replaces it; `--quorum 0` requires no cosignature and reports `witness`
+  NOT-CHECKED.
+
+### Changed
+- **README rewritten** as a starting point: what the tool is, a quick start on a
+  bundled proof, how it works, what a pass means, commands, features, exit codes
+  and where the docs are. It also states that Octet proves and your backend
+  decides.
+
 ## [1.9.0] - 2026-10-30
 
 S2 grid regions (tags 8 and 9), the signed highres location uncertainty, and

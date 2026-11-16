@@ -1,0 +1,12 @@
+{
+  "keys": [
+    {
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "kid": "tlog-7cbbf8dc",
+      "x": "j5bnBApehu38FeCqyr27Y0Utlsd1b8FR5L-Wq7cMUeY",
+      "octet_purpose": "tlog",
+      "octet_origin": "log.octetproof.com/browser"
+    }
+  ]
+}

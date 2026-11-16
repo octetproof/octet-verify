@@ -1,0 +1,18 @@
+{
+  "case": "consistency-wrong-first-root",
+  "type": "consistency",
+  "description": "the 5 -> 7 proof with the old root replaced by the size-6 root",
+  "expect_error": "the consistency proof does not verify (verifyConsistency returns false)",
+  "consistency": {
+    "first": 5,
+    "second": 7,
+    "first_root": "B4/Sje3RJSjlJTx4WXivosNG2mUtf3NmxJTTluSw66I=",
+    "second_root": "vgC2zqVLlqf/Z3/theDaMVwkPODG9uFrTFvyz/epLMI=",
+    "proof": [
+      "UuyBZxU3Ak8O9OPj4Bl6Qikws6-L_Ol_2i86gxBoxKc",
+      "uEC1RHQ_cPYCITVjMdpxHjGhjEc7xTG4HKrHhlDkaVM",
+      "Zr1MFnTVz4jcW7cocgqODfCd-h0HPlCyboapdUIpSPI",
+      "Z5AhyFNaJj0uSUz6dYs-xrh1AJgo5I0tqtYxxNxJDgc"
+    ]
+  }
+}
