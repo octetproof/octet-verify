@@ -1,145 +1,177 @@
-# octet-verify
+<p align="center">
+  <a href="https://octetproof.com">
+    <img src="assets/banner.png" alt="octet-verify: verify location proofs offline" width="100%">
+  </a>
+</p>
 
-An **independent, open verifier** for Octet `LocationProof` artifacts. It reads
-a proof and checks that it is authentic and untampered — signatures, hash-chain
-linkage, field bindings, freshness — and prints exactly what it did and did not
-verify. It is meant to be read: you should be able to audit this code and trust
-that a proof you check is what it claims to be, without trusting us.
+<div align="center">
 
-It contains **none** of the SDK's proof-*creation* logic: no spoof-detection
-heuristics, no signal weights, no verdict thresholds. A verifier checks
-authenticity and integrity; it does not re-run detection. That boundary is what
-lets this be public.
+**Check an Octet location proof yourself: offline, open source, and without trusting Octet.**
 
-## Build & run
+[![crates.io](https://img.shields.io/crates/v/octet-verify?style=flat-square)](https://crates.io/crates/octet-verify) [![docs.rs](https://img.shields.io/docsrs/octet-verify?style=flat-square)](https://docs.rs/octet-verify) [![License](https://img.shields.io/badge/license-Apache%202.0-3b82f6?style=flat-square)](LICENSE) [![Stars](https://img.shields.io/github/stars/octetproof/octet-verify?style=flat-square)](https://github.com/octetproof/octet-verify)
 
-```sh
-cargo build --release
-./target/release/octet-verify proof.bin
-cat proof.bin | ./target/release/octet-verify --json
-./target/release/octet-verify --help
-```
+[![Website](https://img.shields.io/badge/website-octetproof.com-0a0a0a?style=for-the-badge)](https://octetproof.com) [![Docs](https://img.shields.io/badge/docs-verifying%20proofs-a0b80a?style=for-the-badge)](https://octetproof.com/docs/v3.0/concepts/verifying-proofs/) [![Web verifier](https://img.shields.io/badge/try%20it-in%20the%20browser-e85d75?style=for-the-badge)](https://verifier.octetproof.com/)
 
-Exit codes: `0` valid · `1` invalid (a check failed) · `2` usage/IO/decode.
+</div>
 
-### Backend fetch mode (optional, `--features net`)
+> [!IMPORTANT]
+> **Octet proves; you decide.** Octet gives you the tools to define a location
+> policy and a signed proof of where a device was. It does not block, allow or
+> change anything in your app or on your servers. Your backend verifies the proof
+> (with this tool, for example) and decides what happens to the request. If your
+> backend ignores the answer, nothing is enforced.
 
-The `fetch` / `watch` / `range` subcommands pull proofs from the Octet proof
-ingestion API and verify them end-to-end. This path is **opt-in at build time**
-so the default verifier stays dependency-clean — the crypto code the public
-audits pulls no networking or JSON stack.
+## What it is
 
-```sh
-cargo build --release --features net
-octet-verify fetch <proof-id> --backend https://api.octetproof.com --token <activation-bearer>
-octet-verify watch            --backend https://api.octetproof.com --token <bearer>   # live audit
-octet-verify range --since 2026-06-01T00:00:00Z --until 2026-07-01T00:00:00Z \
-            --backend https://api.octetproof.com --token <bearer> --seen-store seen.txt
-```
+`octet-verify` reads an Octet `LocationProof` and checks that it is authentic and
+untampered. It prints every check it ran, and every check it could not run, so you
+can see exactly what a pass means.
 
-The backend is **untrusted**: fetched bytes go through the same pipeline as a
-local file, and no backend-supplied field affects the verdict. See
-[`VERIFICATION-SPEC.md`](VERIFICATION-SPEC.md) §7 for the contract and
-[`INTEGRATION.md`](INTEGRATION.md) for a consumer's how-to (worked examples and
-how to read a verdict). Default release builds (and any public-release
-artifacts) should be built **without** this feature.
+- **Offline.** A local proof is checked with no network call. Vendor roots are
+  built in.
+- **Open and auditable.** The byte-exact contract is in
+  [`VERIFICATION-SPEC.md`](VERIFICATION-SPEC.md). You can re-implement it.
+- **Verify, never create.** The crate holds none of the proof-creation logic: no
+  spoof detection, no signal weights, no verdict thresholds. It checks the
+  signatures over a verdict, not the judgement behind it.
+- **Honest output.** A check that did not run is printed as `NOT-CHECKED`, never
+  as a pass.
 
-## What it verifies
+## Quick start
 
-- stage attestation chain linkage and each per-stage hardware **ECDSA-P256**
-  signature (DER on Android, raw on iOS, selected by the proof's `platform`);
-- the `proofAssembly` stage binding every prior stage signature;
-- `commitment` / `nullifier` / ZK-bytes bound to their signed stage hashes;
-- **semantic-field binding** — the spoofing verdict, region *identity*, trust
-  level, device integrity, and committed position bound to the signed proof, so
-  editing any of them after signing is rejected. Region **geometry** (city
-  centre/radius, earth altitude) is bound under `octet-semantic-binding-v2`;
-  under v1 it is reported as *not* covered, so a consumer relying on those
-  coordinates fails closed (see [`VERIFICATION-SPEC.md`](VERIFICATION-SPEC.md) §2.1);
-- **replay-control binding** — when a fetched/enveloped proof carries per-proof
-  replay-control values, they are checked against what the proof actually signed;
-- a **wire-format guard** that rejects a proof smuggling a duplicate top-level
-  field;
-- freshness (judged on the proof's *signed* timestamp), and optional cross-run
-  replay (`--nullifier-store`);
-- the **Ed25519 transport signature** when given an envelope and the enrolled
-  key (`--envelope --ed25519-pubkey …`) — this binds the *whole* proof to the
-  device identity and is the strongest authenticity signal here;
-- **Hardware attestation**, offline, when built `--features appattest`: on iOS,
-  **Apple App Attest** to Apple's embedded root (with `--app-attest-config`); on
-  Android, the **key-attestation certificate chain** to an embedded Google
-  hardware-attestation root; and the device-attestation signature on either
-  platform — all becoming real Pass/Fail. See
-  [Hardware attestation](#hardware-attestation-optional---features-appattest) below.
-
-## What it does NOT verify — and says so
-
-Every skipped check is printed as `NOT-CHECKED`, never as a pass:
-
-- **Hardware-key authenticity on a default build.** Without `--features appattest`
-  the verifier does not establish that the signing key is genuine device hardware
-  — a passing stage chain proves only that the proof is internally consistent and
-  signed by the key it *carries*. Build `--features appattest` (below), or use the
-  Ed25519 transport signature, for device-identity assurance.
-- **Online revocation.** Even under `appattest`, Google's certificate status list
-  is not consulted (a fully-offline verifier cannot), so an Android key revoked
-  after issuance is not detected. The ZK proof (placeholder backend) is also
-  `NOT-CHECKED`. See [`VERIFICATION-SPEC.md`](VERIFICATION-SPEC.md).
-
-### Hardware attestation (optional, `--features appattest`)
-
-Opt-in at build time, like backend fetch. It pulls in the public
-`octet-attest-verify` crate to verify, **offline** (vendor roots embedded; no
-network call):
-
-- **iOS** — Apple App Attest evidence to Apple's root;
-- **Android** — the Keystore certificate chain to an embedded, fingerprint-pinned
-  Google hardware-attestation root (RSA-4096 + the ECDSA P-384 root effective
-  2026-02-01), plus the leaf's TEE / StrongBox security level;
-- the device-attestation signature (field 2) on either platform.
+Install with Cargo:
 
 ```sh
-cargo build --release --features appattest
-octet-verify proof.bin --app-attest-config app-attest.toml                    # iOS app identity
-octet-verify proof.bin --app-attest-config app-attest.toml --require-attestation  # fail closed if attestation is absent/unbound
-# --skip-hardware-attestation scopes an appattest build back to core verification
+cargo install octet-verify --features appattest,browser
 ```
 
-The attested secure-hardware key must be the exact key that signed the proof
-(both platforms); `--require-attestation` additionally turns a missing or
-unverified attestation into a failure rather than a `NOT-CHECKED`.
+Verify one of the real proofs kept in this repository:
 
-> **Exit `0` means *authentic*, not *attested*.** A proof whose signatures verify
-> is `VALID` / exit `0` **even if it carries no hardware attestation** — e.g. a
-> default-build run, or an `appattest` run over a proof with no attestation object
-> (a sandbox/bypass-bootstrapped proof is exactly this: `valid: true`,
-> `attested: false`, `app-attest: NOT-CHECKED`). Exit `3` does **not** catch it —
-> `3` is for *unverified signatures*, and these signatures do verify.
-> **To gate on hardware attestation, do one of:** build `--features appattest` and
-> pass **`--require-attestation`** (a non-attested proof then exits `1`), or read
-> the typed **`attested`** bit from `--json`. Gating on exit `0` (or `valid`) alone
-> accepts a non-attested proof.
+```console
+$ git clone https://github.com/octetproof/octet-verify && cd octet-verify
+$ octet-verify test-vectors/golden/1.0.0/ios-onearth.bin \
+    --hardware-pubkey test-vectors/golden/1.0.0/ios-onearth.pubkey \
+    --max-age-seconds 999999999     # golden proofs are old; the default window is 300 s
+== octet-verify ==
+verdict: VALID
 
-## Trust model in one line
+  [       PASS] freshness              13294003 s old (limit 999999999 s)
+  [       PASS] stage-chain            8 stages, hash linkage intact
+  [       PASS] stage-signatures       all 8 stage signatures verify (raw key from --hardware-pubkey)
+  [       PASS] chain-assembly         final stage binds all 7 prior signatures
+  [       PASS] field-binding          commitment, nullifier, zkProof bound to signed stage hashes
+  [NOT-CHECKED] app-attest             no --app-attest-config supplied; App Attest evidence not checked
+  ...
+8 pass · 0 fail · 0 warn · 6 not-checked
+```
 
-A passing `octet-verify` run means: *this proof is internally consistent and
-self-signed by the key it carries (plus, if an envelope was supplied, bound to
-the enrolled device identity; plus, under `--features appattest`, a key proven to
-be genuine secure hardware — Secure Enclave on iOS, TEE / StrongBox on Android)*
-— and, on a default build, **not** that the signing key is rooted in genuine
-hardware.
+Add `--json` for machine-readable output, and `--help` for every option.
 
-## Layout
+> [!TIP]
+> No Rust toolchain? The [web verifier](https://verifier.octetproof.com/) runs this
+> same code in your browser, compiled to WebAssembly. The proof never leaves your
+> machine.
 
-- `proto/` — the vendored, public-safe subset of the proof wire schema.
-- `src/` — `crypto` (ECDSA/Ed25519/SHA-256), `keys`, `verify`, the CLI, and
-  `backend` (the untrusted-API client, `--features net` only).
-- `VERIFICATION-SPEC.md` — the byte-exact signing contract this implements
-  (§7 covers backend fetch mode).
-- `test-vectors/golden/` — real signed proofs kept verifiable forever.
-- `test-vectors/backend/` — golden proof-ingestion-API responses for the fetch path.
+## How it works
+
+```text
+  device + Octet SDK          your backend                          you
+ ┌──────────────────┐  proof  ┌───────────────────────────────┐  ┌────────────────┐
+ │ collects signals,│ ──────► │ octet-verify checks the proof:│─►│ decide: allow, │
+ │ signs a proof    │         │ signatures, bindings, roots   │  │ step up, log … │
+ └──────────────────┘         └───────────────────────────────┘  └────────────────┘
+```
+
+The SDK signs each stage of a proof with a hardware-backed key and binds the
+stages into a chain. `octet-verify` rebuilds every signed message from the
+proof's own bytes and checks it. The verdict inside the proof is trusted as a
+signed value. What your service does with it is up to you.
+
+## What a pass means
+
+| Checked | How |
+|---|---|
+| Stage attestation chain | hash linkage, and each stage's ECDSA P-256 signature |
+| Proof assembly | the final stage binds every earlier signature |
+| Field bindings | commitment, nullifier, region, verdict, uncertainty and caller metadata are bound to the signed proof, so an edit after signing fails |
+| Freshness and replay | the proof's *signed* timestamp; optional local replay store |
+| Device identity | the Ed25519 transport signature, against a key you enrolled |
+| Hardware attestation | Apple App Attest and the Android key-attestation chain, to the vendor roots (`appattest`) |
+| Region assertions | `--expect-region`, `--expect-region-contains`, H3 and S2 cell sets |
+
+| Reported as `NOT-CHECKED` | Why |
+|---|---|
+| Hardware key on a default build | without `appattest`, a pass proves the proof is consistent and signed by the key it carries, not that the key is genuine hardware |
+| Online revocation | an offline verifier cannot read Google's status list |
+| The ZK layer | its backend is a placeholder and adds no assurance yet |
+
+> [!WARNING]
+> **Exit `0` means authentic, not attested.** A proof with no hardware attestation
+> still exits `0` when its signatures verify. To require attestation, build with
+> `appattest` and pass `--require-attestation`, or read `attested` from `--json`.
+
+The full trust model is in [`SECURITY.md`](SECURITY.md) and
+[`INTEGRATION.md`](INTEGRATION.md#the-trust-model-in-practice).
+
+## Commands
+
+| Command | What it checks | Feature |
+|---|---|---|
+| `octet-verify <proof.bin>` | a mobile `LocationProof`, from a file or stdin | default |
+| `octet-verify fetch / watch / range` | proofs pulled from Octet's API (which is untrusted: bytes go through the same checks) | `net` |
+| `octet-verify browser-verdict <token>` | a browser verdict token and its key chain up to Octet's offline roots | `browser` |
+
+## Cargo features
+
+The default build has no network or JSON surface. Opt in to what you need:
+
+| Feature | Adds |
+|---|---|
+| `appattest` | offline Apple App Attest and Android key attestation, via [`octet-attest-verify`](https://crates.io/crates/octet-attest-verify) |
+| `browser` | the `browser-verdict` command |
+| `caller-metadata` | `--caller-manifest` / `--content`: check what an app attached to a proof |
+| `h3` | `--expect-region-contains` for H3 regions |
+| `net` | the `fetch`, `watch` and `range` commands |
+| `playintegrity` | online Google Play Integrity (networked; implies `net`) |
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | **Authentic**: no check failed and the signatures verified |
+| `1` | **Invalid**: a check failed |
+| `2` | usage, IO or decode error |
+| `3` | **Inconclusive**: signatures not verified (for example, no hardware key), or caller content unresolved |
+
+`INCONCLUSIVE` is never `0`, so `octet-verify proof.bin && accept` cannot accept
+an unverified proof.
+
+## As a library
+
+```toml
+[dependencies]
+octet-verify = "1"
+```
+
+`octet_verify::verify::verify(&proof, &options)` returns a `Report` with the same
+checks the CLI prints. See [docs.rs](https://docs.rs/octet-verify).
+
+## Documentation
+
+| Document | What it covers |
+|---|---|
+| [`INTEGRATION.md`](INTEGRATION.md) | how to wire it into a backend: worked examples, reading a verdict, enrolling device keys |
+| [`VERIFICATION-SPEC.md`](VERIFICATION-SPEC.md) | the byte-exact contract: every signed message, every check |
+| [`SECURITY.md`](SECURITY.md) | what a pass establishes, and how to report a vulnerability |
+| [`CHANGELOG.md`](CHANGELOG.md) | what changed in each release |
+| [`test-vectors/`](test-vectors/) | real signed proofs and vectors, kept verifiable forever |
+
+## Security
+
+Report a vulnerability as described in [`SECURITY.md`](SECURITY.md). Please do
+not open a public issue for one.
 
 ## License
 
-Licensed under the **Apache License 2.0** — see [`LICENSE`](LICENSE) and
+Licensed under the **Apache License 2.0**. See [`LICENSE`](LICENSE) and
 [`NOTICE`](NOTICE). Copyright 2026 Understone, Inc. d/b/a Octet.
