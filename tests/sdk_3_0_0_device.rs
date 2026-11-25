@@ -67,6 +67,7 @@ fn sdk_3_0_0_real_device_proofs_verify() {
             allow_unbound_app_attest: false,
             require_verdict: None,
             validation_window: None,
+            require_private_claims: false,
         };
         let r = verify(&proof, &opts);
 
@@ -135,6 +136,7 @@ fn sdk_3_0_0_ios_app_attest_with_the_enrolment_bundle() {
                 allow_unbound_app_attest: false,
                 require_verdict: None,
                 validation_window: None,
+                require_private_claims: false,
             };
             let (mut r, _) = verify_attested_cached(&proof, &opts, &expect, Some(&key));
             assert_eq!(status_of(&r, "app-attest"), Status::Pass, "{label}: app-attest");

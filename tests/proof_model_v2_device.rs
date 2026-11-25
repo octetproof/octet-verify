@@ -66,6 +66,7 @@ fn proof_model_v2_real_device_proofs() {
             allow_unbound_app_attest: false,
             require_verdict: None,
             validation_window: None,
+            require_private_claims: false,
         };
         let r = verify(&proof, &opts);
 

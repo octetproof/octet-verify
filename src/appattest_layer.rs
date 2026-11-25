@@ -381,7 +381,7 @@ pub fn verify_attested_cached(
         signing_key_sec1.as_deref(),
     ));
     // Per-proof field-2 device-key signature (both platforms).
-    report.checks.push(device_signature_check(proof, signing_key_sec1.as_deref()));
+    push_device_signature_check(&mut report, proof, signing_key_sec1.as_deref());
     // Fail-closed when attestation is required: the attacker can otherwise
     // strip evidence so a check reports NOT-CHECKED (which is_valid() ignores).
     // Applied here, after the real attestation checks, using the core helper.
@@ -681,6 +681,15 @@ pub fn device_signature_check(
         ),
         Err(e) => d(Status::Fail, &format!("field-2 signature invalid: {e}")),
     }
+}
+
+/// Push [`device_signature_check`] onto `report`, then restate
+/// `timestamp-binding`: when field 2 passes, `timestamp_ms` is device-signed
+/// (see [`Report::settle_timestamp_binding`]). Use this rather than pushing the
+/// check yourself, or a device-signed timestamp is still reported as unbound.
+pub fn push_device_signature_check(report: &mut Report, proof: &LocationProof, device_pubkey_sec1: Option<&[u8]>) {
+    report.checks.push(device_signature_check(proof, device_pubkey_sec1));
+    report.settle_timestamp_binding(proof);
 }
 
 /// The Android key-generation attestation challenge the SDK bakes into the
@@ -1012,7 +1021,7 @@ mod tests {
             expect_region: None, expect_region_type: None, expect_region_contains: None,
             expect_region_contains_height_m: None, session_nonce: None, require_session_binding: false,
             require_schema_v2: false, require_attestation: require, allow_unbound_app_attest: allow,
-            require_verdict: None, validation_window: None,
+            require_verdict: None, validation_window: None, require_private_claims: false,
         };
         assert_eq!(AssertionPolicy::from_options(&opts(false, false)), AssertionPolicy::RequireBound);
         assert_eq!(AssertionPolicy::from_options(&opts(true, false)), AssertionPolicy::AllowUnbound);
@@ -1251,7 +1260,7 @@ mod tests {
             expect_region: None, expect_region_type: None, expect_region_contains: None, expect_region_contains_height_m: None,
             session_nonce: None,
             require_session_binding: false,
-            require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None,
+            require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None, require_private_claims: false,
         };
 
         let report = verify_attested(&proof, &opts, &expectation());
@@ -1280,7 +1289,7 @@ mod tests {
             expect_region: None, expect_region_type: None, expect_region_contains: None, expect_region_contains_height_m: None,
             session_nonce: None,
             require_session_binding: false,
-            require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None,
+            require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None, require_private_claims: false,
         };
 
         // Cached variant returns (Report, Option<AttestedKey>); a bare proof
@@ -1360,6 +1369,58 @@ mod tests {
             device_signature_check(&proof_with(Some(da)), Some(&[4u8; 65])).status,
             Status::NotChecked
         );
+    }
+
+    /// `timestamp-binding` once field 2 is checked: a device-signed
+    /// `timestamp_ms` up to 30 s before the stage time PASSes; a longer lead, a
+    /// `timestamp_ms` after the stage time, or a field 2 that did not pass keeps
+    /// the WARN.
+    #[test]
+    fn device_signed_timestamp_settles_timestamp_binding() {
+        use crate::navigate::StageAttestation;
+        use crate::verify::{verify, VerifyOptions};
+        let sk = SigningKey::from_slice(&[0x42u8; 32]).unwrap();
+        let pk = sk.verifying_key().to_sec1_bytes().to_vec();
+        let other = SigningKey::from_slice(&[0x43u8; 32]).unwrap().verifying_key().to_sec1_bytes().to_vec();
+        let ts = 1_700_000_000_000i64;
+        let binding = |lead_ms: i64, key: &[u8]| {
+            let mut proof = signed_field2_proof(&sk, &[1, 2, 3], ts, &[9u8; 32]);
+            proof.stage_attestations =
+                vec![StageAttestation { stage: "proofAssembly".into(), timestamp_ms: ts + lead_ms, ..Default::default() }];
+            let opts = VerifyOptions {
+                now_ms: ts + 10_000,
+                max_age_s: 300,
+                hardware_pubkey: None,
+                hw_key_source: "test",
+                expect_region: None, expect_region_type: None, expect_region_contains: None, expect_region_contains_height_m: None,
+                session_nonce: None,
+                require_session_binding: false,
+                require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None, require_private_claims: false,
+            };
+            let mut report = verify(&proof, &opts);
+            report.checks.retain(|c| c.name != "device-attestation-sig");
+            push_device_signature_check(&mut report, &proof, Some(key));
+            report.checks.into_iter().find(|c| c.name == "timestamp-binding")
+        };
+
+        // The customer-zero gap: 1,257 ms, field 2 valid.
+        let c = binding(1_257, &pk).unwrap();
+        assert_eq!(c.status, Status::Pass, "{}", c.detail);
+        assert_eq!(c.detail, "proof-level timestamp_ms (device-signed, field 2) precedes the signed stage time by 1257 ms");
+        assert_eq!(binding(5_542, &pk).unwrap().status, Status::Pass, "a real Pixel 9 proof");
+        assert_eq!(binding(30_000, &pk).unwrap().status, Status::Pass);
+        let c = binding(30_001, &pk).unwrap();
+        assert_eq!(c.status, Status::Warn);
+        assert!(c.detail.contains("more than the 30000 ms"), "{}", c.detail);
+        let c = binding(-1_500, &pk).unwrap();
+        assert_eq!(c.status, Status::Warn);
+        assert!(c.detail.contains("1500 ms after"), "{}", c.detail);
+        // Field 2 made with another key: the unbound-field WARN stays as it was.
+        let c = binding(1_257, &other).unwrap();
+        assert_eq!(c.status, Status::Warn);
+        assert!(c.detail.starts_with("unbound proof-level timestamp_ms"), "{}", c.detail);
+        // Within 1 s there is no line to restate, and none is added.
+        assert!(binding(800, &pk).is_none());
     }
 
     // --- attestation_root_check ---

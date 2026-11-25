@@ -20,7 +20,7 @@
 /// occurrence of any of these on the wire is a smuggling attempt. (Field 10,
 /// `stage_attestations`, is `repeated` and intentionally absent; reserved 9/14/15
 /// are absent — an unknown/reserved number is not flagged here.)
-const SINGULAR_FIELDS: &[u32] = &[1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 16, 17, 18, 19];
+const SINGULAR_FIELDS: &[u32] = &[1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 16, 17, 18, 19, 21];
 
 /// Human name for a singular `LocationProof` field, for a clear rejection.
 pub fn field_name(n: u32) -> &'static str {
@@ -42,6 +42,7 @@ pub fn field_name(n: u32) -> &'static str {
         // A message: a second copy is merged, not replaced, so its repeated
         // entries would be concatenated with the first copy's.
         19 => "caller_manifest",
+        21 => "committed_license_id",
         _ => "?",
     }
 }
@@ -191,6 +192,18 @@ mod tests {
         ];
         assert_eq!(duplicate_singular_fields(&bytes), vec![17, 18]);
         assert_eq!((field_name(17), field_name(18)), ("location_verdict", "query_region"));
+    }
+
+    /// The committed licence (21, string) is singular: a second copy would let
+    /// one parser read a different licence than the one prost keeps.
+    #[test]
+    fn flags_duplicate_committed_license_id() {
+        let bytes = vec![
+            0xAA, 0x01, 0x01, b'a', // field 21 = "a"
+            0xAA, 0x01, 0x01, b'b', // field 21 = "b"
+        ];
+        assert_eq!(duplicate_singular_fields(&bytes), vec![21]);
+        assert_eq!(field_name(21), "committed_license_id");
     }
 
     /// A truncated length-delimited payload stops the scan without panicking.

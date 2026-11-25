@@ -42,6 +42,10 @@ struct Args {
     /// Specs: `earth`, `country:AT`, `subdivision:US-NY`, `disc:<lat>,<lon>,<r_m>`,
     /// `ellipse:<lat>,<lon>,<semi_major_m>,<semi_minor_m>,<heading_deg>`.
     expect_query_region: Option<String>,
+    /// Expected **committed licence** (semantic-binding v4): assert the proof
+    /// commits to exactly this licence id, a canonical lowercase hyphenated UUID.
+    /// Compared byte for byte; FAILS when the proof commits to no licence.
+    expect_license: Option<String>,
     session_nonce: Option<Vec<u8>>,
     require_session_binding: bool,
     /// Caller metadata: the presenter manifest (`--caller-manifest`), content
@@ -59,6 +63,8 @@ struct Args {
     allow_unbound_app_attest: bool,
     /// `--require-verdict verified|plausible`: minimum signed spoofing-verdict tier.
     require_verdict: Option<verify_mod::RequiredVerdict>,
+    /// `--require-private-claims`: a device-centred city, disc or box claim FAILs.
+    require_private_claims: bool,
     app_attest_config: Option<String>,
     /// Out-of-band App Attest **enrolment bundle**: recovers the attested key
     /// so an assertion-only iOS proof (one carrying no attestation object — the
@@ -79,8 +85,9 @@ struct Args {
     /// Online Play Integrity (, feature `playintegrity`): the first-party
     /// decode endpoint base URL, the verifier's own decode-scoped service token,
     /// and the expected Android package. All three required to run the check;
-    /// absent ⇒ `play-integrity` NOT-CHECKED. `integrity_max_age_s` overrides the
-    /// token freshness window (defaults to `--max-age-seconds`).
+    /// absent ⇒ `play-integrity` NOT-CHECKED. `integrity_max_age_s` is the age
+    /// limit for a token tied to the signing key (default 3,900 s); a token with
+    /// no tie gets `--max-age-seconds`, or this value if lower.
     integrity_decode_url: Option<String>,
     integrity_decode_token: Option<String>,
     integrity_package: Option<String>,
@@ -167,6 +174,7 @@ fn run(args: &Args) -> anyhow::Result<Report> {
         allow_unbound_app_attest: args.allow_unbound_app_attest,
         require_verdict: args.require_verdict,
         validation_window: args.validation_window,
+        require_private_claims: args.require_private_claims,
     };
 
     let mut report = verify(&proof, &opts);
@@ -281,12 +289,7 @@ fn run(args: &Args) -> anyhow::Result<Report> {
                     pubkey_sec1.as_deref(), // always bind the attested leaf to the signing key
                 ));
 
-            report
-                .checks
-                .push(octet_verify::appattest_layer::device_signature_check(
-                    &proof,
-                    pubkey_sec1.as_deref(),
-                ));
+            octet_verify::appattest_layer::push_device_signature_check(&mut report, &proof, pubkey_sec1.as_deref());
         }
     }
 
@@ -297,6 +300,7 @@ fn run(args: &Args) -> anyhow::Result<Report> {
     #[cfg(feature = "playintegrity")]
     report.checks.extend(play_integrity_from_cfg(
         &proof,
+        report.committed_license(),
         args.integrity_decode_url.as_deref(),
         args.integrity_decode_token.as_deref(),
         args.integrity_package.as_deref(),
@@ -331,6 +335,11 @@ fn run(args: &Args) -> anyhow::Result<Report> {
     // reference for the region the operator names, via the one canonical digest.
     if let Some(spec) = args.expect_query_region.as_deref() {
         report.checks.push(query_region_match_check(spec, &report));
+    }
+
+    // --expect-license: assert the proof commits (v4) to exactly this licence.
+    if let Some(want) = args.expect_license.as_deref() {
+        report.checks.push(license_match_check(want, &report));
     }
 
     Ok(report)
@@ -450,6 +459,26 @@ fn query_region_match_check(spec: &str, report: &Report) -> verify_mod::Check {
     }
 }
 
+/// Compare the proof's committed licence (semantic-binding v4) to `want`, byte
+/// for byte. Neither side is normalised: a non-canonical `want` is refused rather
+/// than rewritten, and a proof that commits to no licence fails.
+fn license_match_check(want: &str, report: &Report) -> verify_mod::Check {
+    use octet_verify::verify::license_id_canonical;
+    const NAME: &str = "license-match";
+    if !license_id_canonical(want) {
+        return verify_mod::Check { name: NAME, status: Status::Fail,
+            detail: format!("--expect-license: {:?} is not a canonical lowercase hyphenated UUID", sanitize_terminal(want)) };
+    }
+    match report.committed_license() {
+        Some(got) if got == want => verify_mod::Check { name: NAME, status: Status::Pass,
+            detail: "proof commits to the expected licence".into() },
+        Some(_) => verify_mod::Check { name: NAME, status: Status::Fail,
+            detail: "proof commits to a DIFFERENT licence than expected".into() },
+        None => verify_mod::Check { name: NAME, status: Status::Fail,
+            detail: "proof commits to no licence (bound under v1-v3, or the semantic binding did not pass)".into() },
+    }
+}
+
 /// The assertion policy for the CLI flags: legacy unbound assertions only
 /// under --allow-unbound-app-attest, and never with --require-attestation.
 #[cfg(feature = "appattest")]
@@ -557,11 +586,16 @@ fn resolve_enrolment_key(
 ///
 /// `None` when no `--integrity-*` config is given at all (the check is simply not
 /// present). When some but not all of url/token/package are given, returns a
-/// NOT-CHECKED so a partial config is loud rather than a silent no-op. Freshness
-/// window defaults to the proof's `max_age_s` unless overridden.
+/// NOT-CHECKED so a partial config is loud rather than a silent no-op. A token
+/// tied to the proof's signing key may be up to `integrity_max_age_s` old
+/// (default `TIED_TOKEN_MAX_AGE_S`); a token with no tie gets the proof's own
+/// `max_age_s`, or `integrity_max_age_s` if that is lower. `committed_license`
+/// is the report's: on a semantic-binding v4 proof the token must be tied.
 #[cfg(feature = "playintegrity")]
+#[allow(clippy::too_many_arguments)] // one call per CLI mode, each argument a separate flag or input
 fn play_integrity_from_cfg(
     proof: &octet_verify::navigate::LocationProof,
+    committed_license: Option<&str>,
     url: Option<&str>,
     token: Option<&str>,
     package: Option<&str>,
@@ -569,16 +603,22 @@ fn play_integrity_from_cfg(
     default_max_age_s: i64,
     now_ms: i64,
 ) -> Option<verify_mod::Check> {
-    use octet_verify::integrity::{play_integrity_check, IntegrityConfig};
+    use octet_verify::integrity::{play_integrity_check, IntegrityConfig, TIED_TOKEN_MAX_AGE_S};
     match (url, token, package) {
         (None, None, None) => None,
         (Some(decode_url), Some(service_token), Some(pkg)) => {
-            let max_age_ms = integrity_max_age_s
-                .unwrap_or(default_max_age_s)
-                .saturating_mul(1000);
+            let tied_s = integrity_max_age_s.unwrap_or(TIED_TOKEN_MAX_AGE_S);
+            let untied_s = default_max_age_s.min(tied_s);
             Some(play_integrity_check(
                 proof,
-                &IntegrityConfig { decode_url, service_token, package: pkg, max_age_ms },
+                committed_license,
+                &IntegrityConfig {
+                    decode_url,
+                    service_token,
+                    package: pkg,
+                    tied_max_age_ms: tied_s.saturating_mul(1000),
+                    untied_max_age_ms: untied_s.saturating_mul(1000),
+                },
                 now_ms,
             ))
         }
@@ -800,6 +840,7 @@ fn print_human(report: &Report) {
 }
 
 fn print_json(report: &Report) {
+    use octet_verify::claim_privacy::ClaimPrivacy;
     let mut out = String::from("{\n");
     // `valid` reflects AUTHENTICITY (not rejected AND signatures verified), so a
     // consumer keying on it can't be fooled by a structurally-fine but
@@ -828,10 +869,27 @@ fn print_json(report: &Report) {
     // consumer matches `region_id` against its own query_region_ref(R) to read
     // within(R) directly. region_id is hex.
     out.push_str(&format!("  \"query_region\": {},\n", query_region_json(report)));
+    // The licence the proof commits to (semantic-binding v4), or null. Set only
+    // when v4 verified; compare it byte for byte with the licence you decide under.
+    out.push_str(&format!("  \"committed_license\": {},\n", match report.committed_license() {
+        Some(l) => format!("\"{}\"", json_escape(l)),
+        None => "null".into(),
+    }));
     // The proof's readable caller manifest (field 19), or null when it carries
     // none or it did not recompute the signed stage. sha256 is hex; locator is an
     // unauthenticated hint.
     out.push_str(&format!("  \"caller_manifest\": {},\n", caller_manifest_json(report)));
+    // Whether the claimed region discloses the device position: "snapped" (built
+    // on the grid), "legacy" (centred on the device) or "not_applicable", with the
+    // grid level of a snapped disc, else null.
+    let (privacy, grid_level) = match report.claim_privacy() {
+        Some(ClaimPrivacy::Snapped { grid_level }) => ("\"snapped\"", grid_level),
+        Some(ClaimPrivacy::Legacy) => ("\"legacy\"", None),
+        Some(ClaimPrivacy::NotApplicable) => ("\"not_applicable\"", None),
+        None => ("null", None),
+    };
+    out.push_str(&format!("  \"claim_privacy\": {privacy},\n"));
+    out.push_str(&format!("  \"grid_level\": {},\n", grid_level.map_or("null".into(), |l| l.to_string())));
     out.push_str("  \"checks\": [\n");
     for (i, c) in report.checks.iter().enumerate() {
         let comma = if i + 1 < report.checks.len() { "," } else { "" };
@@ -939,6 +997,7 @@ fn parse_args() -> Result<Args, String> {
             "--nullifier-store" => args.nullifier_store = Some(need_value(&mut iter, &a)?),
             "--expect-region" => args.expect_region = Some(need_value(&mut iter, &a)?),
             "--expect-query-region" => args.expect_query_region = Some(need_value(&mut iter, &a)?),
+            "--expect-license" => args.expect_license = Some(need_value(&mut iter, &a)?),
             "--expect-region-type" => {
                 let v = need_value(&mut iter, &a)?;
                 if !octet_verify::verify::is_known_region_type(&v) {
@@ -972,6 +1031,7 @@ fn parse_args() -> Result<Args, String> {
             "--require-schema-v2" => args.require_schema_v2 = true,
             "--require-attestation" => args.require_attestation = true,
             "--allow-unbound-app-attest" => args.allow_unbound_app_attest = true,
+            "--require-private-claims" => args.require_private_claims = true,
             "--require-verdict" => {
                 let v = need_value(&mut iter, &a)?;
                 args.require_verdict = Some(parse_required_verdict(&v)?);
@@ -1336,6 +1396,7 @@ mod backend {
         require_attestation: bool,
         allow_unbound_app_attest: bool,
         require_verdict: Option<octet_verify::verify::RequiredVerdict>,
+        require_private_claims: bool,
         max_age_s: Option<i64>,
         at_ms: Option<i64>,
         validation_window: Option<ValidationWindow>,
@@ -1528,6 +1589,7 @@ mod backend {
             allow_unbound_app_attest: args.allow_unbound_app_attest,
             require_verdict: args.require_verdict,
             validation_window: args.validation_window,
+            require_private_claims: args.require_private_claims,
         };
         let mut report = verify(&proof, &opts);
         // Same wire-format guard as the local path: fetched bytes are untrusted.
@@ -1568,12 +1630,7 @@ mod backend {
                         &expected_apps,
                         pubkey_sec1.as_deref(), // always bind the attested leaf to the signing key
                     ));
-                report
-                    .checks
-                    .push(octet_verify::appattest_layer::device_signature_check(
-                        &proof,
-                        pubkey_sec1.as_deref(),
-                    ));
+                octet_verify::appattest_layer::push_device_signature_check(&mut report, &proof, pubkey_sec1.as_deref());
             }
         }
         // Online Play Integrity (, feature `playintegrity`), mirroring the
@@ -1581,6 +1638,7 @@ mod backend {
         #[cfg(feature = "playintegrity")]
         report.checks.extend(super::play_integrity_from_cfg(
             &proof,
+            report.committed_license(),
             args.integrity_decode_url.as_deref(),
             args.integrity_decode_token.as_deref(),
             args.integrity_package.as_deref(),
@@ -1821,6 +1879,7 @@ mod backend {
         let mut require_attestation = false;
         let mut allow_unbound_app_attest = false;
         let mut require_verdict = None;
+        let mut require_private_claims = false;
         let mut max_age_s = None;
         let mut at_ms = None;
         let mut validation_window = None;
@@ -1867,6 +1926,7 @@ mod backend {
                 "--require-schema-v2" => require_schema_v2 = true,
                 "--require-attestation" => require_attestation = true,
                 "--allow-unbound-app-attest" => allow_unbound_app_attest = true,
+                "--require-private-claims" => require_private_claims = true,
                 "--require-verdict" => {
                     require_verdict =
                         Some(parse_required_verdict(&need(&mut it, a)?).map_err(|e| anyhow!("{e}"))?);
@@ -1978,6 +2038,7 @@ mod backend {
             require_attestation,
             allow_unbound_app_attest,
             require_verdict,
+            require_private_claims,
             max_age_s,
             at_ms,
             validation_window,

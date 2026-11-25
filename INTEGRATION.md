@@ -245,11 +245,36 @@ octet-verify <id> ... \
 
 The `play-integrity` check is **PASS** iff the token decodes, its random nonce
 byte-equals the proof's `attestation_nonce`, `requestPackageName` matches
-`--integrity-package`, the token is fresh (window = `--integrity-max-age-seconds`,
-default `--max-age-seconds`, +60 s forward skew), and the device meets
-`MEETS_DEVICE_INTEGRITY`. It **FAIL**s — rejecting the proof — on a bad, unbindable,
-or stale token, or a package / device-integrity shortfall. It is **NOT-CHECKED**
-(no assurance, never fail-open) when the token or config is absent, or the endpoint
+`--integrity-package`, the token is fresh, and the device meets
+`MEETS_DEVICE_INTEGRITY`.
+
+When the proof carries `attestation_nonce_seed` (field 11), the token is tied to
+the key that signs the proof: `attestation_nonce` must equal
+SHA-256(`attestation_nonce_seed` ‖ the uncompressed P-256 point of the key in
+`certificate_chain[0]`). If it does not, or there is no P-256 key to check
+against, the check FAILs, whatever the token says.
+
+Field 11 is not signed, so the check also FAILs when it could have been removed
+or blanked:
+
+- A proof that passes semantic binding v4 (it commits to a licence, field 21)
+  comes from SDK 4.0.0 or later, which never sends a token without field 11. On
+  such a proof a token with no field 11 FAILs, at any age.
+- An empty field 11 FAILs on any proof.
+
+A proof that does not pass semantic binding v4 may carry a token with no field
+11. That token is checked as before, with the proof's own age limit.
+
+The age limit depends on the tie (all with +60 s forward skew):
+
+| Token | Age limit |
+|---|---|
+| Tied to the signing key | `--integrity-max-age-seconds`, default 3,900 s (the SDK's 60-minute token refresh plus 5 minutes) |
+| No field 11 | `--max-age-seconds` (default 300 s), or `--integrity-max-age-seconds` if lower |
+
+It **FAIL**s, rejecting the proof, on a bad, unbindable, untied-to-this-key,
+missing-field-11 (v4) or stale token, or a package / device-integrity
+shortfall. It is **NOT-CHECKED** (no assurance, never fail-open) when the token or config is absent, or the endpoint
 is unavailable / rate-limited / unauthorized. `appRecognitionVerdict` is
 informational; Play *licensing* is ignored. Off by default.
 

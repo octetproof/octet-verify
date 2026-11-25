@@ -197,6 +197,91 @@ pub(crate) mod tests {
         assert_eq!(hex::encode(binding_preimage(&golden()).unwrap()), want);
     }
 
+    /// The SDK's field-20 vectors (`test-vectors/nominal-region/`): every
+    /// accepted uncertainty, a centre-less ellipse, has the SDK's preimage and
+    /// does not disclose the position; every rejected `nominal_region` (a centre,
+    /// even at 0, 0, another shape, or none) counts as disclosing.
+    #[test]
+    fn nominal_region_vectors() {
+        use crate::claim_privacy::nominal_region_discloses;
+        use crate::navigate::{BoundingBox3DRegion, H3PolygonSet};
+        let raw = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/test-vectors/nominal-region/vectors.json"));
+        let doc: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let f = |v: &serde_json::Value| v.as_f64().unwrap();
+
+        let accepted = doc["accepted"].as_array().unwrap();
+        assert_eq!(accepted.len(), 3);
+        for c in accepted {
+            let (name, u, want) = (c["name"].as_str().unwrap(), &c["uncertainty"], &c["expected"]);
+            let n = &u["nominal_region"];
+            let status = match u["calibration_status"].as_str().unwrap() {
+                "UNCERTAINTY_UNCALIBRATED" => UncertaintyCalibrationStatus::UncertaintyUncalibrated,
+                "UNCERTAINTY_PROTECTION_CALIBRATED" => UncertaintyCalibrationStatus::UncertaintyProtectionCalibrated,
+                s => panic!("{name}: status {s}"),
+            };
+            let v = &u["vertical_interval"];
+            let unc = LocationUncertainty {
+                nominal_region: Some(ProofRegion {
+                    region: Some(Region::Ellipse(EllipseRegion {
+                        center: None,
+                        semi_major_m: f(&n["semi_major_m"]),
+                        semi_minor_m: f(&n["semi_minor_m"]),
+                        heading_deg: f(&n["heading_deg"]),
+                    })),
+                }),
+                nominal_coverage_ppm: u["nominal_coverage_ppm"].as_u64().unwrap() as u32,
+                vertical_interval: (!v.is_null()).then(|| VerticalUncertaintyInterval {
+                    center_altitude_meters: f(&v["center_altitude_meters"]),
+                    below_meters: f(&v["below_meters"]),
+                    above_meters: f(&v["above_meters"]),
+                    coverage_ppm: v["coverage_ppm"].as_u64().unwrap() as u32,
+                }),
+                calibration_profile_sha256: hex::decode(u["calibration_profile_sha256_hex"].as_str().unwrap()).unwrap(),
+                calibration_status: status as i32,
+                protection_failure_risk_ppm: u["protection_failure_risk_ppm"].as_u64().map(|r| r as u32),
+                estimate_timestamp_ms: u["estimate_timestamp_ms"].as_i64().unwrap(),
+            };
+            let pre = binding_preimage(&unc).unwrap();
+            assert_eq!(hex::encode(&pre), want["preimage_hex"].as_str().unwrap(), "{name}");
+            assert_eq!(hex::encode(Sha256::digest(&pre)), want["preimage_sha256_hex"].as_str().unwrap(), "{name}");
+            let region = unc.nominal_region.as_ref().and_then(|r| r.region.as_ref()).unwrap();
+            assert_eq!(hex::encode(region_digest(region).unwrap().1), want["ellipse_digest_hex"].as_str().unwrap(), "{name}");
+            assert!(!nominal_region_discloses(unc.nominal_region.as_ref()), "{name}");
+        }
+
+        let rejected = doc["rejected"].as_array().unwrap();
+        assert_eq!(rejected.len(), 5);
+        for c in rejected {
+            let (name, n) = (c["name"].as_str().unwrap(), &c["nominal_region"]);
+            let region = if let Some(e) = n.get("ellipse") {
+                Some(Region::Ellipse(EllipseRegion {
+                    center: e.get("center").map(|p| LatLon { latitude: f(&p["latitude"]), longitude: f(&p["longitude"]) }),
+                    semi_major_m: f(&e["semi_major_m"]),
+                    semi_minor_m: f(&e["semi_minor_m"]),
+                    heading_deg: f(&e["heading_deg"]),
+                }))
+            } else if let Some(h) = n.get("h3_polygon_set") {
+                let ids = h["cell_ids_hex"].as_array().unwrap();
+                Some(Region::H3PolygonSet(H3PolygonSet {
+                    cell_ids: ids.iter().map(|x| u64::from_str_radix(x.as_str().unwrap(), 16).unwrap()).collect(),
+                }))
+            } else if let Some(b) = n.get("bounding_box_3d") {
+                Some(Region::BoundingBox3d(BoundingBox3DRegion {
+                    min_latitude: f(&b["min_latitude"]),
+                    max_latitude: f(&b["max_latitude"]),
+                    min_longitude: f(&b["min_longitude"]),
+                    max_longitude: f(&b["max_longitude"]),
+                    min_altitude: f(&b["min_altitude"]),
+                    max_altitude: f(&b["max_altitude"]),
+                }))
+            } else {
+                assert_eq!(n, &serde_json::json!({}), "{name}");
+                None
+            };
+            assert!(nominal_region_discloses(Some(&ProofRegion { region })), "{name}");
+        }
+    }
+
     #[test]
     fn values_the_sdk_refuses_to_sign_have_no_preimage() {
         let mut u = golden();

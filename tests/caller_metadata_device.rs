@@ -74,6 +74,7 @@ fn base_report(proof: &LocationProof, platform: &str) -> Report {
         allow_unbound_app_attest: false,
         require_verdict: None,
         validation_window: None,
+        require_private_claims: false,
     };
     let r = verify(proof, &opts);
     assert!(r.is_authentic(), "{platform}: expected VALID with signatures verified");
@@ -211,6 +212,7 @@ fn ios_device_proof_app_attest_with_the_enrolment_bundle() {
             allow_unbound_app_attest: false,
             require_verdict: None,
             validation_window: None,
+            require_private_claims: false,
         };
         let (r, _) = verify_attested_cached(&proof, &opts, &expect, Some(&key));
         assert_eq!(status_of(&r, "app-attest"), Status::Pass, "{set}");

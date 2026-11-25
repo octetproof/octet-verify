@@ -33,6 +33,7 @@ pub mod attest {
 }
 
 pub mod caller_metadata;
+pub mod claim_privacy;
 pub mod crypto;
 pub mod keys;
 pub mod replay;

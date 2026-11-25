@@ -47,6 +47,7 @@ fn run(proof: &LocationProof, require: Option<RequiredVerdict>) -> Report {
             allow_unbound_app_attest: false,
             require_verdict: require,
             validation_window: None,
+            require_private_claims: false,
         },
     )
 }

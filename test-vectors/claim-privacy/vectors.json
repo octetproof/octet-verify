@@ -1,0 +1,1398 @@
+{
+  "note": "All positions are synthetic (arbitrary numbers, not anyone's location). accuracy_area_radius_m is a, the radius of the device's accuracy area (a = 2h for a base proof, the protection-disc radius for a highres proof); null/NaN = unusable. f64_bits_hex pins every emitted float bit-exactly. same_cell_twins: other positions in the same grid cell that MUST produce the identical claimed_region. Never edit an expected value to make a test pass: regenerate.",
+  "constants": {
+    "earth_radius_m": 6371000.0,
+    "city_level": 2,
+    "city_radius_m": 50000.0,
+    "city_name": "auto",
+    "disc_levels": [
+      3,
+      12
+    ],
+    "accuracy_ladder_m": [
+      10,
+      20,
+      50,
+      100,
+      200,
+      500,
+      1000,
+      2000,
+      5000,
+      10000,
+      20000,
+      50000,
+      100000
+    ],
+    "vertical_step_m": 64,
+    "rho_m": {
+      "2": 19658.0,
+      "3": 9830.0,
+      "4": 4916.0,
+      "5": 2459.0,
+      "6": 1230.0,
+      "7": 616.0,
+      "8": 309.0,
+      "9": 155.0,
+      "10": 78.0,
+      "11": 40.0,
+      "12": 21.0
+    }
+  },
+  "claims": [
+    {
+      "name": "city_basic",
+      "why": "50 km city claim on the 1/4 deg grid",
+      "level": "CITY",
+      "input": {
+        "position": {
+          "lat": 12.345678901,
+          "lon": 23.456789012
+        },
+        "accuracy_area_radius_m": 45.0,
+        "same_cell_twins": [
+          {
+            "lat": 12.29744677,
+            "lon": 23.381404492
+          },
+          {
+            "lat": 12.406066956,
+            "lon": 23.368265488
+          },
+          {
+            "lat": 12.290712868,
+            "lon": 23.46699642
+          }
+        ]
+      },
+      "expected": {
+        "claimed_region": {
+          "kind": "city",
+          "name": "auto",
+          "center_lat": 12.375,
+          "center_lon": 23.375,
+          "radius_meters": 50000.0
+        },
+        "f64_bits_hex": {
+          "center_lat": "4028c00000000000",
+          "center_lon": "4037600000000000",
+          "radius_meters": "40e86a0000000000"
+        },
+        "grid_level": 2,
+        "accuracy_bucket_m": 50.0,
+        "region_type": 3,
+        "region_id_v2_hex": "dbbbe1da1c4f3d0b0e6516941e1baa02a50c650fdf1948ea3de8301b528bc242"
+      }
+    },
+    {
+      "name": "city_southern_western",
+      "why": "negative lat/lon floor towards -inf",
+      "level": "CITY",
+      "input": {
+        "position": {
+          "lat": -34.567890123,
+          "lon": -145.678901234
+        },
+        "accuracy_area_radius_m": 45.0,
+        "same_cell_twins": [
+          {
+            "lat": -34.632755305,
+            "lon": -145.577959049
+          },
+          {
+            "lat": -34.612647434,
+            "lon": -145.676808928
+          },
+          {
+            "lat": -34.556750871,
+            "lon": -145.695447028
+          }
+        ]
+      },
+      "expected": {
+        "claimed_region": {
+          "kind": "city",
+          "name": "auto",
+          "center_lat": -34.625,
+          "center_lon": -145.625,
+          "radius_meters": 50000.0
+        },
+        "f64_bits_hex": {
+          "center_lat": "c041500000000000",
+          "center_lon": "c062340000000000",
+          "radius_meters": "40e86a0000000000"
+        },
+        "grid_level": 2,
+        "accuracy_bucket_m": 50.0,
+        "region_type": 3,
+        "region_id_v2_hex": "d6f016fb65fedc07ca0fefb2a0d495f91a7082c49199d4036001dd26feac632f"
+      }
+    },
+    {
+      "name": "city_coarse_fix",
+      "why": "a = 20 km still fits (rho_2 + 20000 <= 50000)",
+      "level": "CITY",
+      "input": {
+        "position": {
+          "lat": 56.789012345,
+          "lon": 167.890123456
+        },
+        "accuracy_area_radius_m": 15000.0,
+        "same_cell_twins": [
+          {
+            "lat": 56.904822373,
+            "lon": 167.80952721
+          },
+          {
+            "lat": 56.842968679,
+            "lon": 167.777470276
+          },
+          {
+            "lat": 56.969576247,
+            "lon": 167.90845732
+          }
+        ]
+      },
+      "expected": {
+        "claimed_region": {
+          "kind": "city",
+          "name": "auto",
+          "center_lat": 56.875,
+          "center_lon": 167.875,
+          "radius_meters": 50000.0
+        },
+        "f64_bits_hex": {
+          "center_lat": "404c700000000000",
+          "center_lon": "4064fc0000000000",
+          "radius_meters": "40e86a0000000000"
+        },
+        "grid_level": 2,
+        "accuracy_bucket_m": 20000.0,
+        "region_type": 3,
+        "region_id_v2_hex": "26985b482c9fef9794dc440dc578c1110002d489cd4b91bc99fb9752faae24ff"
+      }
+    },
+    {
+      "name": "city_accuracy_too_coarse",
+      "why": "a = 40 km: rho_2 + 50000 > 50 km, no city claim",
+      "level": "CITY",
+      "input": {
+        "position": {
+          "lat": 12.345678901,
+          "lon": 23.456789012
+        },
+        "accuracy_area_radius_m": 40000.0
+      },
+      "expected": {
+        "claim": null,
+        "note": "no claim at this level; the SDK falls back (spec section 3.4)"
+      }
+    },
+    {
+      "name": "city_no_accuracy",
+      "why": "no usable accuracy: no city claim",
+      "level": "CITY",
+      "input": {
+        "position": {
+          "lat": 12.345678901,
+          "lon": 23.456789012
+        },
+        "accuracy_area_radius_m": null
+      },
+      "expected": {
+        "claim": null,
+        "note": "no claim at this level; the SDK falls back (spec section 3.4)"
+      }
+    },
+    {
+      "name": "city_on_grid_line",
+      "why": "a position exactly on a grid line belongs to the cell above/east",
+      "level": "CITY",
+      "input": {
+        "position": {
+          "lat": 12.25,
+          "lon": 23.5
+        },
+        "accuracy_area_radius_m": 45.0,
+        "same_cell_twins": [
+          {
+            "lat": 12.394183648,
+            "lon": 23.602665401
+          },
+          {
+            "lat": 12.450770453,
+            "lon": 23.587467969
+          },
+          {
+            "lat": 12.466594799,
+            "lon": 23.676096666
+          }
+        ]
+      },
+      "expected": {
+        "claimed_region": {
+          "kind": "city",
+          "name": "auto",
+          "center_lat": 12.375,
+          "center_lon": 23.625,
+          "radius_meters": 50000.0
+        },
+        "f64_bits_hex": {
+          "center_lat": "4028c00000000000",
+          "center_lon": "4037a00000000000",
+          "radius_meters": "40e86a0000000000"
+        },
+        "grid_level": 2,
+        "accuracy_bucket_m": 50.0,
+        "region_type": 3,
+        "region_id_v2_hex": "64d23ee173c88b54b8945f73878fe400541f14359bbb3957fd45e06e83e90eaf"
+      }
+    },
+    {
+      "name": "city_antimeridian_east",
+      "why": "lon = 180 normalises to -180",
+      "level": "CITY",
+      "input": {
+        "position": {
+          "lat": 5.123456789,
+          "lon": 180.0
+        },
+        "accuracy_area_radius_m": 45.0,
+        "same_cell_twins": [
+          {
+            "lat": 5.183523729,
+            "lon": -179.848226559
+          },
+          {
+            "lat": 5.11304571,
+            "lon": -179.904692456
+          },
+          {
+            "lat": 5.127377403,
+            "lon": -179.965195713
+          }
+        ]
+      },
+      "expected": {
+        "claimed_region": {
+          "kind": "city",
+          "name": "auto",
+          "center_lat": 5.125,
+          "center_lon": -179.875,
+          "radius_meters": 50000.0
+        },
+        "f64_bits_hex": {
+          "center_lat": "4014800000000000",
+          "center_lon": "c0667c0000000000",
+          "radius_meters": "40e86a0000000000"
+        },
+        "grid_level": 2,
+        "accuracy_bucket_m": 50.0,
+        "region_type": 3,
+        "region_id_v2_hex": "73b3a6e2b25db9b2b368ed2642ffb7796a40de0dca2887dda57d85e5aae9f4c6"
+      }
+    },
+    {
+      "name": "city_north_pole",
+      "why": "lat = 90 clamps into the top row",
+      "level": "CITY",
+      "input": {
+        "position": {
+          "lat": 90.0,
+          "lon": 10.987654321
+        },
+        "accuracy_area_radius_m": 45.0,
+        "same_cell_twins": [
+          {
+            "lat": 90.11153243,
+            "lon": 10.834493551
+          },
+          {
+            "lat": 90.106176653,
+            "lon": 10.816690821
+          },
+          {
+            "lat": 90.135072926,
+            "lon": 10.904217805
+          }
+        ]
+      },
+      "expected": {
+        "claimed_region": {
+          "kind": "city",
+          "name": "auto",
+          "center_lat": 89.875,
+          "center_lon": 10.875,
+          "radius_meters": 50000.0
+        },
+        "f64_bits_hex": {
+          "center_lat": "4056780000000000",
+          "center_lon": "4025c00000000000",
+          "radius_meters": "40e86a0000000000"
+        },
+        "grid_level": 2,
+        "accuracy_bucket_m": 50.0,
+        "region_type": 3,
+        "region_id_v2_hex": "b298df88abeb7316c93022e2e0b3d68ec0daf6cff14b1c69e7577dfd305afc79"
+      }
+    },
+    {
+      "name": "disc_base_floor",
+      "why": "base fallback a = 2 x 22.5 m floor -> bucket 50 m",
+      "level": "CONTINUOUS_AREA",
+      "input": {
+        "position": {
+          "lat": 12.345678901,
+          "lon": 23.456789012
+        },
+        "accuracy_area_radius_m": 45.0,
+        "same_cell_twins": [
+          {
+            "lat": 12.345502965,
+            "lon": 23.456442059
+          },
+          {
+            "lat": 12.345031492,
+            "lon": 23.456603439
+          },
+          {
+            "lat": 12.344832,
+            "lon": 23.456714273
+          }
+        ]
+      },
+      "expected": {
+        "claimed_region": {
+          "kind": "ellipse",
+          "center": {
+            "lat": 12.34521484375,
+            "lon": 23.45654296875
+          },
+          "semi_major_m": 128.0,
+          "semi_minor_m": 128.0,
+          "heading_deg": 0.0
+        },
+        "f64_bits_hex": {
+          "center.lat": "4028b0c000000000",
+          "center.lon": "403774e000000000",
+          "semi_major_m": "4060000000000000",
+          "semi_minor_m": "4060000000000000",
+          "heading_deg": "0000000000000000"
+        },
+        "grid_level": 10,
+        "accuracy_bucket_m": 50.0,
+        "region_type": 4,
+        "region_id_v2_hex": "4c1f420e81f771a2b9968241de81b62b3c245703c60274c444d490bd9ab7a766"
+      }
+    },
+    {
+      "name": "disc_gps_good",
+      "why": "a = 2 x 8 m -> bucket 20 m",
+      "level": "CONTINUOUS_AREA",
+      "input": {
+        "position": {
+          "lat": -34.567890123,
+          "lon": -145.678901234
+        },
+        "accuracy_area_radius_m": 16.0,
+        "same_cell_twins": [
+          {
+            "lat": -34.568031524,
+            "lon": -145.678854986
+          },
+          {
+            "lat": -34.568016652,
+            "lon": -145.678860763
+          },
+          {
+            "lat": -34.568047062,
+            "lon": -145.678785348
+          }
+        ]
+      },
+      "expected": {
+        "claimed_region": {
+          "kind": "ellipse",
+          "center": {
+            "lat": -34.5679931640625,
+            "lon": -145.6788330078125
+          },
+          "semi_major_m": 41.0,
+          "semi_minor_m": 41.0,
+          "heading_deg": 0.0
+        },
+        "f64_bits_hex": {
+          "center.lat": "c04148b400000000",
+          "center.lon": "c06235b900000000",
+          "semi_major_m": "4044800000000000",
+          "semi_minor_m": "4044800000000000",
+          "heading_deg": "0000000000000000"
+        },
+        "grid_level": 12,
+        "accuracy_bucket_m": 20.0,
+        "region_type": 4,
+        "region_id_v2_hex": "208723e0629da080427e798d8833bef93deb3cd79a5fbd6400bf2192eb4ab9e6"
+      }
+    },
+    {
+      "name": "disc_highres_protection",
+      "why": "highres 2 m protection disc -> bucket 10 m, finest level",
+      "level": "CONTINUOUS_AREA",
+      "input": {
+        "position": {
+          "lat": 56.789012345,
+          "lon": 167.890123456
+        },
+        "accuracy_area_radius_m": 2.0,
+        "same_cell_twins": [
+          {
+            "lat": 56.788895441,
+            "lon": 167.890091891
+          },
+          {
+            "lat": 56.78886392,
+            "lon": 167.890085696
+          },
+          {
+            "lat": 56.788878994,
+            "lon": 167.890048666
+          }
+        ]
+      },
+      "expected": {
+        "claimed_region": {
+          "kind": "ellipse",
+          "center": {
+            "lat": 56.7889404296875,
+            "lon": 167.8900146484375
+          },
+          "semi_major_m": 31.0,
+          "semi_minor_m": 31.0,
+          "heading_deg": 0.0
+        },
+        "f64_bits_hex": {
+          "center.lat": "404c64fc00000000",
+          "center.lon": "4064fc7b00000000",
+          "semi_major_m": "403f000000000000",
+          "semi_minor_m": "403f000000000000",
+          "heading_deg": "0000000000000000"
+        },
+        "grid_level": 12,
+        "accuracy_bucket_m": 10.0,
+        "region_type": 4,
+        "region_id_v2_hex": "1024221acf04327bfa0960416e4422125d551695443ec556149d9bffb9ec276d"
+      }
+    },
+    {
+      "name": "disc_coarse",
+      "why": "a = 2 x 240 m -> bucket 500 m",
+      "level": "CONTINUOUS_AREA",
+      "input": {
+        "position": {
+          "lat": 12.345678901,
+          "lon": 23.456789012
+        },
+        "accuracy_area_radius_m": 480.0,
+        "same_cell_twins": [
+          {
+            "lat": 12.349034239,
+            "lon": 23.458771532
+          },
+          {
+            "lat": 12.346193399,
+            "lon": 23.458916551
+          },
+          {
+            "lat": 12.347201187,
+            "lon": 23.45730726
+          }
+        ]
+      },
+      "expected": {
+        "claimed_region": {
+          "kind": "ellipse",
+          "center": {
+            "lat": 12.34765625,
+            "lon": 23.45703125
+          },
+          "semi_major_m": 1116.0,
+          "semi_minor_m": 1116.0,
+          "heading_deg": 0.0
+        },
+        "f64_bits_hex": {
+          "center.lat": "4028b20000000000",
+          "center.lon": "4037750000000000",
+          "semi_major_m": "4091700000000000",
+          "semi_minor_m": "4091700000000000",
+          "heading_deg": "0000000000000000"
+        },
+        "grid_level": 7,
+        "accuracy_bucket_m": 500.0,
+        "region_type": 4,
+        "region_id_v2_hex": "9a382057b02654f3a086b0e844b31ce0a4595b232be3aac22dbfbce5394457a3"
+      }
+    },
+    {
+      "name": "disc_very_coarse",
+      "why": "a = 7 km -> bucket 10 km, coarsest level",
+      "level": "CONTINUOUS_AREA",
+      "input": {
+        "position": {
+          "lat": -34.567890123,
+          "lon": -145.678901234
+        },
+        "accuracy_area_radius_m": 7000.0,
+        "same_cell_twins": [
+          {
+            "lat": -34.561291808,
+            "lon": -145.712725629
+          },
+          {
+            "lat": -34.5844826,
+            "lon": -145.660431643
+          },
+          {
+            "lat": -34.59906676,
+            "lon": -145.724094795
+          }
+        ]
+      },
+      "expected": {
+        "claimed_region": {
+          "kind": "ellipse",
+          "center": {
+            "lat": -34.5625,
+            "lon": -145.6875
+          },
+          "semi_major_m": 19830.0,
+          "semi_minor_m": 19830.0,
+          "heading_deg": 0.0
+        },
+        "f64_bits_hex": {
+          "center.lat": "c041480000000000",
+          "center.lon": "c062360000000000",
+          "semi_major_m": "40d35d8000000000",
+          "semi_minor_m": "40d35d8000000000",
+          "heading_deg": "0000000000000000"
+        },
+        "grid_level": 3,
+        "accuracy_bucket_m": 10000.0,
+        "region_type": 4,
+        "region_id_v2_hex": "d64662747343f621147e849d60a6fbb5bfff32081c4da416221ee5cceb9b298f"
+      }
+    },
+    {
+      "name": "disc_no_accuracy",
+      "why": "no usable accuracy: no disc claim",
+      "level": "CONTINUOUS_AREA",
+      "input": {
+        "position": {
+          "lat": 12.345678901,
+          "lon": 23.456789012
+        },
+        "accuracy_area_radius_m": "NaN"
+      },
+      "expected": {
+        "claim": null,
+        "note": "no claim at this level; the SDK falls back (spec section 3.4)"
+      }
+    },
+    {
+      "name": "disc_above_ladder",
+      "why": "a above the top bucket: no disc claim",
+      "level": "CONTINUOUS_AREA",
+      "input": {
+        "position": {
+          "lat": 12.345678901,
+          "lon": 23.456789012
+        },
+        "accuracy_area_radius_m": 150000.0
+      },
+      "expected": {
+        "claim": null,
+        "note": "no claim at this level; the SDK falls back (spec section 3.4)"
+      }
+    },
+    {
+      "name": "disc_antimeridian_west",
+      "why": "just west of 180 deg",
+      "level": "CONTINUOUS_AREA",
+      "input": {
+        "position": {
+          "lat": -0.000123456,
+          "lon": 179.999987654
+        },
+        "accuracy_area_radius_m": 45.0,
+        "same_cell_twins": [
+          {
+            "lat": -0.000557992,
+            "lon": 179.999873843
+          },
+          {
+            "lat": -0.000669786,
+            "lon": 179.999694021
+          },
+          {
+            "lat": -0.000104746,
+            "lon": 179.999732907
+          }
+        ]
+      },
+      "expected": {
+        "claimed_region": {
+          "kind": "ellipse",
+          "center": {
+            "lat": -0.00048828125,
+            "lon": 179.99951171875
+          },
+          "semi_major_m": 128.0,
+          "semi_minor_m": 128.0,
+          "heading_deg": 0.0
+        },
+        "f64_bits_hex": {
+          "center.lat": "bf40000000000000",
+          "center.lon": "40667ffc00000000",
+          "semi_major_m": "4060000000000000",
+          "semi_minor_m": "4060000000000000",
+          "heading_deg": "0000000000000000"
+        },
+        "grid_level": 10,
+        "accuracy_bucket_m": 50.0,
+        "region_type": 4,
+        "region_id_v2_hex": "455f8a6eb396cf826cda9bd05003cf481841fbd53d0b4823d6b938c64c84aeb8"
+      }
+    },
+    {
+      "name": "disc_south_pole",
+      "why": "lat = -90",
+      "level": "CONTINUOUS_AREA",
+      "input": {
+        "position": {
+          "lat": -90.0,
+          "lon": -0.123456789
+        },
+        "accuracy_area_radius_m": 45.0,
+        "same_cell_twins": [
+          {
+            "lat": -89.999892747,
+            "lon": -0.123229095
+          },
+          {
+            "lat": -89.999199709,
+            "lon": -0.123451723
+          },
+          {
+            "lat": -89.999830074,
+            "lon": -0.1237884
+          }
+        ]
+      },
+      "expected": {
+        "claimed_region": {
+          "kind": "ellipse",
+          "center": {
+            "lat": -89.99951171875,
+            "lon": -0.12353515625
+          },
+          "semi_major_m": 128.0,
+          "semi_minor_m": 128.0,
+          "heading_deg": 0.0
+        },
+        "f64_bits_hex": {
+          "center.lat": "c0567ff800000000",
+          "center.lon": "bfbfa00000000000",
+          "semi_major_m": "4060000000000000",
+          "semi_minor_m": "4060000000000000",
+          "heading_deg": "0000000000000000"
+        },
+        "grid_level": 10,
+        "accuracy_bucket_m": 50.0,
+        "region_type": 4,
+        "region_id_v2_hex": "32b9c5f3e4d82a0ae4db37db728a2a46e740c96aad589d69636f1c2175ce9b9f"
+      }
+    },
+    {
+      "name": "disc_query_inside_coarse",
+      "why": "deep inside a 40 km query disc: decided INSIDE at the coarsest level",
+      "level": "CONTINUOUS_AREA",
+      "input": {
+        "position": {
+          "lat": 12.345678901,
+          "lon": 23.456789012
+        },
+        "accuracy_area_radius_m": 45.0,
+        "query": {
+          "kind": "ellipse",
+          "lat": 12.3,
+          "lon": 23.4,
+          "semi_major_m": 40000.0,
+          "semi_minor_m": 40000.0,
+          "heading_deg": 0.0
+        }
+      },
+      "expected": {
+        "claimed_region": {
+          "kind": "ellipse",
+          "center": {
+            "lat": 12.3125,
+            "lon": 23.4375
+          },
+          "semi_major_m": 9880.0,
+          "semi_minor_m": 9880.0,
+          "heading_deg": 0.0
+        },
+        "f64_bits_hex": {
+          "center.lat": "4028a00000000000",
+          "center.lon": "4037700000000000",
+          "semi_major_m": "40c34c0000000000",
+          "semi_minor_m": "40c34c0000000000",
+          "heading_deg": "0000000000000000"
+        },
+        "grid_level": 3,
+        "accuracy_bucket_m": 50.0,
+        "region_type": 4,
+        "region_id_v2_hex": "38f6ac77cc02ce2acc94acea0853873c5265f7659cf0709d40987ee11b090511",
+        "claim_verdict": "INSIDE"
+      }
+    },
+    {
+      "name": "disc_query_outside_coarse",
+      "why": "far outside a 2 km query disc: decided OUTSIDE at the coarsest level",
+      "level": "CONTINUOUS_AREA",
+      "input": {
+        "position": {
+          "lat": 12.345678901,
+          "lon": 23.456789012
+        },
+        "accuracy_area_radius_m": 45.0,
+        "query": {
+          "kind": "ellipse",
+          "lat": 12.1,
+          "lon": 23.1,
+          "semi_major_m": 2000.0,
+          "semi_minor_m": 2000.0,
+          "heading_deg": 0.0
+        }
+      },
+      "expected": {
+        "claimed_region": {
+          "kind": "ellipse",
+          "center": {
+            "lat": 12.3125,
+            "lon": 23.4375
+          },
+          "semi_major_m": 9880.0,
+          "semi_minor_m": 9880.0,
+          "heading_deg": 0.0
+        },
+        "f64_bits_hex": {
+          "center.lat": "4028a00000000000",
+          "center.lon": "4037700000000000",
+          "semi_major_m": "40c34c0000000000",
+          "semi_minor_m": "40c34c0000000000",
+          "heading_deg": "0000000000000000"
+        },
+        "grid_level": 3,
+        "accuracy_bucket_m": 50.0,
+        "region_type": 4,
+        "region_id_v2_hex": "38f6ac77cc02ce2acc94acea0853873c5265f7659cf0709d40987ee11b090511",
+        "claim_verdict": "OUTSIDE"
+      }
+    },
+    {
+      "name": "disc_query_inside_needs_finer",
+      "why": "inside a 600 m disc centred 150 m away: needs a finer level",
+      "level": "CONTINUOUS_AREA",
+      "input": {
+        "position": {
+          "lat": 12.345678901,
+          "lon": 23.456789012
+        },
+        "accuracy_area_radius_m": 45.0,
+        "query": {
+          "kind": "ellipse",
+          "lat": 12.347,
+          "lon": 23.4575,
+          "semi_major_m": 600.0,
+          "semi_minor_m": 600.0,
+          "heading_deg": 0.0
+        }
+      },
+      "expected": {
+        "claimed_region": {
+          "kind": "ellipse",
+          "center": {
+            "lat": 12.3447265625,
+            "lon": 23.4560546875
+          },
+          "semi_major_m": 205.0,
+          "semi_minor_m": 205.0,
+          "heading_deg": 0.0
+        },
+        "f64_bits_hex": {
+          "center.lat": "4028b08000000000",
+          "center.lon": "403774c000000000",
+          "semi_major_m": "4069a00000000000",
+          "semi_minor_m": "4069a00000000000",
+          "heading_deg": "0000000000000000"
+        },
+        "grid_level": 9,
+        "accuracy_bucket_m": 50.0,
+        "region_type": 4,
+        "region_id_v2_hex": "1d01f9cde4d2f85d3cfb4c2e7fade3909e548288944e14025fe8c6eee5c31892",
+        "claim_verdict": "INSIDE"
+      }
+    },
+    {
+      "name": "disc_query_straddle",
+      "why": "query edge passes next to the device: INDETERMINATE at L*, claim at L*",
+      "level": "CONTINUOUS_AREA",
+      "input": {
+        "position": {
+          "lat": 12.345678901,
+          "lon": 23.456789012
+        },
+        "accuracy_area_radius_m": 45.0,
+        "query": {
+          "kind": "ellipse",
+          "lat": 12.347,
+          "lon": 23.4575,
+          "semi_major_m": 160.0,
+          "semi_minor_m": 160.0,
+          "heading_deg": 0.0
+        }
+      },
+      "expected": {
+        "claimed_region": {
+          "kind": "ellipse",
+          "center": {
+            "lat": 12.34521484375,
+            "lon": 23.45654296875
+          },
+          "semi_major_m": 128.0,
+          "semi_minor_m": 128.0,
+          "heading_deg": 0.0
+        },
+        "f64_bits_hex": {
+          "center.lat": "4028b0c000000000",
+          "center.lon": "403774e000000000",
+          "semi_major_m": "4060000000000000",
+          "semi_minor_m": "4060000000000000",
+          "heading_deg": "0000000000000000"
+        },
+        "grid_level": 10,
+        "accuracy_bucket_m": 50.0,
+        "region_type": 4,
+        "region_id_v2_hex": "4c1f420e81f771a2b9968241de81b62b3c245703c60274c444d490bd9ab7a766",
+        "claim_verdict": "INDETERMINATE"
+      }
+    },
+    {
+      "name": "disc_query_ellipse_not_disc",
+      "why": "unequal-axes query: no coarsening, claim at L*",
+      "level": "CONTINUOUS_AREA",
+      "input": {
+        "position": {
+          "lat": 12.345678901,
+          "lon": 23.456789012
+        },
+        "accuracy_area_radius_m": 45.0,
+        "query": {
+          "kind": "ellipse",
+          "lat": 12.3,
+          "lon": 23.4,
+          "semi_major_m": 40000.0,
+          "semi_minor_m": 20000.0,
+          "heading_deg": 0.0
+        }
+      },
+      "expected": {
+        "claimed_region": {
+          "kind": "ellipse",
+          "center": {
+            "lat": 12.34521484375,
+            "lon": 23.45654296875
+          },
+          "semi_major_m": 128.0,
+          "semi_minor_m": 128.0,
+          "heading_deg": 0.0
+        },
+        "f64_bits_hex": {
+          "center.lat": "4028b0c000000000",
+          "center.lon": "403774e000000000",
+          "semi_major_m": "4060000000000000",
+          "semi_minor_m": "4060000000000000",
+          "heading_deg": "0000000000000000"
+        },
+        "grid_level": 10,
+        "accuracy_bucket_m": 50.0,
+        "region_type": 4,
+        "region_id_v2_hex": "4c1f420e81f771a2b9968241de81b62b3c245703c60274c444d490bd9ab7a766",
+        "claim_verdict": null
+      }
+    },
+    {
+      "name": "box_basic",
+      "why": "horizontal from the disc rule, rounded outward to grid lines; altitude on a 64 m grid",
+      "level": "CONTINUOUS_VOLUME",
+      "input": {
+        "position": {
+          "lat": 12.345678901,
+          "lon": 23.456789012
+        },
+        "accuracy_area_radius_m": 45.0,
+        "altitude_m": 123.456,
+        "vertical_accuracy_area_m": 100.0
+      },
+      "expected": {
+        "claimed_region": {
+          "kind": "bounding_box_3d",
+          "min_latitude": 12.34375,
+          "max_latitude": 12.3466796875,
+          "min_longitude": 23.455078125,
+          "max_longitude": 23.4580078125,
+          "min_altitude": -64.0,
+          "max_altitude": 256.0
+        },
+        "f64_bits_hex": {
+          "min_latitude": "4028b00000000000",
+          "max_latitude": "4028b18000000000",
+          "min_longitude": "4037748000000000",
+          "max_longitude": "4037754000000000",
+          "min_altitude": "c050000000000000",
+          "max_altitude": "4070000000000000"
+        },
+        "grid_level": 10,
+        "accuracy_bucket_m": 50.0,
+        "region_type": 6,
+        "region_id_v2_hex": "1b3382615697cb7c223af238c3f55b06d480ffdfe5fae4a395972357454232a9",
+        "vertical_bucket_m": 100.0
+      }
+    },
+    {
+      "name": "box_high_lat",
+      "why": "longitude half-width grows with latitude",
+      "level": "CONTINUOUS_VOLUME",
+      "input": {
+        "position": {
+          "lat": 78.123456789,
+          "lon": -12.345678901
+        },
+        "accuracy_area_radius_m": 480.0,
+        "altitude_m": -12.5,
+        "vertical_accuracy_area_m": 100.0
+      },
+      "expected": {
+        "claimed_region": {
+          "kind": "bounding_box_3d",
+          "min_latitude": 78.109375,
+          "max_latitude": 78.1328125,
+          "min_longitude": -12.3984375,
+          "max_longitude": -12.296875,
+          "min_altitude": -192.0,
+          "max_altitude": 128.0
+        },
+        "f64_bits_hex": {
+          "min_latitude": "4053870000000000",
+          "max_latitude": "4053888000000000",
+          "min_longitude": "c028cc0000000000",
+          "max_longitude": "c028980000000000",
+          "min_altitude": "c068000000000000",
+          "max_altitude": "4060000000000000"
+        },
+        "grid_level": 7,
+        "accuracy_bucket_m": 500.0,
+        "region_type": 6,
+        "region_id_v2_hex": "2f002c3aaf2938ed9154bd668cecafcb917c90445a2e3f46d309b0ee803195c9",
+        "vertical_bucket_m": 100.0
+      }
+    },
+    {
+      "name": "box_no_altitude",
+      "why": "no altitude: no box claim (never altitude 0 as a stand-in)",
+      "level": "CONTINUOUS_VOLUME",
+      "input": {
+        "position": {
+          "lat": 12.345678901,
+          "lon": 23.456789012
+        },
+        "accuracy_area_radius_m": 45.0,
+        "altitude_m": "NaN",
+        "vertical_accuracy_area_m": 100.0
+      },
+      "expected": {
+        "claim": null,
+        "note": "no claim at this level; the SDK falls back (spec section 3.4)"
+      }
+    }
+  ],
+  "classification": [
+    {
+      "name": "snapped_city_basic",
+      "claimed_region": {
+        "kind": "city",
+        "name": "auto",
+        "center_lat": 12.375,
+        "center_lon": 23.375,
+        "radius_meters": 50000.0
+      },
+      "claim_privacy": "SNAPPED"
+    },
+    {
+      "name": "snapped_city_southern_western",
+      "claimed_region": {
+        "kind": "city",
+        "name": "auto",
+        "center_lat": -34.625,
+        "center_lon": -145.625,
+        "radius_meters": 50000.0
+      },
+      "claim_privacy": "SNAPPED"
+    },
+    {
+      "name": "snapped_city_coarse_fix",
+      "claimed_region": {
+        "kind": "city",
+        "name": "auto",
+        "center_lat": 56.875,
+        "center_lon": 167.875,
+        "radius_meters": 50000.0
+      },
+      "claim_privacy": "SNAPPED"
+    },
+    {
+      "name": "snapped_city_on_grid_line",
+      "claimed_region": {
+        "kind": "city",
+        "name": "auto",
+        "center_lat": 12.375,
+        "center_lon": 23.625,
+        "radius_meters": 50000.0
+      },
+      "claim_privacy": "SNAPPED"
+    },
+    {
+      "name": "snapped_city_antimeridian_east",
+      "claimed_region": {
+        "kind": "city",
+        "name": "auto",
+        "center_lat": 5.125,
+        "center_lon": -179.875,
+        "radius_meters": 50000.0
+      },
+      "claim_privacy": "SNAPPED"
+    },
+    {
+      "name": "snapped_city_north_pole",
+      "claimed_region": {
+        "kind": "city",
+        "name": "auto",
+        "center_lat": 89.875,
+        "center_lon": 10.875,
+        "radius_meters": 50000.0
+      },
+      "claim_privacy": "SNAPPED"
+    },
+    {
+      "name": "snapped_disc_base_floor",
+      "claimed_region": {
+        "kind": "ellipse",
+        "center": {
+          "lat": 12.34521484375,
+          "lon": 23.45654296875
+        },
+        "semi_major_m": 128.0,
+        "semi_minor_m": 128.0,
+        "heading_deg": 0.0
+      },
+      "claim_privacy": "SNAPPED"
+    },
+    {
+      "name": "snapped_disc_gps_good",
+      "claimed_region": {
+        "kind": "ellipse",
+        "center": {
+          "lat": -34.5679931640625,
+          "lon": -145.6788330078125
+        },
+        "semi_major_m": 41.0,
+        "semi_minor_m": 41.0,
+        "heading_deg": 0.0
+      },
+      "claim_privacy": "SNAPPED"
+    },
+    {
+      "name": "snapped_disc_highres_protection",
+      "claimed_region": {
+        "kind": "ellipse",
+        "center": {
+          "lat": 56.7889404296875,
+          "lon": 167.8900146484375
+        },
+        "semi_major_m": 31.0,
+        "semi_minor_m": 31.0,
+        "heading_deg": 0.0
+      },
+      "claim_privacy": "SNAPPED"
+    },
+    {
+      "name": "snapped_disc_coarse",
+      "claimed_region": {
+        "kind": "ellipse",
+        "center": {
+          "lat": 12.34765625,
+          "lon": 23.45703125
+        },
+        "semi_major_m": 1116.0,
+        "semi_minor_m": 1116.0,
+        "heading_deg": 0.0
+      },
+      "claim_privacy": "SNAPPED"
+    },
+    {
+      "name": "snapped_disc_very_coarse",
+      "claimed_region": {
+        "kind": "ellipse",
+        "center": {
+          "lat": -34.5625,
+          "lon": -145.6875
+        },
+        "semi_major_m": 19830.0,
+        "semi_minor_m": 19830.0,
+        "heading_deg": 0.0
+      },
+      "claim_privacy": "SNAPPED"
+    },
+    {
+      "name": "snapped_disc_antimeridian_west",
+      "claimed_region": {
+        "kind": "ellipse",
+        "center": {
+          "lat": -0.00048828125,
+          "lon": 179.99951171875
+        },
+        "semi_major_m": 128.0,
+        "semi_minor_m": 128.0,
+        "heading_deg": 0.0
+      },
+      "claim_privacy": "SNAPPED"
+    },
+    {
+      "name": "snapped_disc_south_pole",
+      "claimed_region": {
+        "kind": "ellipse",
+        "center": {
+          "lat": -89.99951171875,
+          "lon": -0.12353515625
+        },
+        "semi_major_m": 128.0,
+        "semi_minor_m": 128.0,
+        "heading_deg": 0.0
+      },
+      "claim_privacy": "SNAPPED"
+    },
+    {
+      "name": "snapped_disc_query_inside_coarse",
+      "claimed_region": {
+        "kind": "ellipse",
+        "center": {
+          "lat": 12.3125,
+          "lon": 23.4375
+        },
+        "semi_major_m": 9880.0,
+        "semi_minor_m": 9880.0,
+        "heading_deg": 0.0
+      },
+      "claim_privacy": "SNAPPED"
+    },
+    {
+      "name": "snapped_disc_query_outside_coarse",
+      "claimed_region": {
+        "kind": "ellipse",
+        "center": {
+          "lat": 12.3125,
+          "lon": 23.4375
+        },
+        "semi_major_m": 9880.0,
+        "semi_minor_m": 9880.0,
+        "heading_deg": 0.0
+      },
+      "claim_privacy": "SNAPPED"
+    },
+    {
+      "name": "snapped_disc_query_inside_needs_finer",
+      "claimed_region": {
+        "kind": "ellipse",
+        "center": {
+          "lat": 12.3447265625,
+          "lon": 23.4560546875
+        },
+        "semi_major_m": 205.0,
+        "semi_minor_m": 205.0,
+        "heading_deg": 0.0
+      },
+      "claim_privacy": "SNAPPED"
+    },
+    {
+      "name": "snapped_disc_query_straddle",
+      "claimed_region": {
+        "kind": "ellipse",
+        "center": {
+          "lat": 12.34521484375,
+          "lon": 23.45654296875
+        },
+        "semi_major_m": 128.0,
+        "semi_minor_m": 128.0,
+        "heading_deg": 0.0
+      },
+      "claim_privacy": "SNAPPED"
+    },
+    {
+      "name": "snapped_disc_query_ellipse_not_disc",
+      "claimed_region": {
+        "kind": "ellipse",
+        "center": {
+          "lat": 12.34521484375,
+          "lon": 23.45654296875
+        },
+        "semi_major_m": 128.0,
+        "semi_minor_m": 128.0,
+        "heading_deg": 0.0
+      },
+      "claim_privacy": "SNAPPED"
+    },
+    {
+      "name": "snapped_box_basic",
+      "claimed_region": {
+        "kind": "bounding_box_3d",
+        "min_latitude": 12.34375,
+        "max_latitude": 12.3466796875,
+        "min_longitude": 23.455078125,
+        "max_longitude": 23.4580078125,
+        "min_altitude": -64.0,
+        "max_altitude": 256.0
+      },
+      "claim_privacy": "SNAPPED"
+    },
+    {
+      "name": "snapped_box_high_lat",
+      "claimed_region": {
+        "kind": "bounding_box_3d",
+        "min_latitude": 78.109375,
+        "max_latitude": 78.1328125,
+        "min_longitude": -12.3984375,
+        "max_longitude": -12.296875,
+        "min_altitude": -192.0,
+        "max_altitude": 128.0
+      },
+      "claim_privacy": "SNAPPED"
+    },
+    {
+      "name": "legacy_city_device_centred",
+      "claimed_region": {
+        "kind": "city",
+        "name": "auto",
+        "center_lat": 12.345678901,
+        "center_lon": 23.456789012,
+        "radius_meters": 50000.0
+      },
+      "claim_privacy": "LEGACY"
+    },
+    {
+      "name": "legacy_disc_device_centred",
+      "claimed_region": {
+        "kind": "ellipse",
+        "center": {
+          "lat": 12.345678901,
+          "lon": 23.456789012
+        },
+        "semi_major_m": 90.0,
+        "semi_minor_m": 90.0,
+        "heading_deg": 0.0
+      },
+      "claim_privacy": "LEGACY"
+    },
+    {
+      "name": "legacy_ellipse_with_heading",
+      "claimed_region": {
+        "kind": "ellipse",
+        "center": {
+          "lat": 12.3447265625,
+          "lon": 23.4560546875
+        },
+        "semi_major_m": 205.0,
+        "semi_minor_m": 175.0,
+        "heading_deg": 30.0
+      },
+      "claim_privacy": "LEGACY"
+    },
+    {
+      "name": "legacy_disc_radius_off_ladder",
+      "claimed_region": {
+        "kind": "ellipse",
+        "center": {
+          "lat": 12.3447265625,
+          "lon": 23.4560546875
+        },
+        "semi_major_m": 206.0,
+        "semi_minor_m": 206.0,
+        "heading_deg": 0.0
+      },
+      "claim_privacy": "LEGACY"
+    },
+    {
+      "name": "legacy_disc_mixed_levels",
+      "claimed_region": {
+        "kind": "ellipse",
+        "center": {
+          "lat": 12.3447265625,
+          "lon": 23.45703125
+        },
+        "semi_major_m": 205.0,
+        "semi_minor_m": 205.0,
+        "heading_deg": 0.0
+      },
+      "claim_privacy": "LEGACY"
+    },
+    {
+      "name": "legacy_city_wrong_radius",
+      "claimed_region": {
+        "kind": "city",
+        "name": "auto",
+        "center_lat": 12.375,
+        "center_lon": 23.375,
+        "radius_meters": 40000.0
+      },
+      "claim_privacy": "LEGACY"
+    },
+    {
+      "name": "legacy_box_device_centred",
+      "claimed_region": {
+        "kind": "bounding_box_3d",
+        "min_latitude": 12.344778901,
+        "max_latitude": 12.346578900999999,
+        "min_longitude": 23.455889012,
+        "max_longitude": 23.457689012000003,
+        "min_altitude": 73.456,
+        "max_altitude": 173.456
+      },
+      "claim_privacy": "LEGACY"
+    },
+    {
+      "name": "country_code_claim",
+      "claimed_region": {
+        "kind": "country",
+        "iso_code": "AT"
+      },
+      "claim_privacy": "NOT_APPLICABLE"
+    },
+    {
+      "name": "earth_claim",
+      "claimed_region": {
+        "kind": "earth",
+        "max_altitude_meters": 10000.0
+      },
+      "claim_privacy": "NOT_APPLICABLE"
+    }
+  ]
+}

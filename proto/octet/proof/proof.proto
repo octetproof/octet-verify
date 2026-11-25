@@ -232,6 +232,9 @@ message DeviceAttestation {
   optional bytes app_attest_attestation = 8;
   optional bytes app_attest_assertion = 9;
   optional bytes attestation_nonce = 10;
+  // Android. When present, attestation_nonce is SHA256(seed ‖ the x963 point of the key in
+  // certificate_chain[0]), so the Play Integrity token is tied to the key that signs this proof.
+  optional bytes attestation_nonce_seed = 11;
 }
 
 enum IntegrityVerdictStatus {
@@ -307,6 +310,13 @@ message LocationProof {
   // uncertaintyFields stage. An early highres build carried this at tag 18, which
   // is query_region here; such a proof fails to decode rather than being misread.
   optional LocationUncertainty uncertainty = 20;
+
+  // The licence the SDK was activated for (semantic-binding v4): the canonical
+  // lowercase hyphenated UUID, 36 bytes, byte-identical to the licence a
+  // decision is made under. Signed via the octet-semantic-binding-v4 preimage.
+  // Present (non-empty) exactly when the semanticFields stage is v4; on a v1-v3
+  // proof it was never signed, and the proof fails.
+  string committed_license_id = 21;
 
   reserved 9, 14, 15;
 }

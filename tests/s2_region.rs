@@ -176,6 +176,7 @@ fn contains_check(region: Region, p: (f64, f64), h: Option<f64>) -> (Status, Str
             allow_unbound_app_attest: false,
             require_verdict: None,
             validation_window: None,
+            require_private_claims: false,
         },
     );
     let c = r.checks.iter().find(|c| c.name == "region-contains").expect("region-contains check");
@@ -244,6 +245,7 @@ fn non_canonical_sets_fail_containment_and_the_cell_set_check() {
                 allow_unbound_app_attest: false,
                 require_verdict: None,
                 validation_window: None,
+                require_private_claims: false,
             },
         );
         r.checks.iter().find(|c| c.name == "cell-set").map(|c| c.status)
@@ -298,6 +300,7 @@ fn voxel_check(vs: Vec<S2Voxel>) -> Option<Status> {
             allow_unbound_app_attest: false,
             require_verdict: None,
             validation_window: None,
+            require_private_claims: false,
         },
     );
     r.checks.iter().find(|c| c.name == "voxel-set").map(|c| c.status)
@@ -413,4 +416,39 @@ fn voxel_containment_fails_closed() {
     assert_eq!(voxel_check(too_many), Some(Status::Fail));
     // A height is ignored for other region types.
     assert_eq!(contains_check(Region::CellSet(S2CellSet { cell_ids: vec![p] }), london, Some(f64::NAN)).0, Status::Pass);
+}
+
+/// The cell-set verdict against the reference: θ bit for bit, ℓ² within an ulp
+/// (`sin` is not correctly rounded), and the verdict and the edge flag for every
+/// case. The reference may fuse multiply-adds, so distances can differ in the
+/// last bits; that is what the edge margin absorbs, so a non-edge case must
+/// agree exactly.
+#[test]
+fn cellset_verdict() {
+    let d = doc();
+    let s = &d["cellset_verdict"];
+    assert_eq!(s["k"].as_f64().unwrap(), s2::VERDICT_K);
+    assert_eq!(s["r_m"].as_f64().unwrap(), s2::VERDICT_R_M);
+    assert_eq!(s["edge_margin_chord"].as_f64().unwrap(), s2::VERDICT_EDGE_MARGIN_CHORD);
+    let cases = s["cases"].as_array().unwrap();
+    assert!(cases.len() >= 100);
+    let bits = |v: &Value| v.as_str().map(|_| f64::from_bits(hex64(v)));
+    for c in cases {
+        let name = c["name"].as_str().unwrap();
+        let (x, y, z) = xyz(c);
+        let h = bits(&c["h_f64_bits_hex"]);
+        let r = s2::cell_set_verdict(&ids(&c["cells_hex"]), [x, y, z], h).unwrap_or_else(|e| panic!("{name}: {e}"));
+        if let Some(t) = bits(&c["theta_f64_bits_hex"]) {
+            assert_eq!((s2::VERDICT_K * h.unwrap() / s2::VERDICT_R_M).to_bits(), t.to_bits(), "{name}: theta");
+        }
+        if let Some(l2) = bits(&c["cap_length2_f64_bits_hex"]) {
+            let mine = 2.0 * libm::sin(0.5 * (s2::VERDICT_K * h.unwrap() / s2::VERDICT_R_M));
+            assert!((mine * mine).to_bits().abs_diff(l2.to_bits()) <= 2, "{name}: cap_length2");
+        }
+        let on_edge = r.min_margin_chord.is_some_and(|m| m <= s2::VERDICT_EDGE_MARGIN_CHORD);
+        assert_eq!(on_edge, edge(c), "{name}: edge flag (margin {:?})", r.min_margin_chord);
+        if !on_edge {
+            assert_eq!(r.verdict.label(), c["verdict"].as_str().unwrap(), "{name}");
+        }
+    }
 }

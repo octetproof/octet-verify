@@ -92,6 +92,7 @@ fn verify_bound(proof: &LocationProof, nonce: &[u8], expect_at: bool) -> Report 
         allow_unbound_app_attest: false,
         require_verdict: None,
         validation_window: None,
+        require_private_claims: false,
     };
     verify(proof, &opts)
 }

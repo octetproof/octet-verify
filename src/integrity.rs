@@ -10,12 +10,28 @@
 //! verdict the endpoint returns. The endpoint is content-blind; all judgement
 //! (nonce byte-equality, package-set, window freshness) is here.
 //!
+//! **Key tie.** A proof from SDK 4.0.0 on carries `attestation_nonce_seed`
+//! (field 11), and its `attestation_nonce` (field 10) is then
+//! `SHA256(seed ‖ P)`, where `P` is the uncompressed point of the P-256 key in
+//! `certificate_chain[0]`, the key that signs the proof. The check recomputes
+//! that hash, so a token copied into a proof signed by another key FAILs. A tied
+//! token may be older than the proof ([`TIED_TOKEN_MAX_AGE_S`]); a token with no
+//! seed must be as fresh as the proof itself.
+//!
+//! Field 11 is not signed, so the tie is only enforced if a proof cannot drop
+//! it. A proof bound under semantic-binding v4 (one that commits to a licence)
+//! comes only from SDK 4.0.0 or later, which never sends a token without field
+//! 11. On such a proof a token with no field 11 FAILs. An empty field 11 FAILs
+//! on any proof: a token with no tie carries no field 11, so there is no second
+//! way to say "none".
+//!
 //! Off by default: with no decode config the `play-integrity` check reports
 //! `NOT-CHECKED`, and the lean default build pulls none of this. Fail-closed:
 //! a bad/unbindable token FAILs; transient or verifier-side conditions are
 //! `NOT-CHECKED`, never fail-open. See `spec/integrity-decode.md` §6.
 
-use crate::navigate::LocationProof;
+use crate::keys::hardware_pubkey_from_cert_chain;
+use crate::navigate::{DeviceAttestation, LocationProof};
 use crate::verify::{Check, Status};
 use octet_attest_verify::playintegrity::{DeviceIntegrity, IntegrityVerdict};
 use std::io::Read;
@@ -26,6 +42,13 @@ const NAME: &str = "play-integrity";
 const MAX_RESPONSE_BYTES: u64 = 64 * 1024;
 /// Contract cap on the token (§4) — don't POST an oversized body.
 const MAX_TOKEN_BYTES: usize = 16 * 1024;
+
+/// Age limit for a token tied to the proof's signing key (field 11 present and
+/// the tie holds): 60 minutes + 5 minutes margin. It follows the SDK's Play
+/// Integrity token refresh window, because the SDK reuses a tied token across
+/// proofs until it refreshes it. This is also the default of
+/// `--integrity-max-age-seconds`.
+pub const TIED_TOKEN_MAX_AGE_S: i64 = 3_900;
 
 /// Config for the online Play Integrity check. Built by the CLI only when all of
 /// `--integrity-decode-url`, `--integrity-decode-token`, `--integrity-package`
@@ -41,8 +64,84 @@ pub struct IntegrityConfig<'a> {
     /// The Android package the token was minted for: sent in the request and the
     /// accepted package for the binding check.
     pub package: &'a str,
-    /// Freshness window (milliseconds) for the token's `timestampMillis`.
-    pub max_age_ms: i64,
+    /// Freshness window (milliseconds) for the `timestampMillis` of a token
+    /// tied to the proof's signing key (field 11 present and the tie holds).
+    pub tied_max_age_ms: i64,
+    /// Freshness window (milliseconds) for a token with no field 11. This is
+    /// the proof's own age limit, or `tied_max_age_ms` if that is lower.
+    pub untied_max_age_ms: i64,
+}
+
+/// How field 10 relates to the proof's signing key.
+#[derive(Debug, PartialEq)]
+enum KeyTie {
+    /// No field 11 on a proof not bound under v4: a token from before the tie.
+    /// Only the proof's own age limit applies.
+    Untied,
+    /// Field 11 present and `SHA256(field 11 ‖ P) == field 10`.
+    Tied,
+    /// Field 11 missing on a v4 proof, empty, or present but the tie does not
+    /// hold, or there is no key to tie to.
+    Broken(String),
+}
+
+/// The nonce a tied token is requested with: `SHA256(seed ‖ key_point)`, where
+/// `key_point` is the uncompressed (x963) P-256 point. Same hash as the SDK
+/// computes when it requests the token.
+fn key_bound_nonce(seed: &[u8], key_point: &[u8]) -> [u8; 32] {
+    let mut pre = Vec::with_capacity(seed.len() + key_point.len());
+    pre.extend_from_slice(seed);
+    pre.extend_from_slice(key_point);
+    crate::crypto::sha256(&pre)
+}
+
+/// Check field 10 against field 11 and the key in `certificate_chain[0]`.
+/// `from_v4_sdk` is true when the proof passed semantic-binding v4, the same
+/// marker `claim-privacy` uses for field 20.
+fn key_tie(da: &DeviceAttestation, nonce: &[u8], from_v4_sdk: bool) -> KeyTie {
+    let seed = match da.attestation_nonce_seed.as_deref() {
+        Some([]) => {
+            return KeyTie::Broken(
+                "attestation_nonce_seed (field 11) is present but empty: a token with no tie \
+                 carries no field 11, so there is no second way to say \"none\""
+                    .into(),
+            )
+        }
+        Some(s) => s,
+        None if from_v4_sdk => {
+            return KeyTie::Broken(
+                "Play Integrity token with no attestation_nonce_seed (field 11) on a semantic-binding \
+                 v4 proof: SDK 4.0.0 or later always ties the token to the signing key, so field 11 \
+                 was removed"
+                    .into(),
+            )
+        }
+        None => return KeyTie::Untied,
+    };
+    if da.certificate_chain.is_empty() {
+        return KeyTie::Broken(
+            "token is tied to a signing key (field 11) but the proof has no certificate_chain".into(),
+        );
+    }
+    let vk = match hardware_pubkey_from_cert_chain(&da.certificate_chain) {
+        Ok(vk) => vk,
+        Err(_) => {
+            return KeyTie::Broken(
+                "token is tied to a signing key (field 11) but certificate_chain[0] has no P-256 key"
+                    .into(),
+            )
+        }
+    };
+    let point = vk.to_encoded_point(false);
+    if key_bound_nonce(seed, point.as_bytes()).as_slice() == nonce {
+        KeyTie::Tied
+    } else {
+        KeyTie::Broken(
+            "attestation_nonce (field 10) is not SHA256(field 11 ‖ the key in certificate_chain[0]): \
+             the token was not requested for this proof's signing key"
+                .into(),
+        )
+    }
 }
 
 fn chk(status: Status, detail: impl Into<String>) -> Check {
@@ -81,9 +180,29 @@ enum DecodeOutcome {
 
 /// Run the online Play Integrity check for `proof`.
 ///
+/// `committed_license` is [`Report::committed_license`](crate::verify::Report::committed_license)
+/// from verifying the same proof: `Some` only when it passed semantic-binding
+/// v4, and then a token must carry field 11.
+///
 /// `NOT-CHECKED` when the proof carries no PI token / nonce; otherwise POSTs the
 /// token to the decode endpoint and maps the result per §6.
-pub fn play_integrity_check(proof: &LocationProof, cfg: &IntegrityConfig, now_ms: i64) -> Check {
+pub fn play_integrity_check(
+    proof: &LocationProof,
+    committed_license: Option<&str>,
+    cfg: &IntegrityConfig,
+    now_ms: i64,
+) -> Check {
+    run(proof, committed_license.is_some(), cfg, now_ms, |token| decode(cfg, token))
+}
+
+/// The check with the decode call passed in, so everything but HTTP is testable.
+fn run(
+    proof: &LocationProof,
+    from_v4_sdk: bool,
+    cfg: &IntegrityConfig,
+    now_ms: i64,
+    decode: impl FnOnce(&str) -> DecodeOutcome,
+) -> Check {
     let da = match &proof.device_attestation {
         Some(da) => da,
         None => return chk(Status::NotChecked, "no device attestation on proof"),
@@ -102,8 +221,18 @@ pub fn play_integrity_check(proof: &LocationProof, cfg: &IntegrityConfig, now_ms
     if let Err(e) = check_url_scheme(cfg.decode_url) {
         return chk(Status::NotChecked, format!("verifier misconfigured: {e}"));
     }
-    let outcome = decode(cfg, token);
-    map_outcome(outcome, nonce, cfg.package, now_ms, cfg.max_age_ms)
+    // The tie is checked before the decode call: a broken tie FAILs whatever
+    // Google says about the token.
+    let (max_age_ms, tie_note) = match key_tie(da, nonce, from_v4_sdk) {
+        KeyTie::Tied => (cfg.tied_max_age_ms, "tied to the signing key"),
+        KeyTie::Untied => (cfg.untied_max_age_ms, "not tied to the signing key (no field 11)"),
+        KeyTie::Broken(why) => return chk(Status::Fail, why),
+    };
+    let mut c = map_outcome(decode(token), nonce, cfg.package, now_ms, max_age_ms);
+    if c.status == Status::Pass {
+        c.detail = format!("{}; {tie_note}", c.detail);
+    }
+    c
 }
 
 /// Map a decode outcome + the proof's binding inputs to a `play-integrity`
@@ -452,6 +581,213 @@ mod tests {
         assert!(!detail_is_array(r#"{"detail":"integrity_token_invalid"}"#));
         assert!(detail_is_array(r#"{"detail":[{"loc":["body","package_name"],"msg":"field required"}]}"#));
         assert_eq!(detail_field(r#"{"detail":[{"loc":["body"]}]}"#), None); // array → not a string slug
+    }
+
+    // --- Key tie (field 11), the same cases as the SDK's own tests ---
+
+    /// A self-signed P-256 test certificate and its uncompressed point (the
+    /// fixture `keys.rs` tests use).
+    const CERT_B64: &str = "MIIBjTCCATOgAwIBAgIUUmrrHypvK5MliIkDfzBtSSIlc24wCgYIKoZIzj0EAwIwHDEaMBgGA1UEAwwRb2N0ZXQtdmVyaWZ5LXRlc3QwHhcNMjYwNjEwMTgxODU5WhcNMjYwNjExMTgxODU5WjAcMRowGAYDVQQDDBFvY3RldC12ZXJpZnktdGVzdDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABMUrsLvgoS7C2WIVLXxrqv88u9A7cG9A1qSIeKN/DXOt1z61lKKL59Bvk6FyKrPE3eVjzPVQkh4kVDGBD+Omk0qjUzBRMB0GA1UdDgQWBBQv1un+9O/mvh24rEBxAN68yqn1XTAfBgNVHSMEGDAWgBQv1un+9O/mvh24rEBxAN68yqn1XTAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0gAMEUCIQCdyPJ9t7q4A9akk/JB4MiPY0Co64WkJWesuaIZbZhr2gIgXgLDk68G/glculfO2eMtE9lDi7ifshCTKQ/6qMei/wU=";
+    const CERT_POINT_HEX: &str = "04c52bb0bbe0a12ec2d962152d7c6baaff3cbbd03b706f40d6a48878a37f0d73add73eb594a28be7d06f93a1722ab3c4dde563ccf550921e245431810fe3a6934a";
+    const SEED: &[u8] = &[0x5Au8; 32];
+    const MIN: i64 = 60_000;
+
+    fn cert() -> Vec<u8> {
+        base64::engine::general_purpose::STANDARD.decode(CERT_B64).unwrap()
+    }
+
+    fn cfg() -> IntegrityConfig<'static> {
+        IntegrityConfig {
+            decode_url: "https://api.octetproof.com",
+            service_token: "unused",
+            package: PKG,
+            tied_max_age_ms: TIED_TOKEN_MAX_AGE_S * 1000,
+            untied_max_age_ms: MAXAGE,
+        }
+    }
+
+    fn proof(nonce: &[u8], seed: Option<&[u8]>, chain: Vec<Vec<u8>>) -> LocationProof {
+        LocationProof {
+            device_attestation: Some(DeviceAttestation {
+                play_integrity_token: Some("token".into()),
+                attestation_nonce: Some(nonce.to_vec()),
+                attestation_nonce_seed: seed.map(<[u8]>::to_vec),
+                certificate_chain: chain,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Run the check on `p` (not bound under v4) with a decoded token of the
+    /// given age that carries `nonce`.
+    fn run_aged(p: &LocationProof, nonce: &[u8], age_ms: i64, c: &IntegrityConfig) -> Check {
+        run(p, false, c, TS + age_ms, |_| {
+            DecodeOutcome::Ok(body(nonce, PKG, TS, "MEETS_DEVICE_INTEGRITY", "PLAY_RECOGNIZED"))
+        })
+    }
+
+    fn tied_nonce() -> [u8; 32] {
+        key_bound_nonce(SEED, &hex::decode(CERT_POINT_HEX).unwrap())
+    }
+
+    #[test]
+    fn shared_vector_matches_the_sdk() {
+        // The SDK's shared test value: seed 0..31, point 0x04 ‖ 1..64.
+        let seed: Vec<u8> = (0u8..32).collect();
+        let mut point = vec![0x04u8];
+        point.extend(1u8..=64);
+        assert_eq!(
+            hex::encode(key_bound_nonce(&seed, &point)),
+            "caadfdee7131b5b3c5d9385ad6b87855ab8c0d02d27e6df34e840beb9c34e295"
+        );
+    }
+
+    #[test]
+    fn tied_token_59_minutes_old_passes() {
+        let n = tied_nonce();
+        let c = run_aged(&proof(&n, Some(SEED), vec![cert()]), &n, 59 * MIN, &cfg());
+        assert_eq!(c.status, Status::Pass, "{}", c.detail);
+        assert!(c.detail.contains("tied to the signing key"), "{}", c.detail);
+    }
+
+    #[test]
+    fn tied_token_66_minutes_old_fails() {
+        let n = tied_nonce();
+        let c = run_aged(&proof(&n, Some(SEED), vec![cert()]), &n, 66 * MIN, &cfg());
+        assert_eq!(c.status, Status::Fail);
+        assert!(c.detail.contains("fresh"), "{}", c.detail);
+    }
+
+    #[test]
+    fn untied_token_4_minutes_old_passes() {
+        let c = run_aged(&proof(NONCE, None, vec![cert()]), NONCE, 4 * MIN, &cfg());
+        assert_eq!(c.status, Status::Pass, "{}", c.detail);
+        assert!(c.detail.contains("not tied"), "{}", c.detail);
+    }
+
+    #[test]
+    fn untied_token_6_minutes_old_fails() {
+        let c = run_aged(&proof(NONCE, None, vec![cert()]), NONCE, 6 * MIN, &cfg());
+        assert_eq!(c.status, Status::Fail);
+        assert!(c.detail.contains("fresh"), "{}", c.detail);
+    }
+
+    // --- Field 11 removed or emptied ---
+
+    #[test]
+    fn v4_proof_with_a_token_but_no_field_11_fails_at_any_age() {
+        // Field 11 is unsigned. Copy a genuine token, drop field 11, and without
+        // this rule the proof would pass as untied. A v4 proof comes only from
+        // SDK 4.0.0 or later, which never sends a token without field 11, so its
+        // absence there means it was removed. Fails before the decode call, so a
+        // fresh token from Google cannot rescue it.
+        for age in [0, MIN, 4 * MIN, 59 * MIN] {
+            let c = run(&proof(NONCE, None, vec![cert()]), true, &cfg(), TS + age, |_| {
+                panic!("a v4 proof with no field 11 must fail before the decode call")
+            });
+            assert_eq!(c.status, Status::Fail, "age {age}: {}", c.detail);
+            assert!(c.detail.contains("field 11") && c.detail.contains("v4"), "{}", c.detail);
+        }
+    }
+
+    #[test]
+    fn v4_marker_comes_from_the_reports_committed_licence() {
+        // The public entry point takes the report's committed licence, which is
+        // Some only after a semantic-binding v4 pass (as claim-privacy reads it).
+        let p = proof(NONCE, None, vec![cert()]);
+        let c = play_integrity_check(&p, Some("7c9e6679-7425-40de-944b-e07fc1f90ae7"), &cfg(), TS);
+        assert_eq!(c.status, Status::Fail, "{}", c.detail);
+        assert!(c.detail.contains("field 11"), "{}", c.detail);
+    }
+
+    #[test]
+    fn non_v4_proof_with_no_field_11_keeps_the_proofs_age_limit() {
+        // Earlier SDKs never sent field 11, so their tokens stay valid, held to
+        // the proof's own limit (5 min here) and not the tied 65 min.
+        let p = proof(NONCE, None, vec![cert()]);
+        let ok = run_aged(&p, NONCE, 4 * MIN, &cfg());
+        assert_eq!(ok.status, Status::Pass, "{}", ok.detail);
+        assert!(ok.detail.contains("not tied"), "{}", ok.detail);
+        let stale = run_aged(&p, NONCE, 6 * MIN, &cfg());
+        assert_eq!(stale.status, Status::Fail);
+        assert!(stale.detail.contains("fresh"), "{}", stale.detail);
+    }
+
+    #[test]
+    fn empty_field_11_fails_with_or_without_v4() {
+        // An empty field 11 is neither a tie nor "no tie": a token with no tie
+        // carries no field 11 at all. Accepting empty as untied would give a
+        // second way to say "none", so it fails, like an empty licence under v4.
+        for v4 in [false, true] {
+            let c = run(&proof(NONCE, Some(&[]), vec![cert()]), v4, &cfg(), TS, |_| {
+                panic!("an empty field 11 must fail before the decode call")
+            });
+            assert_eq!(c.status, Status::Fail, "v4={v4}: {}", c.detail);
+            assert!(c.detail.contains("present but empty"), "{}", c.detail);
+        }
+    }
+
+    #[test]
+    fn v4_proof_with_a_good_tie_still_gets_the_tied_limit() {
+        // The new rule only demands field 11; a correct tie on a v4 proof
+        // behaves exactly as before.
+        let n = tied_nonce();
+        let p = proof(&n, Some(SEED), vec![cert()]);
+        let c = run(&p, true, &cfg(), TS + 59 * MIN, |_| {
+            DecodeOutcome::Ok(body(&n, PKG, TS, "MEETS_DEVICE_INTEGRITY", "PLAY_RECOGNIZED"))
+        });
+        assert_eq!(c.status, Status::Pass, "{}", c.detail);
+        assert!(c.detail.contains("tied to the signing key"), "{}", c.detail);
+    }
+
+    #[test]
+    fn tied_token_with_a_seed_for_another_key_fails_at_any_age() {
+        // Field 10 made with a different key: a genuine token moved onto this proof.
+        let mut other = hex::decode(CERT_POINT_HEX).unwrap();
+        other[64] ^= 1;
+        let n = key_bound_nonce(SEED, &other);
+        for age in [0, MIN, 59 * MIN] {
+            let c = run(&proof(&n, Some(SEED), vec![cert()]), false, &cfg(), TS + age, |_| {
+                panic!("a broken tie must fail before the decode call")
+            });
+            assert_eq!(c.status, Status::Fail);
+            assert!(c.detail.contains("field 11"), "{}", c.detail);
+        }
+    }
+
+    #[test]
+    fn tied_token_with_no_certificate_chain_fails() {
+        let n = tied_nonce();
+        let c = run_aged(&proof(&n, Some(SEED), vec![]), &n, MIN, &cfg());
+        assert_eq!(c.status, Status::Fail);
+        assert!(c.detail.contains("no certificate_chain"), "{}", c.detail);
+    }
+
+    #[test]
+    fn tied_token_with_a_non_p256_leaf_fails() {
+        let n = tied_nonce();
+        let c = run_aged(&proof(&n, Some(SEED), vec![vec![1, 2, 3]]), &n, MIN, &cfg());
+        assert_eq!(c.status, Status::Fail);
+        assert!(c.detail.contains("no P-256 key"), "{}", c.detail);
+    }
+
+    #[test]
+    fn tied_token_with_a_raw_point_leaf_passes() {
+        // certificate_chain[0] may hold the point itself, as the SDK also accepts.
+        let n = tied_nonce();
+        let leaf = hex::decode(CERT_POINT_HEX).unwrap();
+        let c = run_aged(&proof(&n, Some(SEED), vec![leaf]), &n, MIN, &cfg());
+        assert_eq!(c.status, Status::Pass, "{}", c.detail);
+    }
+
+    #[test]
+    fn a_lower_explicit_limit_applies_to_tied_tokens_too() {
+        // --integrity-max-age-seconds 120: both limits become 120 s.
+        let low = IntegrityConfig { tied_max_age_ms: 120_000, untied_max_age_ms: 120_000, ..cfg() };
+        let n = tied_nonce();
+        let c = run_aged(&proof(&n, Some(SEED), vec![cert()]), &n, 3 * MIN, &low);
+        assert_eq!(c.status, Status::Fail);
     }
 
     #[test]

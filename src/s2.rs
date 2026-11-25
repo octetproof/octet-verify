@@ -266,6 +266,249 @@ pub fn cell_set_contains_leaf(ids: &[u64], leaf: u64) -> bool {
     k < ids.len() && range_min(ids[k]) <= leaf
 }
 
+// --- cell-set verdict ---
+
+/// `K` in the accuracy cap's angular radius `θ = K·h/R`, as for discs.
+pub const VERDICT_K: f64 = 2.0;
+/// `R` in metres in `θ = K·h/R`, as for discs.
+pub const VERDICT_R_M: f64 = 6_371_000.0;
+/// A distance decision within this much of the cap, in chord length, is an
+/// edge case: implementations may round it either way.
+pub const VERDICT_EDGE_MARGIN_CHORD: f64 = 1e-13;
+
+/// Is the accuracy cap inside, outside or across a cell set?
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CellSetVerdict {
+    Inside,
+    Outside,
+    Indeterminate,
+}
+
+impl CellSetVerdict {
+    /// `INSIDE`, `OUTSIDE` or `INDETERMINATE`.
+    pub fn label(self) -> &'static str {
+        match self {
+            CellSetVerdict::Inside => "INSIDE",
+            CellSetVerdict::Outside => "OUTSIDE",
+            CellSetVerdict::Indeterminate => "INDETERMINATE",
+        }
+    }
+}
+
+/// The verdict and the smallest `|√d² − ℓ|` over the distances that decided a
+/// touch (`None` when none did). At or below [`VERDICT_EDGE_MARGIN_CHORD`] the
+/// answer is an edge case.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CellSetVerdictResult {
+    pub verdict: CellSetVerdict,
+    pub min_margin_chord: Option<f64>,
+}
+
+/// Inverse of [`lookup_pos`]: 8 bits of curve position and 2 orientation bits →
+/// 4 bits of i, 4 bits of j and 2 orientation bits.
+fn lookup_ij() -> &'static [u16; 1 << (2 * LOOKUP_BITS + 2)] {
+    static TABLE: std::sync::OnceLock<[u16; 1 << (2 * LOOKUP_BITS + 2)]> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut t = [0u16; 1024];
+        for (key, &val) in lookup_pos().iter().enumerate() {
+            let (ij, orig) = (key >> 2, key & 3);
+            let (pos, orient) = ((val >> 2) as usize, (val & 3) as usize);
+            t[(pos << 2) + orig] = ((ij << 2) + orient) as u16;
+        }
+        t
+    })
+}
+
+/// The face and the (i, j) of a cell's leaf position, as the reference's
+/// `faceIJOrientation`.
+fn face_ij(id: u64) -> (usize, i64, i64) {
+    let table = lookup_ij();
+    let face = (id >> POS_BITS) as usize;
+    let mut bits = face & SWAP_MASK;
+    let (mut i, mut j) = (0i64, 0i64);
+    let mut nbits = MAX_LEVEL - 7 * LOOKUP_BITS;
+    for k in (0..8u32).rev() {
+        bits += (((id >> (k * 2 * LOOKUP_BITS + 1)) as usize) & ((1 << (2 * nbits)) - 1)) << 2;
+        bits = table[bits] as usize;
+        i += ((bits >> (LOOKUP_BITS + 2)) as i64) << (k * LOOKUP_BITS);
+        j += (((bits >> 2) & ((1 << LOOKUP_BITS) - 1)) as i64) << (k * LOOKUP_BITS);
+        bits &= SWAP_MASK | INVERT_MASK;
+        nbits = LOOKUP_BITS;
+    }
+    (face, i, j)
+}
+
+fn st_to_uv(s: f64) -> f64 {
+    if s >= 0.5 { (1.0 / 3.0) * (4.0 * s * s - 1.0) } else { (1.0 / 3.0) * (1.0 - 4.0 * (1.0 - s) * (1.0 - s)) }
+}
+
+/// A cell's face and its (u, v) bounds `[u_lo, u_hi, v_lo, v_hi]`.
+fn cell_uv(id: u64) -> (usize, [f64; 4]) {
+    let (face, i, j) = face_ij(id);
+    let size = 1i64 << (MAX_LEVEL - level(id));
+    let (x, y) = (i & -size, j & -size);
+    let uv = |k: i64| st_to_uv(k as f64 / MAX_SIZE as f64);
+    (face, [uv(x), uv(x + size), uv(y), uv(y + size)])
+}
+
+fn face_xyz_to_uvw(face: usize, p: [f64; 3]) -> [f64; 3] {
+    let [x, y, z] = p;
+    match face {
+        0 => [y, z, x],
+        1 => [-x, z, y],
+        2 => [-x, -y, z],
+        3 => [-z, -y, -x],
+        4 => [-z, x, -y],
+        _ => [y, x, -z],
+    }
+}
+
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// Squared chord distance from P to the cell edge with normal coordinate `uv`,
+/// given P's dot product `ij` with that normal.
+fn edge_distance(ij: f64, uv: f64) -> f64 {
+    let pq2 = (ij * ij) / (1.0 + uv * uv);
+    let qr = 1.0 - (1.0 - pq2).sqrt();
+    (pq2 + qr * qr).min(4.0)
+}
+
+fn vertex_dist2(t: [f64; 3], u: f64, v: f64) -> f64 {
+    let n = 1.0 / dot([u, v, 1.0], [u, v, 1.0]).sqrt();
+    let w = [u * n, v * n, n];
+    let d = [t[0] - w[0], t[1] - w[1], t[2] - w[2]];
+    dot(d, d).min(4.0)
+}
+
+/// Squared chord distance from the unit vector `p` to the closed cell `id`: 0
+/// inside it, otherwise to the nearest edge as a segment, endpoints included.
+/// A port of the reference `S2Cell::GetDistance` (Go `Cell.Distance`).
+pub fn cell_distance2(id: u64, p: [f64; 3]) -> f64 {
+    let (face, [u_lo, u_hi, v_lo, v_hi]) = cell_uv(id);
+    let t = face_xyz_to_uvw(face, p);
+    let u_edge_closest = |v: f64| {
+        let d0 = [v * v + 1.0, -u_lo * v, -u_lo];
+        let d1 = [v * v + 1.0, -u_hi * v, -u_hi];
+        dot(t, d0) > 0.0 && dot(t, d1) < 0.0
+    };
+    let v_edge_closest = |u: f64| {
+        let d0 = [-u * v_lo, u * u + 1.0, -v_lo];
+        let d1 = [-u * v_hi, u * u + 1.0, -v_hi];
+        dot(t, d0) > 0.0 && dot(t, d1) < 0.0
+    };
+    let dir00 = t[0] - t[2] * u_lo;
+    let dir01 = t[0] - t[2] * u_hi;
+    let dir10 = t[1] - t[2] * v_lo;
+    let dir11 = t[1] - t[2] * v_hi;
+    let mut inside = true;
+    if dir00 < 0.0 {
+        inside = false;
+        if v_edge_closest(u_lo) {
+            return edge_distance(-dir00, u_lo);
+        }
+    }
+    if dir01 > 0.0 {
+        inside = false;
+        if v_edge_closest(u_hi) {
+            return edge_distance(dir01, u_hi);
+        }
+    }
+    if dir10 < 0.0 {
+        inside = false;
+        if u_edge_closest(v_lo) {
+            return edge_distance(-dir10, v_lo);
+        }
+    }
+    if dir11 > 0.0 {
+        inside = false;
+        if u_edge_closest(v_hi) {
+            return edge_distance(dir11, v_hi);
+        }
+    }
+    if inside {
+        return 0.0;
+    }
+    [(u_lo, v_lo), (u_hi, v_lo), (u_lo, v_hi), (u_hi, v_hi)]
+        .into_iter()
+        .map(|(u, v)| vertex_dist2(t, u, v))
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// The cell-set verdict for a canonical set `ids`, a unit vector `p` and a
+/// horizontal accuracy `h_m`. The cap has angular radius `θ = K·h/R` and
+/// squared chord `ℓ² = (2·sin(θ/2))²`. A cell is touched when it contains
+/// `leaf(p)` or its distance is `< ℓ²`. The descent from the 6 faces marks a
+/// touched cell in when `ids` contains it, out when `ids` does not intersect
+/// it, and otherwise recurses into its children: INSIDE if nothing is out,
+/// OUTSIDE if nothing is in, else INDETERMINATE. A missing, non-finite or
+/// negative `h_m`, or `θ ≥ π`, is INDETERMINATE. `Err` for a non-canonical set
+/// or an unusable `p`.
+pub fn cell_set_verdict(ids: &[u64], p: [f64; 3], h_m: Option<f64>) -> Result<CellSetVerdictResult, String> {
+    check_canonical(ids)?;
+    let leaf = leaf_from_xyz(p[0], p[1], p[2]).ok_or("the point is zero or not finite")?;
+    let indeterminate = Ok(CellSetVerdictResult { verdict: CellSetVerdict::Indeterminate, min_margin_chord: None });
+    let h = match h_m {
+        Some(h) if h.is_finite() && h >= 0.0 => h,
+        _ => return indeterminate,
+    };
+    let theta = VERDICT_K * h / VERDICT_R_M;
+    if theta >= std::f64::consts::PI {
+        return indeterminate;
+    }
+    let l = 2.0 * libm::sin(0.5 * theta);
+    let l2 = l * l;
+    let deepest = ids.iter().map(|&c| level(c)).max().unwrap_or(0);
+
+    struct Descent<'a> {
+        ids: &'a [u64],
+        p: [f64; 3],
+        leaf: u64,
+        l2: f64,
+        ell: f64,
+        deepest: u32,
+        inside: bool,
+        outside: bool,
+        min_margin: Option<f64>,
+    }
+    impl Descent<'_> {
+        fn visit(&mut self, x: u64) {
+            let holds_leaf = contains(x, self.leaf);
+            let d = cell_distance2(x, self.p);
+            if !holds_leaf && self.l2 > 0.0 {
+                let m = (d.sqrt() - self.ell).abs();
+                self.min_margin = Some(self.min_margin.map_or(m, |o| o.min(m)));
+            }
+            if !(holds_leaf || d < self.l2) {
+                return;
+            }
+            let k = self.ids.partition_point(|&c| range_max(c) < range_min(x));
+            let meets = k < self.ids.len() && range_min(self.ids[k]) <= range_max(x);
+            if meets && range_min(self.ids[k]) <= range_min(x) && range_max(x) <= range_max(self.ids[k]) {
+                self.inside = true;
+            } else if !meets {
+                self.outside = true;
+            } else {
+                assert!(level(x) < self.deepest, "a canonical set straddles no cell at its deepest level");
+                for c in children(x) {
+                    self.visit(c);
+                }
+            }
+        }
+    }
+    let mut d = Descent { ids, p, leaf, l2, ell: l2.sqrt(), deepest, inside: false, outside: false, min_margin: None };
+    for face in 0..6u64 {
+        d.visit((face << POS_BITS) + (1u64 << (POS_BITS - 1)));
+    }
+    let verdict = match (d.inside, d.outside) {
+        (_, false) => CellSetVerdict::Inside,
+        (false, true) => CellSetVerdict::Outside,
+        (true, true) => CellSetVerdict::Indeterminate,
+    };
+    Ok(CellSetVerdictResult { verdict, min_margin_chord: d.min_margin })
+}
+
 /// Height-bin index in the Spatial ID convention: `floor(h · 2^(zoom − 25))`
 /// for an ellipsoidal height `h` in metres, `|h| < 2^25`. Exact in f64, because
 /// scaling by a power of two is exact. `None` outside the range or for NaN.

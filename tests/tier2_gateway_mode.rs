@@ -69,6 +69,7 @@ fn opts<'a>(hw: &'a P256VerifyingKey, now_ms: i64, require_attestation: bool) ->
         allow_unbound_app_attest: false,
         require_verdict: None,
         validation_window: None,
+        require_private_claims: false,
     }
 }
 

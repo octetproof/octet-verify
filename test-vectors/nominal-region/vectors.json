@@ -1,0 +1,132 @@
+{
+  "accepted": [
+    {
+      "name": "base_uncalibrated_ellipse",
+      "uncertainty": {
+        "nominal_region": {
+          "semi_major_m": 12.5,
+          "semi_minor_m": 8.25,
+          "heading_deg": 20.0
+        },
+        "nominal_coverage_ppm": 950000,
+        "vertical_interval": null,
+        "calibration_profile_sha256_hex": "",
+        "calibration_status": "UNCERTAINTY_UNCALIBRATED",
+        "protection_failure_risk_ppm": null,
+        "estimate_timestamp_ms": 1767225600000
+      },
+      "expected": {
+        "ellipse_digest_input_hex": "00000000000000000000000000000000402900000000000040208000000000004034000000000000",
+        "ellipse_digest_hex": "b273382a84539d0a66d5b1d7a90aea691d53cf6e52749c7c45e0f080fe8431b5",
+        "preimage_hex": "6f637465742d756e6365727461696e74792d62696e64696e672d76310000000400000020b273382a84539d0a66d5b1d7a90aea691d53cf6e52749c7c45e0f080fe8431b5000e7ef0000000000000000000000001000000000000019b76daa800",
+        "preimage_sha256_hex": "66b83f8c67d414c3a17c0c95cfc32be6fd4b9a363e963ce26428b3a6b4e4b645"
+      }
+    },
+    {
+      "name": "highres_protection_calibrated_with_vertical",
+      "uncertainty": {
+        "nominal_region": {
+          "semi_major_m": 1.2,
+          "semi_minor_m": 0.8,
+          "heading_deg": 135.5
+        },
+        "nominal_coverage_ppm": 950000,
+        "vertical_interval": {
+          "center_altitude_meters": 42.0,
+          "below_meters": 2.0,
+          "above_meters": 3.0,
+          "coverage_ppm": 950000
+        },
+        "calibration_profile_sha256_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "calibration_status": "UNCERTAINTY_PROTECTION_CALIBRATED",
+        "protection_failure_risk_ppm": 50000,
+        "estimate_timestamp_ms": 1234567890
+      },
+      "expected": {
+        "ellipse_digest_input_hex": "000000000000000000000000000000003ff33333333333333fe999999999999a4060f00000000000",
+        "ellipse_digest_hex": "36d7fe4a086a491c62fef4fcad85d3208f8e3d5c258667aafcdc15cc2b245720",
+        "preimage_hex": "6f637465742d756e6365727461696e74792d62696e64696e672d7631000000040000002036d7fe4a086a491c62fef4fcad85d3208f8e3d5c258667aafcdc15cc2b245720000e7ef000000001404500000000000040000000000000004008000000000000000e7ef000000020000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f00000003000000010000c35000000000499602d2",
+        "preimage_sha256_hex": "4bd68274e42297fcbafef470745f1bba0c1d35ce3cd4c3b52c8c10f2b8e14c3d"
+      }
+    },
+    {
+      "name": "bare_radius_disc_no_coverage",
+      "uncertainty": {
+        "nominal_region": {
+          "semi_major_m": 25.0,
+          "semi_minor_m": 25.0,
+          "heading_deg": 0.0
+        },
+        "nominal_coverage_ppm": 0,
+        "vertical_interval": null,
+        "calibration_profile_sha256_hex": "",
+        "calibration_status": "UNCERTAINTY_UNCALIBRATED",
+        "protection_failure_risk_ppm": null,
+        "estimate_timestamp_ms": 1767225600000
+      },
+      "expected": {
+        "ellipse_digest_input_hex": "00000000000000000000000000000000403900000000000040390000000000000000000000000000",
+        "ellipse_digest_hex": "b434942b939c89ddd65aab356c91fdc799b56d2853dde3250473a08674c359ca",
+        "preimage_hex": "6f637465742d756e6365727461696e74792d62696e64696e672d76310000000400000020b434942b939c89ddd65aab356c91fdc799b56d2853dde3250473a08674c359ca00000000000000000000000000000001000000000000019b76daa800",
+        "preimage_sha256_hex": "cb8bbdbdfb0f46b7e51fa84063d5337ef2654b3ad988cb49b6279898642742ed"
+      }
+    }
+  ],
+  "rejected": [
+    {
+      "name": "centre_present",
+      "nominal_region": {
+        "ellipse": {
+          "center": {
+            "latitude": 48.2082,
+            "longitude": 16.3738
+          },
+          "semi_major_m": 12.5,
+          "semi_minor_m": 8.25,
+          "heading_deg": 20.0
+        }
+      }
+    },
+    {
+      "name": "centre_present_at_zero",
+      "nominal_region": {
+        "ellipse": {
+          "center": {
+            "latitude": 0.0,
+            "longitude": 0.0
+          },
+          "semi_major_m": 12.5,
+          "semi_minor_m": 8.25,
+          "heading_deg": 20.0
+        }
+      }
+    },
+    {
+      "name": "h3_polygon_set",
+      "nominal_region": {
+        "h3_polygon_set": {
+          "cell_ids_hex": [
+            "8a1f05a6d4a7fff"
+          ]
+        }
+      }
+    },
+    {
+      "name": "bounding_box_3d",
+      "nominal_region": {
+        "bounding_box_3d": {
+          "min_latitude": 48.2,
+          "max_latitude": 48.21,
+          "min_longitude": 16.37,
+          "max_longitude": 16.38,
+          "min_altitude": 150.0,
+          "max_altitude": 200.0
+        }
+      }
+    },
+    {
+      "name": "region_unset",
+      "nominal_region": {}
+    }
+  ]
+}

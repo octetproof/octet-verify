@@ -4,6 +4,92 @@ All notable changes to `octet-verify` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [1.11.0] - 2026-11-25
+
+Semantic binding v4, which commits a proof to its licence; a claim-privacy check
+for the grid-snapped claims of SDK 4.0.0; Play Integrity tokens tied to the
+proof's signing key; and the S2 cell-set verdict. Update the verifier before the
+SDK: proofs from SDK 4.0.0 fail semantic binding on any earlier `octet-verify`.
+
+### Added
+- **Semantic binding v4: the committed licence.** A proof can commit to the
+  licence the SDK was activated for (`committed_license_id`, field 21) under
+  `octet-semantic-binding-v4`: the v3 preimage body followed by the licence id, a
+  canonical lowercase hyphenated UUID. The verifier tries v4 first, then v3, v2
+  and v1. On a v4 pass the licence is reported (`Report::committed_license()`,
+  `committed_license` in `--json`); `--expect-license <uuid>` requires an exact
+  match. An empty or non-canonical licence under v4, an edited or removed field
+  21, and a field 21 on a v1–v3 proof all FAIL. A duplicated field 21 is refused
+  on the wire. Golden vectors in `test-vectors/semantic-binding-v4/`.
+  **Update the verifier before the SDK:** proofs from an SDK that signs v4 fail
+  semantic binding on any earlier `octet-verify`.
+- **Claim privacy (`claim-privacy`).** From SDK 4.0.0 city, disc and box claims
+  are built on a fixed grid instead of being centred on the device. A new
+  `claim-privacy` check recognises the snapped form from the claim alone: PASS
+  when snapped, WARN when the claim is centred on the device (an earlier SDK; the
+  proof is still authentic). `--require-private-claims` /
+  `VerifyOptions::require_private_claims` turns that WARN into a FAIL. Exposed as
+  `Report::claim_privacy()` and `claim_privacy` / `grid_level` in `--json`.
+  Country, subdivision, earth, H3 and S2 claims get no line. Nothing else
+  changes: snapped claims bind and verify like any other. Vectors in
+  `test-vectors/claim-privacy/`. `VerifyOptions` gains a field.
+  The same check covers the uncertainty's `nominal_region` (field 20), which from
+  SDK 4.0.0 is an ellipse with no centre: a centre or another shape counts as
+  disclosing the position, and on a semantic-binding v4 proof it FAILs outright.
+- **Cell-set verdict vectors and `s2::cell_set_verdict`.** `test-vectors/s2-region/`
+  gains a `cellset_verdict` section: whether the accuracy cap around a position
+  (angular radius `2·h / 6,371,000 m`) is INSIDE, OUTSIDE or INDETERMINATE for a
+  canonical S2 cell set, by the normative descent from the 6 faces, with the
+  cases within 1e-13 in chord length of a decision marked `edge`. Generated from
+  the reference Go library; `s2::cell_set_verdict` and `s2::cell_distance2` are
+  an independent port that agrees on every case.
+- **Field-20 vectors** in `test-vectors/nominal-region/`: the SDK's centre-less
+  `nominal_region` uncertainties with their binding preimages, and the regions
+  the SDK refuses (a centre, also at 0, 0, an H3 set, a 3D box, none), each of
+  which `claim-privacy` reports as disclosing. Tests only; no behaviour change.
+
+### Changed
+- **`timestamp-binding` knows when field 2 signs the timestamp.** The proof-level
+  `timestamp_ms` was reported as covered by no signature, but the device-key
+  signature (field 2) signs it. The SDK reads it when it starts building the
+  proof, and the `proofAssembly` stage is signed a few seconds later, so SDK 3.x
+  proofs with a gap over 1 s got a false WARN. When `device-attestation-sig`
+  passes, a `timestamp_ms` up to 30 s before the stage time now PASSes, as
+  "proof-level timestamp_ms (device-signed, field 2) precedes the signed stage
+  time by N ms" (real proofs show 1 to 6 s). A longer lead, a `timestamp_ms`
+  after the stage time, or a field 2 that is missing or not checked keeps the
+  WARN. Freshness still uses the signed stage time. Library:
+  `appattest_layer::push_device_signature_check` pushes the field-2 check and
+  restates the line (`verify_attested` uses it); a caller that pushes
+  `device_signature_check` itself can call `Report::settle_timestamp_binding`
+  afterwards.
+- **`play-integrity` checks the token's tie to the proof's signing key.** When a
+  proof carries `attestation_nonce_seed` (field 11, SDK 4.0.0 on),
+  `attestation_nonce` must equal SHA-256(seed ‖ the uncompressed P-256 point of
+  the key in `certificate_chain[0]`). A mismatch, a missing chain or a leaf
+  with no P-256 key FAILs the check. So a genuine token copied into a proof
+  signed by another key no longer passes when the proof carries field 11, and
+  never passes on a proof that passes semantic binding v4, which must carry it
+  (below). On any other proof, a copied token with field 11 removed is checked
+  as untied, so it still passes while it is no older than the proof's own age
+  limit.
+- **A semantic-binding v4 proof must carry field 11 with its token.** Field 11
+  is not signed, so a copied token could have its seed dropped and pass as
+  untied. A proof that passes semantic binding v4 comes only from SDK 4.0.0 or
+  later, which never sends a Play Integrity token without field 11, so on such a
+  proof a token with no field 11 FAILs `play-integrity`, at any age. An empty
+  field 11 FAILs on any proof, as an empty licence does under v4: there is no
+  second way to say "none". A proof that does not pass v4 keeps the untied
+  rule below.
+- **Separate age limits for tied and untied tokens.** A tied token may be up to
+  3,900 s old (the SDK's 60-minute token refresh plus 5 minutes), which is the
+  new default of `--integrity-max-age-seconds` (was `--max-age-seconds`). A
+  token with no field 11 must still be no older than `--max-age-seconds`, or
+  `--integrity-max-age-seconds` if that is lower. Library: `IntegrityConfig`
+  replaces `max_age_ms` with `tied_max_age_ms` and `untied_max_age_ms`, and
+  `play_integrity_check` takes the report's `committed_license()` as a second
+  argument.
+
 ## [1.10.0] - 2026-11-16
 
 Transparency log inclusion for root manifests and browser releases, with the

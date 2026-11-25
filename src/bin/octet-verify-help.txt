@@ -98,6 +98,12 @@ OPTIONS:
                                ellipse:<lat>,<lon>,<semi_major_m>,<semi_minor_m>,<heading_deg>.
                                FAILS if the proof binds no query (v2/v1, background,
                                or a city query) or a different region.
+    --expect-license <uuid>
+                               Assert the proof commits to exactly this licence id
+                               (semantic-binding v4), a canonical lowercase
+                               hyphenated UUID, compared byte for byte. FAILS if the
+                               proof commits to a different licence or to none
+                               (v1-v3).
     --session-nonce <hex>      Assert the proof is bound to this per-login session
                                nonce (hex). Supply the nonce the relying party
                                issued at login; verification recomputes the
@@ -154,6 +160,11 @@ OPTIONS:
                                verdict could have been edited). A disc answer can
                                be signed VERIFIED or PLAUSIBLE and both verify, so
                                use `verified` to refuse PLAUSIBLE. Off by default.
+    --require-private-claims   Fail a city, disc or box claim that is centred on
+                               the device (SDKs before 4.0.0), which discloses the
+                               device position. Off by default: such a claim is
+                               reported as a claim-privacy WARN, and a claim built
+                               on the grid passes.
     --app-attest-config <file> Verify the proof's Apple App Attest evidence
                                offline against the expected app identity in this
                                TOML config ([app_attest] team_id / bundle_id /
@@ -211,7 +222,13 @@ OPTIONS:
                                --integrity-package, the `play-integrity` check
                                decodes the proof's PI token and verifies it binds
                                to this proof (nonce + package), is fresh, and meets
-                               MEETS_DEVICE_INTEGRITY. Requires a build with the
+                               MEETS_DEVICE_INTEGRITY. When the proof carries
+                               attestation_nonce_seed (field 11), the nonce must
+                               also be tied to the key in certificate_chain[0],
+                               or the check FAILs. It also FAILs on an empty
+                               field 11, and on a token with no field 11 when
+                               the proof passes semantic binding v4 (SDK 4.0.0
+                               or later always sends it). Requires a build with the
                                `playintegrity` feature; https:// (http:// LAN only).
     --integrity-decode-token <token>
                                The verifier's OWN decode-scoped service credential
@@ -221,8 +238,11 @@ OPTIONS:
                                sent in the decode request and the accepted package
                                for the binding check.
     --integrity-max-age-seconds <n>
-                               Freshness window for the PI token's timestamp.
-                               Defaults to --max-age-seconds. (+60s forward skew.)
+                               Age limit for a PI token tied to the proof's
+                               signing key. Default: 3900 (the SDK's 60-minute
+                               token refresh plus 5 minutes). A token with no tie
+                               must be no older than --max-age-seconds, or this
+                               value if it is lower. (+60s forward skew.)
                                A FAIL rejects the proof; transient/auth failures are
                                NOT-CHECKED (never fail-open). Absent config ⇒
                                play-integrity NOT-CHECKED.
@@ -253,9 +273,10 @@ BACKEND FETCH MODE (subcommands; requires a build with --features net):
     --interval <seconds>   watch poll interval. Default: 5.
     --since <ts> / --until <ts>   range bounds (RFC 3339, e.g. 2026-06-01T00:00:00Z).
     --hardware-pubkey, --expect-region, --expect-region-type,
-    --expect-region-contains, --expect-query-region, --session-nonce,
+    --expect-region-contains, --expect-query-region, --expect-license,
+    --session-nonce,
     --require-session-binding, --require-schema-v2, --require-attestation,
-    --allow-unbound-app-attest, --require-verdict,
+    --allow-unbound-app-attest, --require-verdict, --require-private-claims,
     --max-age-seconds, --at, --window,
     --json, --app-attest-config, --app-attest-enrolment-bundle, --app-attest-window,
     --android-app-identity, --skip-hardware-attestation,

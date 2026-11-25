@@ -127,3 +127,11 @@ jobs:
         # (tests/browser_verdict.rs). Network is only used by the CLI's
         # JWKS-by-URL path, which the tests don't exercise.
         run: cargo test --all-targets --locked --features browser,net
+
+      - name: Test (--features playintegrity)
+        # The Play Integrity check and its key-tie and age cases (src/integrity.rs).
+        # The decode call is faked in the tests, so no network is used.
+        run: cargo test --all-targets --locked --features playintegrity
+
+      - name: Test (--features playintegrity,appattest)
+        run: cargo test --all-targets --locked --features playintegrity,appattest

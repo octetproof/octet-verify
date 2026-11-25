@@ -72,6 +72,7 @@ fn opts(hw: &octet_verify::crypto::P256VerifyingKey, require_attestation: bool) 
         allow_unbound_app_attest: false,
         require_verdict: None,
         validation_window: None,
+        require_private_claims: false,
     }
 }
 

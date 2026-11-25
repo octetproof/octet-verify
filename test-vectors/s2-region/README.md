@@ -51,6 +51,7 @@ For such points, the verifier's answer is the authoritative one.
 | `containment` | `(cells, point) → inside`: mixed levels, gaps, cell vertices, poles, whole faces, random sets |
 | `preimage_v3` | a full semantic-binding v3 preimage with a cell-set claim and a cell-set query, its stage hash and the `query_region_ref` id |
 | `voxel_set` | tag 9, below |
+| `cellset_verdict` | the cell-set verdict, below |
 
 ## Canonical form (tag 8)
 
@@ -81,3 +82,52 @@ every entry bound, takes each segment's footprint as a normalised
 `s2.CellUnion`, and splits the footprints with the library's intersection and
 difference. The verifier's `normalize_voxels` refines nested cells instead, so
 agreement is a cross-check.
+
+## Cell-set verdict
+
+`cellset_verdict` pins the answer to "is the device's accuracy cap inside,
+outside or across this canonical cell set?" (the cell form of the disc verdict).
+The section carries the constants `k` (2), `r_m` (6,371,000) and
+`edge_margin_chord` (1e-13), and the `cases`.
+
+The rule, as the generator computes it (`generate/verdict.go`):
+
+- The cap around P has angular radius `θ = k · h / r_m`, computed in that
+  order, and squared chord `ℓ² = (2 · sin(θ / 2))²`.
+- A cell is **touched** when it contains `leaf(P)`, or its squared chord
+  distance from P (`Cell.Distance`: 0 inside the closed cell, otherwise to the
+  nearest edge as a segment, endpoints included) is `< ℓ²`.
+- The **descent** is normative: from the 6 faces, a touched cell is marked
+  *in* if the set contains it, *out* if the set does not intersect it, and
+  otherwise its 4 children are visited. INSIDE if nothing is out, OUTSIDE if
+  nothing is in, INDETERMINATE otherwise.
+- h missing, NaN, infinite or negative, or `θ ≥ π`: INDETERMINATE. `-0.0` is
+  not negative, so it is h = 0: the answer is `leaf(P)` alone.
+
+Each case has `cells_hex`, `point` and `xyz_f64_bits_hex` (use the xyz bits),
+`h_m` and `h_f64_bits_hex` (use the bits; `h_m` is null and the bits absent when
+h is missing, and `h_m` is null with the bits present when h is not finite),
+`theta_rad` and `cap_length2` with their bits (null when the input alone decides
+INDETERMINATE), `verdict`, and `min_margin_chord`: the smallest `|√d² − ℓ|` over
+the distances the descent computed that could decide a touch. Cells containing
+`leaf(P)` don't count, and with `ℓ = 0` nothing does (`d < 0` never holds).
+
+`"edge": true` marks a case whose `min_margin_chord` is at most 1e-13. Distances
+are not computed bit for bit alike everywhere (the reference may fuse
+multiply-adds, and `sin` differs by an ulp), so an implementation must match
+every case not marked `edge`; edge cases are informative. For the same reason
+`min_margin_chord` can differ in its last bits when the generator runs on
+another architecture (this file was generated on arm64, where Go fuses
+multiply-adds); the verdicts and edge flags do not. An implementation that
+stops the descent early computes a subset of the distances, so it still matches
+every non-edge case.
+
+The cases cover a coarse cell's centre, an edge straddled and touched exactly
+from inside and outside (and 1e-9 in chord, about 6 mm, either side), a face
+boundary, a cube corner, both poles, mixed levels with a finer neighbour, a gap,
+h = 0 on cell vertices, h missing or invalid, caps near and beyond π, leaf
+cells smaller than the cap, and 64 random sets and caps.
+
+`src/s2.rs` (`cell_set_verdict`) is an independent port; `tests/s2_region.rs`
+checks it against every case: θ bit for bit, `ℓ²` within 2 ulps, the edge flag,
+and the verdict of every non-edge case.

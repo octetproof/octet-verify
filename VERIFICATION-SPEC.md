@@ -149,6 +149,42 @@ trusts city coordinates fails closed. Binding city/earth geometry is the later
 
 A proof carrying no `semanticFields` stage reports NOT-CHECKED for this binding.
 
+**Versions.** The verifier re-derives the preimage under each version it knows,
+newest first (v4, v3, v2, v1), and accepts the one whose hash the stage signed.
+v2 adds the city/earth geometry and the signed `location_verdict`; v3 appends the
+queried region (`query_region`, field 18).
+
+**v4: the committed licence.** v4 appends the licence the SDK was activated for,
+`committed_license_id` (field 21), so a proof can't be presented under another
+licence:
+
+```
+preimage_v4 = "octet-semantic-binding-v4"
+            || preimage_v3[len("octet-semantic-binding-v3"):]   // the v3 body, verbatim
+            || u32be(len(lid)) || lid
+```
+
+`lid` is the licence id as UTF-8: a canonical lowercase hyphenated UUID
+(`8-4-4-4-12` over `[0-9a-f]`, 36 bytes), byte-identical to the licence a
+decision is made under. The rules:
+
+- A proof bound under v4 must carry a canonical `lid`. An empty, uppercase,
+  unhyphenated or otherwise non-canonical one FAILs. Nothing is normalised.
+- A non-empty field 21 on a proof bound only under v1–v3 FAILs: those preimages
+  sign no licence, so it was added after signing.
+- Removing or editing field 21 on a v4 proof breaks the v4 hash, and v3 can't
+  match either (different domain and bytes): the proof FAILs, it does not fall
+  back to an older version.
+- Field 21 is singular on the wire (check 10). Bytes that are not valid UTF-8
+  fail to decode (exit 2).
+
+On a v4 PASS the report exposes the licence (`Report::committed_license()`,
+`committed_license` in `--json`). It is `None` for v1–v3 proofs and for any
+binding that did not pass. A consumer compares it byte for byte with the licence
+it decides under; `--expect-license <uuid>` does this on the CLI and FAILs when
+the proof commits to another licence or to none. Golden vectors are in
+`test-vectors/semantic-binding-v4/`.
+
 ### 2.1a S2 cell sets (region tag 8)
 
 A `cell_set` region (`ProofRegion` field 8, `S2CellSet{repeated fixed64
@@ -283,6 +319,60 @@ no field (stripped), there is more than one stage, the value has no preimage, or
 the hash differs. A proof with neither reports nothing. An early highres build
 carried the uncertainty at tag 18, which is `query_region` here; such a proof
 fails to decode.
+
+### 2.1d Claim privacy (`claim-privacy`)
+
+From SDK 4.0.0 a city, disc or box claim is built on a fixed latitude/longitude
+grid instead of being centred on the device. A level-`L` cell has step `2^-L`
+degrees, and its centre is `((i + 0.5)/2^L, (j + 0.5)/2^L)` for integers `i` in
+`[−90·2^L, 90·2^L − 1]` and `j` in `[−180·2^L, 180·2^L − 1]`. The verifier
+recognises the snapped form from the claim alone. A claim is **SNAPPED** when:
+
+- **city:** `name == "auto"`, `radius_meters == 50000`, and the centre is a
+  level-2 cell centre;
+- **disc** (`EllipseRegion`): `semi_major_m == semi_minor_m`, `heading_deg` is
+  bit-equal to `+0.0`, the centre is a cell centre at exactly one level `L` in
+  3…12, and `R − ρ_L` is on the accuracy ladder {10, 20, 50, 100, 200, 500,
+  1000, 2000, 5000, 10000, 20000, 50000, 100000} m;
+- **box** (`BoundingBox3DRegion`): the four horizontal bounds are multiples of
+  `2^-12`° and both altitude bounds are multiples of 64 m.
+
+`ρ_L` is the largest distance from a level-`L` cell centre to any point in the
+cell, rounded up to whole metres plus 1 m. It is a pinned table, never
+recomputed:
+
+| L | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `ρ_L` (m) | 19658 | 9830 | 4916 | 2459 | 1230 | 616 | 309 | 155 | 78 | 40 | 21 |
+
+Every test is exact: scaling by a power of two and subtracting 0.5 are exact in
+binary64, so there is no tolerance. A city, disc or box claim that is not
+snapped is **LEGACY**: centred on the device, from an earlier SDK, so it
+discloses the device's position. A raw position lands on a grid centre with
+probability about zero.
+
+The `claim-privacy` check PASSes on SNAPPED and WARNs on LEGACY, because a legacy
+proof is still authentic. With `require_private_claims` (CLI
+`--require-private-claims`) LEGACY FAILs. Country, subdivision, earth, H3 and S2
+claims are not centred on the device and get no line. The report exposes the
+result as `Report::claim_privacy()` (`claim_privacy` and, for a snapped disc,
+`grid_level` in `--json`).
+
+**Field 20.** The uncertainty's `nominal_region` (§2.1c) is checked on the same
+line. From SDK 4.0.0 it is an ellipse with **no centre** (axes and heading only):
+the claim says where, field 20 only the shape. A centre, or any other shape,
+discloses the position: WARN, or FAIL with `require_private_claims`. A proof bound
+under semantic-binding v4 comes only from SDK 4.0.0 or later, so on such a proof
+a centred or non-ellipse field 20 FAILs whatever the options. That also rules out
+the uncertainty binding's one ambiguity: it hashes an unset centre as (0, 0), so
+an explicit (0, 0) would otherwise hash the same.
+
+This is about disclosure, not authenticity. The claim's geometry is covered by
+the semantic binding (v2 and later bind city geometry; ellipse and box geometry
+is digested in every version), so editing a legacy claim into snapped form
+breaks the binding. Read the result together with `semantically_bound`. The
+verifier can't check that a snapped claim contains the device, whose position is
+only committed. Golden vectors are in `test-vectors/claim-privacy/`.
 
 ### 2.2 Caller metadata (`callerMetadata` stage)
 
@@ -444,8 +534,13 @@ envelope that carries none reports NOT-CHECKED.
    `proofAssembly` stage's `timestamp_ms` (looked up by name), not the unbound
    top-level `LocationProof.timestamp_ms`, which carries no signature and is
    freely editable. Reject if older than the window (default 300 s) or more than
-   a small skew into the future; a divergent top-level `timestamp_ms` is surfaced
-   as a warning. To verify an old proof, judge it at a validation time or window
+   a small skew into the future; a top-level `timestamp_ms` more than 1 s from
+   the signed stage time is surfaced as a warning (`timestamp-binding`). The
+   device-key signature (`DeviceAttestation.signature`, field 2) does sign
+   `timestamp_ms`, which the SDK reads when it starts building the proof, before
+   the `proofAssembly` stage is signed. So when field 2 verifies, a
+   `timestamp_ms` up to 30 s before the stage time passes, and only a longer lead,
+   or a `timestamp_ms` after the stage time, stays a warning. To verify an old proof, judge it at a validation time or window
    instead of the current time (§4.1).
 3. **Replay (presence only):** assert `nullifier` is non-zero — i.e. a replay
    token is *present*. This is **not** a cross-proof uniqueness guarantee: a
@@ -462,14 +557,17 @@ envelope that carries none reports NOT-CHECKED.
    by no stage **fails** — the verifier will not vouch for an unverifiable value.
 8. **Semantic-field binding:** if a `semanticFields` stage is present, re-derive
    the canonical semantic preimage (§2.1) and check it against the stage hash, so
-   a post-sign edit of the verdict / region / level / integrity / commitment is
-   rejected. Absent → NOT-CHECKED.
+   a post-sign edit of the verdict / region / level / integrity / commitment (and,
+   from v3 and v4, the queried region and the committed licence) is rejected.
+   Absent → NOT-CHECKED.
 9. **Replay-control binding:** if the envelope carries `replay_control`, confirm
    the surfaced nonce / nullifier / timestamp match what the proof signed (§3.1).
    Absent → NOT-CHECKED.
 10. **Wire-format:** reject a proof that smuggles a duplicate of a non-repeated
     top-level field (a last-wins parser-differential guard).
 11. **Region:** report `claimed_region` / `level`; optionally assert expected.
+    For a city, disc or box claim, `claim-privacy` reports whether it discloses
+    the device position (§2.1d).
 12. **Transport signature** (§3), when an envelope and Ed25519 key are supplied.
 13. **Hardware attestation** (feature `appattest`), all offline (§1.1):
     `attestation-root` validates the **Android** chain to an embedded Google root
@@ -625,6 +723,7 @@ the clear.
 | `signatures_verified` | The cryptographic bit on its own: `true` iff the `stage-signatures` check passed. |
 | `verdict` | Tri-state string: `"VALID"`, `"INCONCLUSIVE (signatures not verified)"`, `"INCONCLUSIVE (content unresolved)"`, or `"INVALID"`. Lets a careful consumer distinguish "unverified" from "rejected". |
 | `checks` | The full per-check array (`name` / `status` / `detail`). |
+| `claim_privacy` | `"snapped"`, `"legacy"` or `"not_applicable"`: whether the claimed region discloses the device position (§2.1d). `grid_level` is the level of a snapped disc, else `null`. |
 
 **`valid` is authenticity, not structural validity.** A structurally-sound proof
 whose signatures were never checked reports `valid: false` / `verdict:

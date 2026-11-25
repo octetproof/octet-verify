@@ -74,6 +74,7 @@ fn region_contains(cells: &[u64], point: (f64, f64)) -> (Status, String) {
             allow_unbound_app_attest: false,
             require_verdict: None,
             validation_window: None,
+            require_private_claims: false,
         },
     );
     let c = r.checks.iter().find(|c| c.name == "region-contains").expect("region-contains check");

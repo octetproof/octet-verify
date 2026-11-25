@@ -151,6 +151,14 @@ pub struct Report {
     ///. `None` for v2/v1 proofs and for a v3 proof with no bound query (a
     /// background proof or a city query). Read via [`Report::query_region`].
     query_region: Option<QueryRegion>,
+    /// The licence the proof commits to, set **only** when the proof verified
+    /// under **octet-semantic-binding-v4** with a canonical licence id. `None`
+    /// for v1-v3 proofs and for any failed binding. Read via
+    /// [`Report::committed_license`].
+    committed_license: Option<String>,
+    /// How the claimed region discloses the device position (`claim-privacy`).
+    /// Read via [`Report::claim_privacy`].
+    claim_privacy: Option<crate::claim_privacy::ClaimPrivacy>,
     /// The signed spoofing verdict, set only when `semantic-binding` passed and
     /// the verdict is not UNSPECIFIED. Read via [`Report::spoofing_verdict`].
     spoofing_verdict: Option<LocationProofVerdict>,
@@ -166,6 +174,8 @@ impl Report {
             region_expectation: false,
             location_verdict: None,
             query_region: None,
+            committed_license: None,
+            claim_privacy: None,
             spoofing_verdict: None,
             caller_manifest: None,
         }
@@ -182,6 +192,36 @@ impl Report {
 
     fn add(&mut self, name: &'static str, status: Status, detail: impl Into<String>) {
         self.checks.push(Check { name, status, detail: detail.into() });
+    }
+
+    /// Restate `timestamp-binding` once `device-attestation-sig` (field 2) has
+    /// PASSed. Field 2 signs `timestamp_ms` with the device key, so a gap to the
+    /// signed stage time is no longer a sign of an edit: the SDK reads
+    /// `timestamp_ms` when it starts building the proof, and the `proofAssembly`
+    /// stage is signed after key signing and Play Integrity. A gap of up to
+    /// [`DEVICE_SIGNED_TIMESTAMP_LEAD_MS`] with `timestamp_ms` first PASSes; a
+    /// longer gap, or `timestamp_ms` after the stage time, stays a WARN. Does
+    /// nothing when field 2 did not pass or there is no `timestamp-binding` line.
+    pub fn settle_timestamp_binding(&mut self, proof: &LocationProof) {
+        let signed = self.checks.iter().any(|c| c.name == "device-attestation-sig" && c.status == Status::Pass);
+        let Some(sts) = signed_stage_time(proof) else { return };
+        let Some(c) = self.checks.iter_mut().find(|c| c.name == "timestamp-binding") else { return };
+        if !signed {
+            return;
+        }
+        let lead_ms = sts.saturating_sub(proof.timestamp_ms);
+        (c.status, c.detail) = if (0..=DEVICE_SIGNED_TIMESTAMP_LEAD_MS).contains(&lead_ms) {
+            (Status::Pass, format!(
+                "proof-level timestamp_ms (device-signed, field 2) precedes the signed stage time by {lead_ms} ms"))
+        } else if lead_ms > 0 {
+            (Status::Warn, format!(
+                "proof-level timestamp_ms (device-signed, field 2) precedes the signed stage time by {lead_ms} ms, \
+                 more than the {DEVICE_SIGNED_TIMESTAMP_LEAD_MS} ms proof assembly takes; freshness uses the signed stage time"))
+        } else {
+            (Status::Warn, format!(
+                "proof-level timestamp_ms (device-signed, field 2) is {} ms after the signed stage time; \
+                 freshness uses the signed stage time", lead_ms.unsigned_abs()))
+        };
     }
 
     /// A proof is rejected iff at least one check actively failed. NOT-CHECKED
@@ -336,6 +376,26 @@ impl Report {
         self.query_region.as_ref()
     }
 
+    /// The **licence the proof commits to** (semantic-binding v4): the canonical
+    /// lowercase hyphenated UUID the SDK was activated for, or `None` when the
+    /// proof commits to none (a v1-v3 proof) or the binding did not pass. Set only
+    /// when the proof verified under v4, so a value here was signed. A consumer
+    /// compares it **byte for byte** with the licence it decides under, and must
+    /// not normalise either side.
+    pub fn committed_license(&self) -> Option<&str> {
+        self.committed_license.as_deref()
+    }
+
+    /// Whether the claimed region discloses the device's position: `Snapped` (a
+    /// city, disc or box built on the SDK 4.0.0 grid, with the grid level for a
+    /// disc), `Legacy` (centred on the device, from an earlier SDK) or
+    /// `NotApplicable` (any other region, or none). Set by every [`verify`]. It
+    /// describes the claim's bytes, not its authenticity: read it together with
+    /// [`Report::is_semantically_bound`].
+    pub fn claim_privacy(&self) -> Option<crate::claim_privacy::ClaimPrivacy> {
+        self.claim_privacy
+    }
+
     /// The proof's **signed** spoofing verdict tier (VERIFIED / PLAUSIBLE /
     /// SUSPICIOUS / NOT_PROVABLE), or `None` when it is not trustworthy: the
     /// `semantic-binding` check did not pass (unbound, tampered, or a v1
@@ -441,6 +501,12 @@ pub struct VerifyOptions<'a> {
     /// checks at `now_ms`. When set, `freshness` and the attestation-chain check use
     /// the window instead of `now_ms`. See [`ValidationWindow`].
     pub validation_window: Option<ValidationWindow>,
+    /// Require the claimed region not to disclose the device position. When
+    /// `true`, a legacy (device-centred) city, disc or box claim FAILs
+    /// `claim-privacy` instead of WARNing. Off by default: such a proof is still
+    /// authentic. Turn it on when you promise users their position isn't
+    /// disclosed.
+    pub require_private_claims: bool,
 }
 
 /// The interval in which a proof is known to have been signed, established from
@@ -484,9 +550,7 @@ pub fn verify(proof: &LocationProof, opts: &VerifyOptions) -> Report {
     // is variable (optional uploadChallenge / semanticFields stages), so never key
     // on position; fall back to the last stage, then the unbound field (the proof
     // is already failing if it has no stages at all).
-    let signed_ts = stage_by_name(&proof.stage_attestations, "proofAssembly")
-        .or_else(|| proof.stage_attestations.last())
-        .map(|s| s.timestamp_ms);
+    let signed_ts = signed_stage_time(proof);
     let ref_ts = signed_ts.unwrap_or(proof.timestamp_ms);
     let age_s = opts.now_ms.saturating_sub(ref_ts) / 1000;
     const FUTURE_SKEW_S: i64 = 60;
@@ -522,9 +586,11 @@ pub fn verify(proof: &LocationProof, opts: &VerifyOptions) -> Report {
     } else {
         r.add("freshness", Status::Pass, format!("{age_s} s old (limit {} s)", opts.max_age_s));
     }
-    // The proof-level `timestamp_ms` is covered by no signature. The freshness
-    // verdict above already ignores it; surface any disagreement with the signed
-    // stage time as a WARN, because a mismatch means the unbound field was edited.
+    // The proof-level `timestamp_ms` is covered by no stage signature. The
+    // freshness verdict above already ignores it; surface any disagreement with
+    // the signed stage time as a WARN, because a mismatch can mean the field was
+    // edited. Field 2 does sign it: once `device-attestation-sig` passes,
+    // `Report::settle_timestamp_binding` restates this line.
     if let Some(sts) = signed_ts {
         let drift_ms = sts.saturating_sub(proof.timestamp_ms).unsigned_abs();
         if drift_ms > 1000 {
@@ -660,6 +726,7 @@ pub fn verify(proof: &LocationProof, opts: &VerifyOptions) -> Report {
     r.add_semantic_binding(proof, opts.require_schema_v2);
     r.add_uncertainty_binding(proof);
     r.add_cell_set_shape(proof);
+    r.add_claim_privacy(proof, opts.require_private_claims);
     r.add_spoofing_verdict(proof, opts.require_verdict);
     // Per-login session binding — checked against the nonce the relying party
     // supplies. NOT-CHECKED (the default) when no nonce is given; when
@@ -807,7 +874,36 @@ impl Report {
                 "no semanticFields stage, but schema-v2 binding is required (require_schema_v2): the spoofing_verdict / region / level / integrity / commitment are unbound"),
             None => self.add(NAME, Status::NotChecked,
                 "no semanticFields stage; spoofing_verdict / region / level / integrity / commitment not bound (proof predates semantic-field binding)"),
-            // v3 (octet-semantic-binding-v3,) — tried first. The v2 body
+            // v4 (octet-semantic-binding-v4) — tried first. The v3 body unchanged
+            // PLUS the committed licence, so a match binds everything v3 does and,
+            // additionally, the licence the SDK was activated for. v4 always
+            // carries a canonical licence id: an empty or non-canonical one FAILs
+            // even though it hashed, so there is no second way to say "none".
+            Some(st) if crypto::sha256(&semantic_preimage_v4(proof)).as_slice() == st.data_hash.as_slice() => {
+                if !license_id_canonical(&proof.committed_license_id) {
+                    self.add(NAME, Status::Fail,
+                        "bound under v4, but committed_license_id is not a canonical lowercase hyphenated UUID (36 bytes)")
+                } else {
+                    self.location_verdict = signed_verdict(proof.location_verdict);
+                    self.committed_license = Some(proof.committed_license_id.clone());
+                    self.add(NAME, Status::Pass,
+                        "spoofing_verdict / region (incl. geometry) / level / integrity / commitment / \
+                         location_verdict / queried region / committed licence bound to the signed \
+                         semanticFields stage (octet-semantic-binding-v4)");
+                    self.add_query_region_v3(proof);
+                }
+            }
+            // A committed licence on a proof that verifies only under v1-v3 was
+            // never signed (those preimages have no licence): it was injected after
+            // the fact. FAIL outright, so a consumer can't see an unsigned licence
+            // beside a PASS. Mirrors the unsigned query_region rule below.
+            Some(st) if !proof.committed_license_id.is_empty()
+                && [semantic_preimage_v3(proof), semantic_preimage_v2(proof), semantic_preimage(proof)]
+                    .iter()
+                    .any(|pre| crypto::sha256(pre).as_slice() == st.data_hash.as_slice()) =>
+                self.add(NAME, Status::Fail,
+                    "committed_license_id is present but the proof is bound only under v1-v3 (they do not sign a licence) — the licence was not signed"),
+            // v3 (octet-semantic-binding-v3,). The v2 body
             // unchanged PLUS the queried region Q, so a match binds everything v2
             // does and, additionally, the region the verdict answers about. Surfaces
             // the verdict and (when the query is well-formed and answered) Q.
@@ -819,7 +915,7 @@ impl Report {
                      (octet-semantic-binding-v3)");
                 self.add_query_region_v3(proof);
             }
-            // v2 (octet-semantic-binding-v2,) — tried after v3. Binds the
+            // v2 (octet-semantic-binding-v2,) — tried after v4/v3. Binds the
             // city/earth geometry AND the inside/outside verdict that v1 omits, so
             // a match here is FULLY bound and surfaces the signed verdict.
             Some(st) if crypto::sha256(&semantic_preimage_v2(proof)).as_slice() == st.data_hash.as_slice() => {
@@ -863,6 +959,56 @@ impl Report {
             }
             Some(_) => self.add(NAME, Status::Fail,
                 "semantic fields do not match the signed semanticFields stage (verdict / region / level / integrity / commitment / location_verdict tampered)"),
+        }
+    }
+
+    /// Classify the claimed region and the uncertainty's `nominal_region` (field
+    /// 20) for position disclosure, and add a `claim-privacy` line when either is
+    /// present in a classifiable form: PASS when nothing discloses the position,
+    /// WARN when the claim is centred on the device or field 20 carries a centre
+    /// or a non-ellipse shape (FAIL with `require_private_claims`).
+    ///
+    /// From SDK 4.0.0 field 20 is a centre-less ellipse. A proof bound under
+    /// semantic-binding v4 comes only from such an SDK, so on it a field 20 with
+    /// a centre or another shape FAILs outright. That also closes the binding's
+    /// ambiguity, which hashes an unset centre as (0, 0). Runs after
+    /// `add_semantic_binding`, which sets `committed_license` on a v4 pass.
+    fn add_claim_privacy(&mut self, proof: &LocationProof, require_private_claims: bool) {
+        use crate::claim_privacy::{classify, nominal_region_discloses, ClaimPrivacy};
+        const NAME: &str = "claim-privacy";
+        let claim = classify(proof.claimed_region.as_ref());
+        let field20 = proof.uncertainty.as_ref().map(|u| nominal_region_discloses(u.nominal_region.as_ref()));
+        let from_v4_sdk = self.committed_license.is_some();
+        let claim_discloses = claim == ClaimPrivacy::Legacy;
+        let field20_discloses = field20 == Some(true);
+
+        self.claim_privacy = Some(if field20_discloses { ClaimPrivacy::Legacy } else { claim });
+        if claim == ClaimPrivacy::NotApplicable && field20.is_none() {
+            return;
+        }
+
+        let mut why = Vec::new();
+        match claim {
+            ClaimPrivacy::Snapped { grid_level: Some(l) } => why.push(format!("disc snapped to the level-{l} grid")),
+            ClaimPrivacy::Snapped { grid_level: None } => why.push("claim snapped to the grid".to_string()),
+            ClaimPrivacy::Legacy => why.push("claim is centred on the device (SDK before 4.0.0)".to_string()),
+            ClaimPrivacy::NotApplicable => {}
+        }
+        match field20 {
+            Some(true) => why.push("uncertainty nominal_region (field 20) has a centre or is not an ellipse".to_string()),
+            Some(false) => why.push("uncertainty nominal_region (field 20) is a centre-less ellipse".to_string()),
+            None => {}
+        }
+        let why = why.join("; ");
+
+        if field20_discloses && from_v4_sdk {
+            self.add(NAME, Status::Fail, format!(
+                "{why}: a semantic-binding v4 proof (SDK 4.0.0 or later) must carry field 20 as a centre-less ellipse"));
+        } else if claim_discloses || field20_discloses {
+            let status = if require_private_claims { Status::Fail } else { Status::Warn };
+            self.add(NAME, status, format!("{why}: the proof discloses the device position"));
+        } else {
+            self.add(NAME, Status::Pass, format!("{why}: discloses at most the grid cell, not the device position"));
         }
     }
 
@@ -1234,6 +1380,38 @@ fn semantic_preimage_v3(proof: &LocationProof) -> Vec<u8> {
     m
 }
 
+/// Domain-separation prefix for the **v4** semantic-field preimage
+/// (octet-semantic-binding-v4): the v3 body unchanged, then the licence the SDK
+/// was activated for, so a proof can't be presented under another licence.
+const SEMANTIC_DOMAIN_V4: &[u8] = b"octet-semantic-binding-v4";
+
+/// v4 preimage: the v4 domain, the **v3 preimage after its domain tag**
+/// verbatim, then `u32be(len(lid)) ‖ lid` with `lid` the `committed_license_id`
+/// (field 21) as UTF-8, exactly as the device encoded it. Built from the v3
+/// bytes so the two can never drift.
+fn semantic_preimage_v4(proof: &LocationProof) -> Vec<u8> {
+    let v3 = semantic_preimage_v3(proof);
+    let lid = proof.committed_license_id.as_bytes();
+    let mut m = Vec::with_capacity(SEMANTIC_DOMAIN_V4.len() + v3.len() + 4 + lid.len());
+    m.extend_from_slice(SEMANTIC_DOMAIN_V4);
+    m.extend_from_slice(&v3[SEMANTIC_DOMAIN_V3.len()..]);
+    m.extend_from_slice(&(lid.len() as u32).to_be_bytes());
+    m.extend_from_slice(lid);
+    m
+}
+
+/// Is `id` a canonical licence id: a lowercase hyphenated UUID, `8-4-4-4-12`
+/// over `[0-9a-f]`, 36 bytes? Nothing is normalised: an uppercase or
+/// unhyphenated id is not canonical, never rewritten into one.
+pub fn license_id_canonical(id: &str) -> bool {
+    let b = id.as_bytes();
+    b.len() == 36
+        && b.iter().enumerate().all(|(i, &c)| match i {
+            8 | 13 | 18 | 23 => c == b'-',
+            _ => c.is_ascii_digit() || (b'a'..=b'f').contains(&c),
+        })
+}
+
 /// The canonical **query-region reference** for a region — its `ProofRegion` oneof
 /// tag and the v2 `region_id` bytes — the single implementation a consumer uses to
 /// recognise a proof's bound query. Returns `None` for a **city** region:
@@ -1369,6 +1547,22 @@ fn check_assembly(stages: &[StageAttestation]) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// The signed proof time: the `proofAssembly` stage's timestamp, looked up by
+/// name, else the last stage's.
+fn signed_stage_time(proof: &LocationProof) -> Option<i64> {
+    stage_by_name(&proof.stage_attestations, "proofAssembly")
+        .or_else(|| proof.stage_attestations.last())
+        .map(|s| s.timestamp_ms)
+}
+
+/// How far a device-signed `timestamp_ms` may precede the signed stage time
+/// before `timestamp-binding` warns: the time proof assembly takes on the
+/// device, with margin. Real proofs show 1 to 6 s, more on a first call that
+/// generates the key or fetches a Play Integrity token over the network. The
+/// bound is a sanity check, not a security one: field 2 already signs
+/// `timestamp_ms`, and freshness uses the signed stage time.
+pub const DEVICE_SIGNED_TIMESTAMP_LEAD_MS: i64 = 30_000;
 
 fn stage_by_name<'a>(stages: &'a [StageAttestation], name: &str) -> Option<&'a StageAttestation> {
     stages.iter().find(|s| s.stage == name)
@@ -1877,7 +2071,7 @@ mod tests {
                 expect_region: None, expect_region_type: None, expect_region_contains: None, expect_region_contains_height_m: None,
                 session_nonce: None,
                 require_session_binding: false,
-                require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None,
+                require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None, require_private_claims: false,
             })
         };
 
@@ -1908,7 +2102,7 @@ mod tests {
         let r3 = verify(&good, &VerifyOptions {
             now_ms: ts, max_age_s: 300, hardware_pubkey: Some(&wrong),
             hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, expect_region_contains_height_m: None, session_nonce: None,
-            require_session_binding: false, require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None,
+            require_session_binding: false, require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None, require_private_claims: false,
         });
         assert!(!r3.is_valid());
         assert_eq!(status_of(&r3, "stage-signatures"), Status::Fail);
@@ -1945,7 +2139,7 @@ mod tests {
         VerifyOptions {
             now_ms: ts, max_age_s: 300, hardware_pubkey: None,
             hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, expect_region_contains_height_m: None, session_nonce: None,
-            require_session_binding: false, require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None,
+            require_session_binding: false, require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None, require_private_claims: false,
         }
     }
 
@@ -2021,7 +2215,7 @@ mod tests {
         let r = verify(&proof, &VerifyOptions {
             now_ms: ts, max_age_s: 300, hardware_pubkey: None,
             hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, expect_region_contains_height_m: None, session_nonce: None,
-            require_session_binding: false, require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None,
+            require_session_binding: false, require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None, require_private_claims: false,
         });
         // nullifier + zkProof are still bound, but the unbound commitment must
         // not be papered over.
@@ -2043,7 +2237,7 @@ mod tests {
         let r = verify(&proof, &VerifyOptions {
             now_ms: now, max_age_s: 300, hardware_pubkey: None,
             hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, expect_region_contains_height_m: None, session_nonce: None,
-            require_session_binding: false, require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None,
+            require_session_binding: false, require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None, require_private_claims: false,
         });
         assert_eq!(status_of(&r, "freshness"), Status::Fail, "signed time is stale");
         // The edit of the unbound field is surfaced, not ignored.
@@ -2065,6 +2259,7 @@ mod tests {
                 hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, expect_region_contains_height_m: None, session_nonce: None,
                 require_session_binding: false, require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None,
                 validation_window: window,
+                require_private_claims: false,
             });
             status_of(&r, "freshness")
         };
@@ -2101,7 +2296,7 @@ mod tests {
         let r = verify(&proof, &VerifyOptions {
             now_ms: now, max_age_s: 300, hardware_pubkey: None,
             hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, expect_region_contains_height_m: None, session_nonce: None,
-            require_session_binding: false, require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None,
+            require_session_binding: false, require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None, require_private_claims: false,
         });
         assert_eq!(status_of(&r, "freshness"), Status::Fail);
     }
@@ -2288,6 +2483,7 @@ mod tests {
             allow_unbound_app_attest: false,
             require_verdict: None,
             validation_window: None,
+            require_private_claims: false,
         };
         let r = verify(&proof, &opts);
         assert!(
@@ -2382,6 +2578,7 @@ mod tests {
             allow_unbound_app_attest: false,
             require_verdict: None,
             validation_window: None,
+            require_private_claims: false,
         };
         let report = verify(&proof, &opts);
         assert_eq!(
@@ -2801,6 +2998,346 @@ mod tests {
         }
     }
 
+    /// Build a `ProofRegion` oneof from a golden-vector region object
+    /// (`{"kind": "ellipse" | "country" | "subdivision" | "earth", ...}`).
+    fn build_region(v: &serde_json::Value) -> crate::navigate::proof_region::Region {
+        use crate::navigate::{
+            proof_region::Region, CountryRegion, EarthRegion, EllipseRegion, LatLon, SubdivisionRegion,
+        };
+        match v["kind"].as_str().expect("region kind") {
+            "ellipse" => Region::Ellipse(EllipseRegion {
+                center: Some(LatLon { latitude: v["lat"].as_f64().unwrap(), longitude: v["lon"].as_f64().unwrap() }),
+                semi_major_m: v["semi_major_m"].as_f64().unwrap(),
+                semi_minor_m: v["semi_minor_m"].as_f64().unwrap(),
+                heading_deg: v["heading_deg"].as_f64().unwrap(),
+            }),
+            "country" => Region::Country(CountryRegion { iso_code: v["iso"].as_str().unwrap().into() }),
+            "subdivision" => Region::Subdivision(SubdivisionRegion { iso_code: v["iso"].as_str().unwrap().into() }),
+            "earth" => Region::Earth(EarthRegion { max_altitude_meters: v["max_altitude_m"].as_f64().unwrap() }),
+            other => panic!("unhandled region kind {other}"),
+        }
+    }
+
+    /// A proof carrying a golden vector's semantic fields (no stages yet).
+    fn proof_from_vector_input(inp: &serde_json::Value, query_region: &serde_json::Value) -> LocationProof {
+        use crate::navigate::{DeviceIntegrityVerdict, ProofRegion, RegionRef};
+        LocationProof {
+            spoofing_verdict: inp["spoofing_verdict"].as_i64().unwrap() as i32,
+            level: inp["level"].as_i64().unwrap() as i32,
+            position_commitment: hex::decode(inp["commitment_hex"].as_str().unwrap()).unwrap(),
+            claimed_region: Some(ProofRegion { region: Some(build_region(&inp["claimed_region"])) }),
+            location_verdict: inp["location_verdict"].as_i64().unwrap() as i32,
+            query_region: query_region.as_object().map(|_| RegionRef {
+                region_type: query_region["region_type"].as_u64().unwrap() as u32,
+                region_id: hex::decode(query_region["region_id_hex"].as_str().unwrap()).unwrap(),
+            }),
+            device_attestation: Some(DeviceAttestation {
+                integrity_verdict: Some(DeviceIntegrityVerdict {
+                    status: inp["integrity_status"].as_i64().unwrap_or(0) as i32,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Push a `semanticFields` stage carrying `hash`, as the signer would.
+    fn push_semantic_stage(proof: &mut LocationProof, hash: Vec<u8>) {
+        proof.stage_attestations.push(StageAttestation {
+            stage: SEMANTIC_FIELDS_STAGE.to_string(),
+            timestamp_ms: 1,
+            data_hash: hash,
+            signature: vec![],
+            previous_hash: None,
+        });
+    }
+
+    /// Cross-repo golden vectors for v4 (committed licence): each vector's v4
+    /// preimage is derived by `generate.py` from the frozen v3 bytes. Pins the
+    /// preimage hex and its SHA-256, and the pass/fail behaviour: the licence is
+    /// exposed only on a v4 pass, and an edited, removed or injected licence FAILs.
+    #[test]
+    fn semantic_binding_v4_golden_vectors() {
+        let raw = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/test-vectors/semantic-binding-v4/vectors.json"));
+        let doc: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let vectors = doc["vectors"].as_array().unwrap();
+        assert_eq!(vectors.len(), 6, "3 positive + 3 negative v4 vectors");
+
+        for v in vectors {
+            let name = v["name"].as_str().unwrap();
+            let signed = &v["signed"];
+            let mut proof = proof_from_vector_input(&v["input"], &v["query_region"]);
+
+            // 1. Byte parity of what was signed: a v4 preimage over the signed
+            //    licence, or (for the injected-licence case) the v3 preimage.
+            proof.committed_license_id = signed["committed_license_id"].as_str().unwrap_or("").to_string();
+            let pre = match signed["domain"].as_str().unwrap() {
+                "octet-semantic-binding-v4" => semantic_preimage_v4(&proof),
+                "octet-semantic-binding-v3" => semantic_preimage_v3(&proof),
+                d => panic!("{name}: unexpected domain {d}"),
+            };
+            assert_eq!(hex::encode(&pre), signed["preimage_hex"].as_str().unwrap(), "{name}: preimage bytes");
+            assert_eq!(hex::encode(sha256(&pre)), signed["stage_hash_hex"].as_str().unwrap(), "{name}: stage hash");
+
+            // 2. Verify what is presented: field 21 as the vector gives it.
+            proof.committed_license_id = v["presented_license_id"].as_str().unwrap_or("").to_string();
+            push_semantic_stage(&mut proof, hex::decode(signed["stage_hash_hex"].as_str().unwrap()).unwrap());
+            let mut r = Report::new();
+            r.add_semantic_binding(&proof, false);
+            match v["expect"].as_str().unwrap() {
+                "pass" => {
+                    assert_eq!(status_of(&r, "semantic-binding"), Status::Pass, "{name}: PASS");
+                    assert_eq!(r.committed_license(), v["presented_license_id"].as_str(), "{name}: licence exposed");
+                    assert_eq!(r.query_region().is_some(), v["query_region"].is_object(), "{name}: Q exposed iff bound");
+                    assert!(r.location_verdict().is_some() == (v["input"]["location_verdict"].as_i64() != Some(0)),
+                        "{name}: signed verdict surfaced");
+                }
+                "fail" => {
+                    assert_eq!(status_of(&r, "semantic-binding"), Status::Fail, "{name}: FAIL");
+                    assert_eq!(r.committed_license(), None, "{name}: no licence on a failed binding");
+                }
+                e => panic!("{name}: unexpected expect {e}"),
+            }
+        }
+    }
+
+    /// v4 always carries a canonical licence id. A signer that hashed an empty,
+    /// uppercase, unhyphenated or short id under v4 still FAILs: nothing is
+    /// normalised, and there is no second way to say "no licence".
+    #[test]
+    fn v4_with_a_non_canonical_licence_fails() {
+        let raw = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/test-vectors/semantic-binding-v4/vectors.json"));
+        let doc: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let v = &doc["vectors"][0];
+        for bad in [
+            "",
+            "7C9E6679-7425-40DE-944B-E07FC1F90AE7",
+            "7c9e6679742540de944be07fc1f90ae7",
+            "7c9e6679-7425-40de-944b-e07fc1f90ae",
+            "{7c9e6679-7425-40de-944b-e07fc1f90ae7}",
+            "7c9e6679-7425-40de-944b-e07fc1f90ag7",
+            "7c9e6679_7425_40de_944b_e07fc1f90ae7",
+        ] {
+            let mut proof = proof_from_vector_input(&v["input"], &v["query_region"]);
+            proof.committed_license_id = bad.to_string();
+            let hash = sha256(&semantic_preimage_v4(&proof)).to_vec();
+            push_semantic_stage(&mut proof, hash);
+            let mut r = Report::new();
+            r.add_semantic_binding(&proof, false);
+            assert_eq!(status_of(&r, "semantic-binding"), Status::Fail, "{bad:?} under v4 ⇒ FAIL");
+            assert_eq!(r.committed_license(), None, "{bad:?}: no licence exposed");
+            assert!(!license_id_canonical(bad), "{bad:?} is not canonical");
+        }
+        assert!(license_id_canonical("7c9e6679-7425-40de-944b-e07fc1f90ae7"));
+        assert!(license_id_canonical("00000000-0000-0000-0000-000000000000"));
+    }
+
+    /// A licence injected onto a v2 or v1 proof was never signed: FAIL, as on v3.
+    #[test]
+    fn licence_on_a_v2_or_v1_proof_fails() {
+        let raw = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/test-vectors/semantic-binding-v3/vectors.json"));
+        let doc: serde_json::Value = serde_json::from_str(raw).unwrap();
+        // no_query: no query region, so the same fields also bind under v2 and v1.
+        let v = doc["vectors"].as_array().unwrap().iter().find(|v| v["name"] == "no_query").unwrap();
+        for (label, pre) in [("v2", semantic_preimage_v2 as fn(&LocationProof) -> Vec<u8>), ("v1", semantic_preimage)] {
+            let mut proof = proof_from_vector_input(&v["input"], &v["query_region"]);
+            let hash = sha256(&pre(&proof)).to_vec();
+            push_semantic_stage(&mut proof, hash);
+
+            let mut clean = Report::new();
+            clean.add_semantic_binding(&proof, false);
+            assert_ne!(status_of(&clean, "semantic-binding"), Status::Fail, "{label}: verifies without a licence");
+
+            proof.committed_license_id = "7c9e6679-7425-40de-944b-e07fc1f90ae7".into();
+            let mut r = Report::new();
+            r.add_semantic_binding(&proof, false);
+            assert_eq!(status_of(&r, "semantic-binding"), Status::Fail, "{label} + licence ⇒ FAIL");
+            assert_eq!(r.committed_license(), None);
+        }
+    }
+
+    /// A claimed region from a claim-privacy vector (`kind` + fields).
+    fn claim_region(v: &serde_json::Value) -> crate::navigate::ProofRegion {
+        use crate::navigate::{
+            proof_region::Region, BoundingBox3DRegion, CityRegion, CountryRegion, EarthRegion, EllipseRegion, LatLon,
+        };
+        let f = |k: &str| v[k].as_f64().unwrap_or_else(|| panic!("{k} in {v}"));
+        let region = match v["kind"].as_str().unwrap() {
+            "city" => Region::City(CityRegion {
+                name: v["name"].as_str().unwrap().into(),
+                center_lat: f("center_lat"),
+                center_lon: f("center_lon"),
+                radius_meters: f("radius_meters"),
+            }),
+            "ellipse" => Region::Ellipse(EllipseRegion {
+                center: Some(LatLon { latitude: v["center"]["lat"].as_f64().unwrap(), longitude: v["center"]["lon"].as_f64().unwrap() }),
+                semi_major_m: f("semi_major_m"),
+                semi_minor_m: f("semi_minor_m"),
+                heading_deg: f("heading_deg"),
+            }),
+            "bounding_box_3d" => Region::BoundingBox3d(BoundingBox3DRegion {
+                min_latitude: f("min_latitude"),
+                max_latitude: f("max_latitude"),
+                min_longitude: f("min_longitude"),
+                max_longitude: f("max_longitude"),
+                min_altitude: f("min_altitude"),
+                max_altitude: f("max_altitude"),
+            }),
+            "country" => Region::Country(CountryRegion { iso_code: v["iso_code"].as_str().unwrap().into() }),
+            "earth" => Region::Earth(EarthRegion { max_altitude_meters: f("max_altitude_meters") }),
+            k => panic!("unhandled claim kind {k}"),
+        };
+        crate::navigate::ProofRegion { region: Some(region) }
+    }
+
+    /// The SDK's claim-privacy vectors (`test-vectors/claim-privacy/`): every
+    /// labelled claim classifies as the SDK labels it; every claim the SDK builds is
+    /// SNAPPED at the SDK's grid level (discs) and has the SDK's v2 region digest,
+    /// so the semantic binding covers the snapped bytes unchanged; and the pinned
+    /// constants agree with the classifier's tables.
+    #[test]
+    fn claim_privacy_vectors() {
+        use crate::claim_privacy::{classify, ClaimPrivacy};
+        let raw = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/test-vectors/claim-privacy/vectors.json"));
+        let doc: serde_json::Value = serde_json::from_str(raw).unwrap();
+
+        let labelled = doc["classification"].as_array().unwrap();
+        assert_eq!(labelled.len(), 29);
+        for v in labelled {
+            let name = v["name"].as_str().unwrap();
+            let got = classify(Some(&claim_region(&v["claimed_region"])));
+            assert_eq!(got.label(), v["claim_privacy"].as_str().unwrap(), "{name}");
+        }
+
+        let mut built = 0;
+        for v in doc["claims"].as_array().unwrap() {
+            let name = v["name"].as_str().unwrap();
+            let e = &v["expected"];
+            if e["claimed_region"].is_null() {
+                assert!(e["claim"].is_null(), "{name}: no claim at this level");
+                continue;
+            }
+            built += 1;
+            let region = claim_region(&e["claimed_region"]);
+            // The decimal JSON numbers parse to exactly the bits the SDK emitted.
+            for (k, bits) in e["f64_bits_hex"].as_object().unwrap() {
+                let x = match k.split_once('.') {
+                    Some((a, b)) => e["claimed_region"][a][b].as_f64(),
+                    None => e["claimed_region"][k].as_f64(),
+                }.unwrap();
+                assert_eq!(format!("{:016x}", x.to_bits()), bits.as_str().unwrap(), "{name}: {k} bits");
+            }
+            let want = match e["claimed_region"]["kind"].as_str().unwrap() {
+                "ellipse" => ClaimPrivacy::Snapped { grid_level: Some(e["grid_level"].as_u64().unwrap() as u32) },
+                _ => ClaimPrivacy::Snapped { grid_level: None },
+            };
+            assert_eq!(classify(Some(&region)), want, "{name}");
+
+            let proof = LocationProof { claimed_region: Some(region), ..Default::default() };
+            let (region_type, region_id) = semantic_region_v2(&proof);
+            assert_eq!(region_type, e["region_type"].as_u64().unwrap() as u32, "{name}: region_type");
+            assert_eq!(hex::encode(region_id), e["region_id_v2_hex"].as_str().unwrap(), "{name}: v2 region digest");
+        }
+        assert_eq!(built, 20, "claims the SDK builds");
+
+        let c = &doc["constants"];
+        let rho: Vec<(u32, f64)> = (2..=12).map(|l| (l, c["rho_m"][l.to_string()].as_f64().unwrap())).collect();
+        assert_eq!(rho, crate::claim_privacy::tables::RHO_M.to_vec(), "rho table");
+        let ladder: Vec<f64> = c["accuracy_ladder_m"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+        assert_eq!(ladder, crate::claim_privacy::tables::LADDER_M.to_vec(), "accuracy ladder");
+        assert_eq!(c["vertical_step_m"].as_f64(), Some(64.0));
+        assert_eq!((c["city_level"].as_u64(), c["city_radius_m"].as_f64(), c["city_name"].as_str()), (Some(2), Some(50_000.0), Some("auto")));
+        assert_eq!(c["disc_levels"], serde_json::json!([3, 12]));
+    }
+
+    /// Through `verify()`: a legacy city claim WARNs `claim-privacy` by default and
+    /// FAILs with `require_private_claims`; a snapped one PASSes; a country claim
+    /// gets no line.
+    #[test]
+    fn claim_privacy_check_in_verify() {
+        use crate::claim_privacy::ClaimPrivacy;
+        use crate::navigate::{proof_region::Region, CityRegion, CountryRegion, ProofRegion};
+        let city = |lat: f64, lon: f64| ProofRegion {
+            region: Some(Region::City(CityRegion { name: "auto".into(), center_lat: lat, center_lon: lon, radius_meters: 50_000.0 })),
+        };
+        let run = |region: ProofRegion, require: bool| {
+            let proof = LocationProof { claimed_region: Some(region), ..Default::default() };
+            verify(&proof, &VerifyOptions {
+                now_ms: 0, max_age_s: 300, hardware_pubkey: None, hw_key_source: "test",
+                expect_region: None, expect_region_type: None, expect_region_contains: None,
+                expect_region_contains_height_m: None, session_nonce: None,
+                require_session_binding: false, require_schema_v2: false, require_attestation: false,
+                allow_unbound_app_attest: false, require_verdict: None, validation_window: None,
+                require_private_claims: require,
+            })
+        };
+        let line = |r: &Report| r.checks.iter().find(|c| c.name == "claim-privacy").map(|c| c.status);
+
+        let legacy = run(city(12.345678901, 23.456789012), false);
+        assert_eq!(line(&legacy), Some(Status::Warn));
+        assert_eq!(legacy.claim_privacy(), Some(ClaimPrivacy::Legacy));
+        assert_eq!(line(&run(city(12.345678901, 23.456789012), true)), Some(Status::Fail));
+
+        let snapped = run(city(12.375, 23.375), true);
+        assert_eq!(line(&snapped), Some(Status::Pass));
+        assert_eq!(snapped.claim_privacy(), Some(ClaimPrivacy::Snapped { grid_level: None }));
+
+        let country = run(ProofRegion { region: Some(Region::Country(CountryRegion { iso_code: "AT".into() })) }, true);
+        assert_eq!(line(&country), None);
+        assert_eq!(country.claim_privacy(), Some(ClaimPrivacy::NotApplicable));
+    }
+
+    /// Field 20 under `claim-privacy`. On a proof bound under v4 (SDK 4.0.0) a
+    /// centred or non-ellipse `nominal_region` FAILs whatever the options; a
+    /// centre-less ellipse passes. On an older proof a centre discloses the
+    /// position: WARN, or FAIL with `require_private_claims`.
+    #[test]
+    fn claim_privacy_covers_field20() {
+        use crate::claim_privacy::ClaimPrivacy;
+        use crate::navigate::{proof_region::Region, EllipseRegion, H3PolygonSet, LatLon, LocationUncertainty};
+        let ellipse = |center: Option<LatLon>| crate::navigate::ProofRegion {
+            region: Some(Region::Ellipse(EllipseRegion { center, semi_major_m: 12.0, semi_minor_m: 8.0, heading_deg: 30.0 })),
+        };
+        let h3 = crate::navigate::ProofRegion {
+            region: Some(Region::H3PolygonSet(H3PolygonSet { cell_ids: vec![0x8a1fb46622dffff] })),
+        };
+        let centred = ellipse(Some(LatLon { latitude: 51.5, longitude: -0.12 }));
+        let with = |mut p: LocationProof, nominal: crate::navigate::ProofRegion| {
+            p.uncertainty = Some(LocationUncertainty { nominal_region: Some(nominal), ..Default::default() });
+            p
+        };
+        let check = |p: &LocationProof, require: bool| {
+            let mut r = Report::new();
+            r.add_semantic_binding(p, false);
+            r.add_claim_privacy(p, require);
+            let st = r.checks.iter().find(|c| c.name == "claim-privacy").map(|c| c.status);
+            (st, r.claim_privacy())
+        };
+
+        // A proof that passes v4: the `v4_country_outside` golden vector. Its claim
+        // is a country, so only field 20 decides the claim-privacy line.
+        let raw = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/test-vectors/semantic-binding-v4/vectors.json"));
+        let doc: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let v = doc["vectors"].as_array().unwrap().iter().find(|v| v["name"] == "v4_country_outside").unwrap();
+        let mut v4 = proof_from_vector_input(&v["input"], &v["query_region"]);
+        v4.committed_license_id = v["signed"]["committed_license_id"].as_str().unwrap().into();
+        push_semantic_stage(&mut v4, hex::decode(v["signed"]["stage_hash_hex"].as_str().unwrap()).unwrap());
+
+        assert_eq!(check(&v4, false), (None, Some(ClaimPrivacy::NotApplicable)), "country claim, no field 20");
+        assert_eq!(check(&with(v4.clone(), ellipse(None)), false).0, Some(Status::Pass), "v4, centre-less ellipse");
+        for (label, nominal) in [("centred ellipse", centred.clone()), ("H3 set", h3.clone())] {
+            let (st, cp) = check(&with(v4.clone(), nominal), false);
+            assert_eq!(st, Some(Status::Fail), "v4, {label}: FAIL without the flag");
+            assert_eq!(cp, Some(ClaimPrivacy::Legacy), "v4, {label}");
+        }
+
+        // An older proof (no v4 binding) with a centred field 20: WARN, FAIL on opt-in.
+        let old = with(LocationProof::default(), centred);
+        assert_eq!(check(&old, false), (Some(Status::Warn), Some(ClaimPrivacy::Legacy)));
+        assert_eq!(check(&old, true).0, Some(Status::Fail));
+    }
+
     /// Cross-repo golden vectors: the v3 preimage this verifier derives must
     /// be **byte-identical** to the SDK's independent generator (`gen-semantic-v3-
     /// vectors.py`, mirrored on iOS + Android). Pins the preimage hex, its SHA-256,
@@ -2808,25 +3345,7 @@ mod tests {
     /// all 9 vectors — so a framing drift on any side fails CI on both repos.
     #[test]
     fn semantic_binding_v3_golden_vectors() {
-        use crate::navigate::{
-            proof_region::Region, CountryRegion, DeviceIntegrityVerdict, EarthRegion,
-            EllipseRegion, LatLon, ProofRegion, RegionRef, SubdivisionRegion,
-        };
-
-        fn build_region(v: &serde_json::Value) -> Region {
-            match v["kind"].as_str().expect("region kind") {
-                "ellipse" => Region::Ellipse(EllipseRegion {
-                    center: Some(LatLon { latitude: v["lat"].as_f64().unwrap(), longitude: v["lon"].as_f64().unwrap() }),
-                    semi_major_m: v["semi_major_m"].as_f64().unwrap(),
-                    semi_minor_m: v["semi_minor_m"].as_f64().unwrap(),
-                    heading_deg: v["heading_deg"].as_f64().unwrap(),
-                }),
-                "country" => Region::Country(CountryRegion { iso_code: v["iso"].as_str().unwrap().into() }),
-                "subdivision" => Region::Subdivision(SubdivisionRegion { iso_code: v["iso"].as_str().unwrap().into() }),
-                "earth" => Region::Earth(EarthRegion { max_altitude_meters: v["max_altitude_m"].as_f64().unwrap() }),
-                other => panic!("unhandled region kind {other}"),
-            }
-        }
+        use crate::navigate::{DeviceIntegrityVerdict, ProofRegion, RegionRef};
 
         // Both the base v3 set and the disc-verdict set share one format and
         // one preimage; run the same byte-parity assertions over both files.
@@ -3146,6 +3665,7 @@ mod tests {
             allow_unbound_app_attest: false,
             require_verdict: None,
             validation_window: None,
+            require_private_claims: false,
         };
         let report = verify(&proof, &opts);
         let st = |n: &str| report.checks.iter().find(|c| c.name == n).map(|c| c.status);
@@ -3418,6 +3938,7 @@ mod tests {
                 allow_unbound_app_attest: false,
                 require_verdict: None,
                 validation_window: None,
+                require_private_claims: false,
             }
         }
         fn type_status(p: &LocationProof, want_ty: &str) -> Option<Status> {
@@ -3494,6 +4015,7 @@ mod tests {
             allow_unbound_app_attest: false,
             require_verdict: None,
             validation_window: None,
+            require_private_claims: false,
         };
 
         // Point inside → region-contains PASS and the region is asserted.
@@ -3548,7 +4070,7 @@ mod tests {
             verify(&proof, &VerifyOptions {
                 now_ms: 1, max_age_s: 300, hardware_pubkey: None,
                 hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, expect_region_contains_height_m: None, session_nonce: sn,
-                require_session_binding: false, require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None,
+                require_session_binding: false, require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None, require_private_claims: false,
             })
         };
         assert_eq!(status_of(&run(None), "session-binding"), Status::NotChecked);
@@ -3573,7 +4095,7 @@ mod tests {
         let r = verify(&proof, &VerifyOptions {
             now_ms: now, max_age_s: 300, hardware_pubkey: None,
             hw_key_source: "test", expect_region: None, expect_region_type: None, expect_region_contains: None, expect_region_contains_height_m: None, session_nonce: None,
-            require_session_binding: false, require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None,
+            require_session_binding: false, require_schema_v2: false, require_attestation: false, allow_unbound_app_attest: false, require_verdict: None, validation_window: None, require_private_claims: false,
         });
         // Uses proofAssembly's timestamp (fresh), not the trailing stage's.
         assert_eq!(status_of(&r, "freshness"), Status::Pass);

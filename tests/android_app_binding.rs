@@ -196,6 +196,7 @@ fn multi_identity_set_on_expectation_drives_verify_attested_cached() {
         allow_unbound_app_attest: false,
         require_verdict: None,
         validation_window: None,
+        require_private_claims: false,
     };
     let root = |e: &Expectation| {
         let (r, _) = verify_attested_cached(&p, &opts, e, None);
@@ -275,6 +276,7 @@ fn require_attestation_accepts_attested_rejects_stripped() {
         allow_unbound_app_attest: false,
         require_verdict: None,
         validation_window: None,
+        require_private_claims: false,
     };
 
     let (report, _) = verify_attested_cached(&p, &opts, &expect, None);

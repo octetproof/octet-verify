@@ -1,6 +1,6 @@
 [package]
 name = "octet-verify"
-version = "1.10.0"
+version = "1.11.0"
 edition = "2021"
 description = "Standalone, independent verifier for Octet LocationProof artifacts. Checks authenticity and integrity (signatures, hash-chain, freshness, region claim) without any device-side secret or proof-creation logic."
 repository = "https://github.com/octetproof/octet-verify"

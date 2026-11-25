@@ -220,6 +220,7 @@ fn core_report(proof: &LocationProof, sec1: &[u8]) -> Report {
         allow_unbound_app_attest: false,
         require_verdict: None,
         validation_window: None,
+        require_private_claims: false,
     })
 }
 

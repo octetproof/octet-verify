@@ -1,0 +1,224 @@
+{
+ "note": "octet-semantic-binding-v4 (committed licence) cross-repo golden vectors, derived from the frozen v3 vectors by generate.py. See README.md.",
+ "domain": "octet-semantic-binding-v4",
+ "vectors": [
+  {
+   "name": "v4_disc_inside",
+   "note": "a disc query, INSIDE, committing licence A",
+   "base_v3_vector": "disc_inside",
+   "input": {
+    "spoofing_verdict": 1,
+    "level": 3,
+    "integrity_status": 2,
+    "commitment_hex": "abababababababababababababababababababababababababababababababab",
+    "claimed_region": {
+     "kind": "ellipse",
+     "lat": 48.2085,
+     "lon": 16.3741,
+     "semi_major_m": 40.0,
+     "semi_minor_m": 25.0,
+     "heading_deg": 30.0
+    },
+    "location_verdict": 1,
+    "query": {
+     "kind": "ellipse",
+     "lat": 48.2082,
+     "lon": 16.3738,
+     "semi_major_m": 2000.0,
+     "semi_minor_m": 2000.0,
+     "heading_deg": 0.0
+    }
+   },
+   "query_region": {
+    "region_type": 4,
+    "region_id_hex": "e8658ae85b73cc156ba63a092ed6865841b7223c933c471580483647e82d1f73"
+   },
+   "signed": {
+    "domain": "octet-semantic-binding-v4",
+    "committed_license_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    "preimage_hex": "6f637465742d73656d616e7469632d62696e64696e672d76340000000100000003000000020000000400000020f4c11aefe82d28a91d93df4fba1d5e95808c5e0667b677325b7dc882b414e2b300000020abababababababababababababababababababababababababababababababab000000010000000400000020e8658ae85b73cc156ba63a092ed6865841b7223c933c471580483647e82d1f730000002437633965363637392d373432352d343064652d393434622d653037666331663930616537",
+    "stage_hash_hex": "0928573cbd446f1429283a29c0538f125a9e92a91361906be78bcd5d6d40079a"
+   },
+   "presented_license_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+   "expect": "pass"
+  },
+  {
+   "name": "v4_country_outside",
+   "note": "a country AT query with a GB claim, OUTSIDE, committing licence B",
+   "base_v3_vector": "country_at_claim_gb",
+   "input": {
+    "spoofing_verdict": 1,
+    "level": 2,
+    "integrity_status": 2,
+    "commitment_hex": "abababababababababababababababababababababababababababababababab",
+    "claimed_region": {
+     "kind": "country",
+     "iso": "GB"
+    },
+    "location_verdict": 2,
+    "query": {
+     "kind": "country",
+     "iso": "AT"
+    }
+   },
+   "query_region": {
+    "region_type": 2,
+    "region_id_hex": "4154"
+   },
+   "signed": {
+    "domain": "octet-semantic-binding-v4",
+    "committed_license_id": "1b4e28ba-2fa1-41d2-883f-0016d3cca427",
+    "preimage_hex": "6f637465742d73656d616e7469632d62696e64696e672d76340000000100000002000000020000000200000002474200000020abababababababababababababababababababababababababababababababab00000002000000020000000241540000002431623465323862612d326661312d343164322d383833662d303031366433636361343237",
+    "stage_hash_hex": "57c87656863b72220332ef8498cbb9525e1255f95d60567fc68a1f92f88f9cf0"
+   },
+   "presented_license_id": "1b4e28ba-2fa1-41d2-883f-0016d3cca427",
+   "expect": "pass"
+  },
+  {
+   "name": "v4_no_query",
+   "note": "a background proof: no query (q_type 0, field 18 absent), committing licence A",
+   "base_v3_vector": "no_query",
+   "input": {
+    "spoofing_verdict": 1,
+    "level": 2,
+    "integrity_status": 2,
+    "commitment_hex": "abababababababababababababababababababababababababababababababab",
+    "claimed_region": {
+     "kind": "country",
+     "iso": "AT"
+    },
+    "location_verdict": 0,
+    "query": null
+   },
+   "query_region": null,
+   "signed": {
+    "domain": "octet-semantic-binding-v4",
+    "committed_license_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    "preimage_hex": "6f637465742d73656d616e7469632d62696e64696e672d76340000000100000002000000020000000200000002415400000020abababababababababababababababababababababababababababababababab0000000000000000000000000000002437633965363637392d373432352d343064652d393434622d653037666331663930616537",
+    "stage_hash_hex": "bd9ac39a1fbb59c374a61d2de6abfd764ed405e6f263c27cfa9be00e13711bac"
+   },
+   "presented_license_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+   "expect": "pass"
+  },
+  {
+   "name": "tamper_license_edited",
+   "note": "signed for licence A, field 21 edited to licence B after signing",
+   "base_v3_vector": "disc_inside",
+   "input": {
+    "spoofing_verdict": 1,
+    "level": 3,
+    "integrity_status": 2,
+    "commitment_hex": "abababababababababababababababababababababababababababababababab",
+    "claimed_region": {
+     "kind": "ellipse",
+     "lat": 48.2085,
+     "lon": 16.3741,
+     "semi_major_m": 40.0,
+     "semi_minor_m": 25.0,
+     "heading_deg": 30.0
+    },
+    "location_verdict": 1,
+    "query": {
+     "kind": "ellipse",
+     "lat": 48.2082,
+     "lon": 16.3738,
+     "semi_major_m": 2000.0,
+     "semi_minor_m": 2000.0,
+     "heading_deg": 0.0
+    }
+   },
+   "query_region": {
+    "region_type": 4,
+    "region_id_hex": "e8658ae85b73cc156ba63a092ed6865841b7223c933c471580483647e82d1f73"
+   },
+   "signed": {
+    "domain": "octet-semantic-binding-v4",
+    "committed_license_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    "preimage_hex": "6f637465742d73656d616e7469632d62696e64696e672d76340000000100000003000000020000000400000020f4c11aefe82d28a91d93df4fba1d5e95808c5e0667b677325b7dc882b414e2b300000020abababababababababababababababababababababababababababababababab000000010000000400000020e8658ae85b73cc156ba63a092ed6865841b7223c933c471580483647e82d1f730000002437633965363637392d373432352d343064652d393434622d653037666331663930616537",
+    "stage_hash_hex": "0928573cbd446f1429283a29c0538f125a9e92a91361906be78bcd5d6d40079a"
+   },
+   "presented_license_id": "1b4e28ba-2fa1-41d2-883f-0016d3cca427",
+   "expect": "fail"
+  },
+  {
+   "name": "tamper_license_removed",
+   "note": "signed for licence A, field 21 removed after signing; v3 does not match either",
+   "base_v3_vector": "disc_inside",
+   "input": {
+    "spoofing_verdict": 1,
+    "level": 3,
+    "integrity_status": 2,
+    "commitment_hex": "abababababababababababababababababababababababababababababababab",
+    "claimed_region": {
+     "kind": "ellipse",
+     "lat": 48.2085,
+     "lon": 16.3741,
+     "semi_major_m": 40.0,
+     "semi_minor_m": 25.0,
+     "heading_deg": 30.0
+    },
+    "location_verdict": 1,
+    "query": {
+     "kind": "ellipse",
+     "lat": 48.2082,
+     "lon": 16.3738,
+     "semi_major_m": 2000.0,
+     "semi_minor_m": 2000.0,
+     "heading_deg": 0.0
+    }
+   },
+   "query_region": {
+    "region_type": 4,
+    "region_id_hex": "e8658ae85b73cc156ba63a092ed6865841b7223c933c471580483647e82d1f73"
+   },
+   "signed": {
+    "domain": "octet-semantic-binding-v4",
+    "committed_license_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    "preimage_hex": "6f637465742d73656d616e7469632d62696e64696e672d76340000000100000003000000020000000400000020f4c11aefe82d28a91d93df4fba1d5e95808c5e0667b677325b7dc882b414e2b300000020abababababababababababababababababababababababababababababababab000000010000000400000020e8658ae85b73cc156ba63a092ed6865841b7223c933c471580483647e82d1f730000002437633965363637392d373432352d343064652d393434622d653037666331663930616537",
+    "stage_hash_hex": "0928573cbd446f1429283a29c0538f125a9e92a91361906be78bcd5d6d40079a"
+   },
+   "presented_license_id": null,
+   "expect": "fail"
+  },
+  {
+   "name": "tamper_license_on_v3",
+   "note": "a v3 proof with field 21 added: the licence was never signed",
+   "base_v3_vector": "disc_inside",
+   "input": {
+    "spoofing_verdict": 1,
+    "level": 3,
+    "integrity_status": 2,
+    "commitment_hex": "abababababababababababababababababababababababababababababababab",
+    "claimed_region": {
+     "kind": "ellipse",
+     "lat": 48.2085,
+     "lon": 16.3741,
+     "semi_major_m": 40.0,
+     "semi_minor_m": 25.0,
+     "heading_deg": 30.0
+    },
+    "location_verdict": 1,
+    "query": {
+     "kind": "ellipse",
+     "lat": 48.2082,
+     "lon": 16.3738,
+     "semi_major_m": 2000.0,
+     "semi_minor_m": 2000.0,
+     "heading_deg": 0.0
+    }
+   },
+   "query_region": {
+    "region_type": 4,
+    "region_id_hex": "e8658ae85b73cc156ba63a092ed6865841b7223c933c471580483647e82d1f73"
+   },
+   "signed": {
+    "domain": "octet-semantic-binding-v3",
+    "committed_license_id": null,
+    "preimage_hex": "6f637465742d73656d616e7469632d62696e64696e672d76330000000100000003000000020000000400000020f4c11aefe82d28a91d93df4fba1d5e95808c5e0667b677325b7dc882b414e2b300000020abababababababababababababababababababababababababababababababab000000010000000400000020e8658ae85b73cc156ba63a092ed6865841b7223c933c471580483647e82d1f73",
+    "stage_hash_hex": "8dda05d3fb4d6dc44dc033002a4525b3937a539bc2987d72dfb02b918675fd49"
+   },
+   "presented_license_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+   "expect": "fail"
+  }
+ ]
+}
